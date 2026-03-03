@@ -263,7 +263,7 @@ async def memory_import_claude(directory: str, machine_name: str | None = None) 
 
 def main():
     """Entry point for the MCP server."""
-    mcp.run(transport="sse")
+    mcp.run(transport="sse", host=settings.host, port=settings.port)
 
 
 if __name__ == "__main__":
