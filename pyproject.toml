@@ -2,7 +2,6 @@
 name = "nobrainr"
 version = "0.1.0"
 description = "Collective agent memory service — PostgreSQL 18 + pgvector + MCP server"
-readme = "CLAUDE.md"
 requires-python = ">=3.12"
 dependencies = [
     "mcp[cli]>=1.9.0",
