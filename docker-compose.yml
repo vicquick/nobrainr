@@ -1,0 +1,68 @@
+services:
+  # PostgreSQL 18 with pgvector
+  postgres:
+    image: pgvector/pgvector:pg18
+    container_name: nobrainr-db
+    environment:
+      POSTGRES_DB: nobrainr
+      POSTGRES_USER: nobrainr
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nobrainr_dev}
+    volumes:
+      - nobrainr-pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nobrainr"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Ollama for local embeddings
+  ollama:
+    image: ollama/ollama:latest
+    container_name: nobrainr-ollama
+    volumes:
+      - nobrainr-ollama:/root/.ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # Pull the embedding model on first start
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: nobrainr-ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint: ["ollama", "pull", "nomic-embed-text"]
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    restart: "no"
+
+  # nobrainr MCP server
+  nobrainr:
+    build: .
+    container_name: nobrainr-mcp
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    environment:
+      NOBRAINR_DATABASE_URL: postgresql://nobrainr:${POSTGRES_PASSWORD:-nobrainr_dev}@postgres:5432/nobrainr
+      NOBRAINR_OLLAMA_URL: http://ollama:11434
+      NOBRAINR_HOST: "0.0.0.0"
+      NOBRAINR_PORT: "8420"
+    ports:
+      - "8420:8420"
+    restart: unless-stopped
+
+volumes:
+  nobrainr-pgdata:
+  nobrainr-ollama:
