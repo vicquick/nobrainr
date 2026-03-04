@@ -222,6 +222,22 @@ async def memory_update(
 
 
 # ──────────────────────────────────────────────
+# Tool: memory_delete
+# ──────────────────────────────────────────────
+@mcp.tool()
+async def memory_delete(memory_id: str) -> dict:
+    """Delete a memory by its ID.
+
+    Args:
+        memory_id: The UUID of the memory to delete.
+    """
+    deleted = await queries.delete_memory(memory_id)
+    if deleted:
+        return {"status": "deleted", "id": memory_id}
+    return {"status": "not_found", "id": memory_id}
+
+
+# ──────────────────────────────────────────────
 # Tool: memory_stats
 # ──────────────────────────────────────────────
 @mcp.tool()

@@ -182,6 +182,16 @@ async def update_memory(
         return _row_to_dict(row) if row else None
 
 
+async def delete_memory(memory_id: str) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM memories WHERE id = $1",
+            UUID(memory_id),
+        )
+        return result == "DELETE 1"
+
+
 async def query_memories(
     *,
     tags: list[str] | None = None,
