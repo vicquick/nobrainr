@@ -79,5 +79,4 @@ def create_app():
     ]
 
     app = Starlette(routes=routes, lifespan=lifespan)
-    app.add_middleware(BasicAuthMiddleware)
-    return app
+    return BasicAuthMiddleware(app)
