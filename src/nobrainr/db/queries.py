@@ -23,16 +23,17 @@ async def store_memory(
 ) -> dict:
     pool = await get_pool()
     async with pool.acquire() as conn:
+        import numpy as np
         row = await conn.fetchrow(
             """
             INSERT INTO memories (content, summary, embedding, source_type, source_machine,
                                   source_ref, tags, category, confidence, metadata)
-            VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10::jsonb)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
             RETURNING id, created_at
             """,
             content,
             summary,
-            str(embedding),
+            np.array(embedding, dtype=np.float32),
             source_type,
             source_machine,
             source_ref,
@@ -57,7 +58,8 @@ async def search_memories(
 ) -> list[dict]:
     pool = await get_pool()
     conditions = ["1=1"]
-    params: list = [str(embedding), limit]
+    import numpy as np
+    params: list = [np.array(embedding, dtype=np.float32), limit]
     idx = 3
 
     if tags:
@@ -92,11 +94,11 @@ async def search_memories(
             f"""
             SELECT id, content, summary, source_type, source_machine, tags, category,
                    confidence, metadata, created_at, updated_at,
-                   1 - (embedding <=> $1::vector) AS similarity
+                   1 - (embedding <=> $1) AS similarity
             FROM memories
             WHERE {where}
               AND embedding IS NOT NULL
-            ORDER BY embedding <=> $1::vector
+            ORDER BY embedding <=> $1
             LIMIT $2
             """,
             *params,
@@ -151,8 +153,9 @@ async def update_memory(
             idx += 1
 
     if embedding is not None:
-        sets.append(f"embedding = ${idx}::vector")
-        params.append(str(embedding))
+        import numpy as np
+        sets.append(f"embedding = ${idx}")
+        params.append(np.array(embedding, dtype=np.float32))
         idx += 1
 
     if metadata is not None:
