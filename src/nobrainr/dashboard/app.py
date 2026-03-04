@@ -55,8 +55,16 @@ async def lifespan(app):
     # Fire-and-forget backfill for any unextracted memories
     backfill_task = asyncio.create_task(_auto_backfill())
 
+    # Start background scheduler for maintenance + feedback integration
+    if settings.scheduler_enabled:
+        from nobrainr.scheduler import scheduler
+        scheduler.start()
+
     yield
 
+    if settings.scheduler_enabled:
+        from nobrainr.scheduler import scheduler
+        await scheduler.stop()
     backfill_task.cancel()
     await close_pool()
     logger.info("nobrainr shut down.")
