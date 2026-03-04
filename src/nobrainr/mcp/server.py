@@ -21,14 +21,22 @@ mcp = FastMCP(
     host=settings.host,
     port=settings.port,
     instructions=(
-        "nobrainr is a collective memory service for AI agents with a knowledge graph. "
-        "Use memory_store to save learnings, decisions, patterns, and context. "
-        "Use memory_search for semantic search across all stored knowledge (now relevance-ranked). "
-        "Use memory_query for structured filtering by tags, category, source. "
-        "Use entity_search to find entities in the knowledge graph. "
-        "Use entity_graph to explore entity connections. "
-        "Use memory_maintenance to run periodic intelligence tasks. "
-        "Always tag memories well so they can be found later."
+        "nobrainr is a self-improving collective memory service for AI agents with a knowledge graph.\n\n"
+        "## Core workflow\n"
+        "1. ALWAYS call `memory_search` before starting complex work — check what's already known.\n"
+        "2. Use `memory_store` to save learnings, decisions, patterns, and context.\n"
+        "3. Call `memory_feedback` after using search results — report if they were helpful.\n"
+        "4. Call `memory_reflect` at session end with a batch of learnings from the session.\n"
+        "5. Use `log_event` to record significant agent activity (session starts, decisions, completions).\n\n"
+        "## Search & retrieval\n"
+        "- `memory_search` — semantic search, relevance-ranked (similarity + recency + importance).\n"
+        "- `memory_query` — structured filtering by tags, category, source.\n"
+        "- `entity_search` / `entity_graph` — knowledge graph exploration.\n\n"
+        "## Best practices\n"
+        "- Always tag memories well so they can be found later.\n"
+        "- Set `source_machine` to identify which host generated the memory.\n"
+        "- Feedback improves future search ranking — always report usefulness.\n"
+        "- Maintenance runs automatically; `memory_maintenance` is available for manual runs."
     ),
 )
 
@@ -350,6 +358,112 @@ async def memory_extract(memory_id: str) -> dict:
     from nobrainr.extraction.pipeline import process_memory
     await process_memory(memory_id, memory["content"], memory.get("tags"))
     return {"status": "extracted", "id": memory_id}
+
+
+# ──────────────────────────────────────────────
+# Tool: memory_feedback
+# ──────────────────────────────────────────────
+@mcp.tool()
+async def memory_feedback(
+    memory_id: str,
+    was_useful: bool,
+    context: str | None = None,
+) -> dict:
+    """Report whether a memory search result was useful. This feedback improves future search ranking.
+
+    Call this after using results from memory_search to close the feedback loop.
+
+    Args:
+        memory_id: The UUID of the memory to give feedback on.
+        was_useful: True if the memory was helpful, False if not.
+        context: Optional context about how/why it was or wasn't useful.
+    """
+    result = await queries.store_memory_outcome(
+        memory_id, was_useful, context=context,
+    )
+    return {"status": "recorded", **result}
+
+
+# ──────────────────────────────────────────────
+# Tool: memory_reflect
+# ──────────────────────────────────────────────
+@mcp.tool()
+async def memory_reflect(
+    learnings: list[dict],
+) -> dict:
+    """Batch-store session learnings. More efficient than individual memory_store calls.
+
+    Call this at session end to capture what was learned. Each entry goes through
+    the full pipeline (embedding, dedup check, entity extraction).
+
+    Args:
+        learnings: List of learning entries. Each dict should have:
+            - content (str, required): The learning/insight to store.
+            - summary (str, optional): One-line summary.
+            - tags (list[str], optional): Tags for categorization.
+            - category (str, optional): High-level category.
+            - source_type (str, optional): Defaults to "agent".
+            - source_machine (str, optional): Which host generated this.
+    """
+    results = []
+    for entry in learnings:
+        content = entry.get("content")
+        if not content:
+            results.append({"status": "skipped", "reason": "no content"})
+            continue
+        try:
+            result = await memory_store(
+                content=content,
+                summary=entry.get("summary"),
+                tags=entry.get("tags"),
+                category=entry.get("category"),
+                source_type=entry.get("source_type", "agent"),
+                source_machine=entry.get("source_machine"),
+            )
+            results.append(result)
+        except Exception as e:
+            logger.exception("Failed to store learning: %s", content[:80])
+            results.append({"status": "error", "error": str(e)})
+    stored = sum(1 for r in results if r.get("status") in ("stored", "merged"))
+    return {"total": len(learnings), "stored": stored, "results": results}
+
+
+# ──────────────────────────────────────────────
+# Tool: log_event
+# ──────────────────────────────────────────────
+@mcp.tool()
+async def log_event(
+    event_type: str,
+    description: str,
+    agent_id: str | None = None,
+    session_id: str | None = None,
+    category: str | None = None,
+    related_memory_ids: list[str] | None = None,
+    metadata: dict | None = None,
+) -> dict:
+    """Log an agent activity event for tracking and analytics.
+
+    Use this to record session starts, task completions, important decisions, errors, etc.
+
+    Args:
+        event_type: Type of event (e.g. "session_start", "task_complete", "decision", "error").
+        description: Human-readable description of what happened.
+        agent_id: Identifier for the agent logging the event.
+        session_id: Current session identifier.
+        category: Event category for filtering.
+        related_memory_ids: UUIDs of related memories.
+        metadata: Additional structured data.
+    """
+    result = await queries.log_agent_event(
+        event_type=event_type,
+        description=description,
+        agent_id=agent_id,
+        session_id=session_id,
+        category=category,
+        related_memory_ids=related_memory_ids,
+        metadata=metadata,
+    )
+    return {"status": "logged", **result}
 
 
 # ──────────────────────────────────────────────
