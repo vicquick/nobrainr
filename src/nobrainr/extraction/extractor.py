@@ -29,7 +29,7 @@ Rules:
 async def extract_entities(text: str) -> ExtractionResult:
     """Extract entities and relationships from text using Ollama structured output."""
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=180.0) as client:
             resp = await client.post(
                 f"{settings.ollama_url}/api/chat",
                 json={

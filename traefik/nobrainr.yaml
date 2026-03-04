@@ -39,4 +39,4 @@ http:
     nobrainr:
       loadBalancer:
         servers:
-          - url: "http://nobrainr-mcp:8420"
+          - url: "http://nobrainr:8420"
