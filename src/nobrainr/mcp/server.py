@@ -37,6 +37,8 @@ async def lifespan(server: FastMCP):
 
 mcp = FastMCP(
     "nobrainr",
+    host=settings.host,
+    port=settings.port,
     instructions=(
         "nobrainr is a collective memory service for AI agents. "
         "Use memory_store to save learnings, decisions, patterns, and context. "
@@ -263,7 +265,7 @@ async def memory_import_claude(directory: str, machine_name: str | None = None) 
 
 def main():
     """Entry point for the MCP server."""
-    mcp.run(transport="sse", host=settings.host, port=settings.port)
+    mcp.run(transport="sse")
 
 
 if __name__ == "__main__":
