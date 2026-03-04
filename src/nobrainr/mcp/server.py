@@ -1,57 +1,40 @@
-"""nobrainr MCP server — collective agent memory."""
+"""nobrainr MCP server — collective agent memory with knowledge graph."""
 
 import asyncio
-import json
 import logging
-from contextlib import asynccontextmanager
 
 from mcp.server.fastmcp import FastMCP
 
 from nobrainr.config import settings
-from nobrainr.db.pool import get_pool, close_pool
-from nobrainr.db.schema import init_schema
 from nobrainr.db import queries
-from nobrainr.embeddings.ollama import embed_text, embed_batch, check_model
+from nobrainr.embeddings.ollama import embed_text
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("nobrainr")
 
-
-@asynccontextmanager
-async def lifespan(server: FastMCP):
-    logger.info("nobrainr starting up...")
-    pool = await get_pool()
-    await init_schema(pool)
-    model_ok = await check_model()
-    if model_ok:
-        logger.info(f"Embedding model '{settings.embedding_model}' ready")
-    else:
-        logger.warning(
-            f"Embedding model '{settings.embedding_model}' not found in Ollama. "
-            f"Run: ollama pull {settings.embedding_model}"
-        )
-    yield
-    await close_pool()
-    logger.info("nobrainr shut down.")
-
+# ──────────────────────────────────────────────
+# FastMCP instance (no lifespan — parent app handles it)
+# ──────────────────────────────────────────────
 
 mcp = FastMCP(
     "nobrainr",
     host=settings.host,
     port=settings.port,
     instructions=(
-        "nobrainr is a collective memory service for AI agents. "
+        "nobrainr is a collective memory service for AI agents with a knowledge graph. "
         "Use memory_store to save learnings, decisions, patterns, and context. "
-        "Use memory_search for semantic search across all stored knowledge. "
+        "Use memory_search for semantic search across all stored knowledge (now relevance-ranked). "
         "Use memory_query for structured filtering by tags, category, source. "
+        "Use entity_search to find entities in the knowledge graph. "
+        "Use entity_graph to explore entity connections. "
+        "Use memory_maintenance to run periodic intelligence tasks. "
         "Always tag memories well so they can be found later."
     ),
-    lifespan=lifespan,
 )
 
 
 # ──────────────────────────────────────────────
-# Tool: memory_store
+# Tool: memory_store (with dedup + async extraction)
 # ──────────────────────────────────────────────
 @mcp.tool()
 async def memory_store(
@@ -65,7 +48,7 @@ async def memory_store(
     confidence: float = 1.0,
     metadata: dict | None = None,
 ) -> dict:
-    """Store a new memory with automatic embedding.
+    """Store a new memory with automatic embedding, dedup check, and entity extraction.
 
     Args:
         content: The knowledge/learning/decision to remember.
@@ -79,6 +62,33 @@ async def memory_store(
         metadata: Any additional structured data.
     """
     embedding = await embed_text(content)
+
+    # Dedup check: see if this memory should merge with an existing one
+    if settings.extraction_enabled:
+        try:
+            from nobrainr.extraction.dedup import check_memory_dedup
+            dedup_result = await check_memory_dedup(content, embedding)
+            if dedup_result and dedup_result.get("should_merge"):
+                target_id = dedup_result["target_id"]
+                merged_content = dedup_result["merged_content"]
+                new_embedding = await embed_text(merged_content)
+                await queries.update_memory(
+                    target_id,
+                    content=merged_content,
+                    embedding=new_embedding,
+                    tags=tags,
+                    metadata=metadata,
+                )
+                logger.info("Merged memory into %s: %s", target_id, dedup_result.get("reason"))
+                return {
+                    "status": "merged",
+                    "merged_with": target_id,
+                    "reason": dedup_result.get("reason", ""),
+                }
+        except Exception:
+            logger.exception("Dedup check failed, storing as new")
+
+    # Store new memory
     result = await queries.store_memory(
         content=content,
         embedding=embedding,
@@ -91,6 +101,15 @@ async def memory_store(
         confidence=confidence,
         metadata=metadata,
     )
+
+    # Fire-and-forget entity extraction
+    if settings.extraction_enabled:
+        try:
+            from nobrainr.extraction.pipeline import process_memory
+            asyncio.create_task(process_memory(result["id"], content, tags))
+        except Exception:
+            logger.exception("Failed to start extraction task")
+
     return {"status": "stored", **result}
 
 
@@ -108,7 +127,7 @@ async def memory_search(
     source_machine: str | None = None,
     hybrid: bool = False,
 ) -> list[dict]:
-    """Semantic search across all memories. Use natural language queries.
+    """Semantic search across all memories, ranked by relevance (similarity + recency + importance).
 
     Args:
         query: Natural language search query (e.g. "How did we fix the Docker networking issue?").
@@ -242,15 +261,99 @@ async def memory_delete(memory_id: str) -> dict:
 # ──────────────────────────────────────────────
 @mcp.tool()
 async def memory_stats() -> dict:
-    """Get statistics about the memory database.
+    """Get statistics about the memory database including knowledge graph stats.
 
-    Returns counts by source, category, machine, and top tags.
+    Returns counts by source, category, machine, top tags, entity/relation counts.
     """
     return await queries.get_stats()
 
 
 # ──────────────────────────────────────────────
-# Tool: memory_import_chatgpt
+# Tool: entity_search
+# ──────────────────────────────────────────────
+@mcp.tool()
+async def entity_search(
+    query: str,
+    entity_type: str | None = None,
+    limit: int = 10,
+) -> list[dict]:
+    """Semantic search on knowledge graph entities.
+
+    Args:
+        query: Natural language query to find entities (e.g. "postgresql", "docker networking").
+        entity_type: Filter by type (person/project/technology/concept/file/config/error/location/organization).
+        limit: Max results (default 10).
+    """
+    embedding = await embed_text(query)
+    return await queries.search_entities(
+        embedding=embedding,
+        entity_type=entity_type,
+        limit=limit,
+    )
+
+
+# ──────────────────────────────────────────────
+# Tool: entity_graph
+# ──────────────────────────────────────────────
+@mcp.tool()
+async def entity_graph(
+    entity_name: str,
+    depth: int = 2,
+) -> dict:
+    """Traverse the knowledge graph from a named entity.
+
+    Returns connected entities and relationships up to the specified depth.
+
+    Args:
+        entity_name: Name of the entity to start from (e.g. "nobrainr", "PostgreSQL").
+        depth: How many hops to traverse (default 2, max 5).
+    """
+    depth = min(depth, 5)
+    return await queries.get_entity_graph(entity_name, depth=depth)
+
+
+# ──────────────────────────────────────────────
+# Tool: memory_maintenance
+# ──────────────────────────────────────────────
+@mcp.tool()
+async def memory_maintenance() -> dict:
+    """Run periodic intelligence maintenance tasks.
+
+    - Recomputes importance scores for all memories
+    - Decays stability for stale memories (not accessed in 7+ days)
+
+    Call this periodically (e.g. daily) to keep relevance scoring fresh.
+    """
+    importance_count = await queries.recompute_importance()
+    decay_count = await queries.decay_stability()
+    return {
+        "status": "done",
+        "importance_recomputed": importance_count,
+        "stability_decayed": decay_count,
+    }
+
+
+# ──────────────────────────────────────────────
+# Tool: memory_extract
+# ──────────────────────────────────────────────
+@mcp.tool()
+async def memory_extract(memory_id: str) -> dict:
+    """Manually trigger entity extraction for a specific memory.
+
+    Args:
+        memory_id: The UUID of the memory to extract entities from.
+    """
+    memory = await queries.get_memory(memory_id)
+    if not memory:
+        return {"status": "not_found", "id": memory_id}
+
+    from nobrainr.extraction.pipeline import process_memory
+    await process_memory(memory_id, memory["content"], memory.get("tags"))
+    return {"status": "extracted", "id": memory_id}
+
+
+# ──────────────────────────────────────────────
+# Import tools (kept for backwards compat)
 # ──────────────────────────────────────────────
 @mcp.tool()
 async def memory_import_chatgpt(file_path: str, distill: bool = False) -> dict:
@@ -264,9 +367,6 @@ async def memory_import_chatgpt(file_path: str, distill: bool = False) -> dict:
     return await import_chatgpt_export(file_path, distill=distill)
 
 
-# ──────────────────────────────────────────────
-# Tool: memory_import_claude
-# ──────────────────────────────────────────────
 @mcp.tool()
 async def memory_import_claude(directory: str, machine_name: str | None = None) -> dict:
     """Import Claude memory files from a .claude directory.
@@ -279,9 +379,17 @@ async def memory_import_claude(directory: str, machine_name: str | None = None) 
     return await import_claude_memory(directory, machine_name=machine_name)
 
 
+# ──────────────────────────────────────────────
+# Entry points
+# ──────────────────────────────────────────────
+
 def main():
-    """Entry point for the MCP server."""
-    mcp.run(transport="sse")
+    """Entry point — run as parent ASGI app with dashboard + MCP."""
+    import uvicorn
+    from nobrainr.dashboard.app import create_app
+
+    app = create_app()
+    uvicorn.run(app, host=settings.host, port=settings.port, log_level="info")
 
 
 if __name__ == "__main__":

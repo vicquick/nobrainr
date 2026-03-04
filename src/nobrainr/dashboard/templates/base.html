@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}nobrainr{% endblock %}</title>
+    <script src="/static/js/vendor/htmx.min.js"></script>
+    <link rel="stylesheet" href="/static/css/dashboard.css">
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <nav class="topnav">
+        <a href="/dashboard" class="logo">nobrainr</a>
+        <div class="nav-links">
+            <a href="/dashboard" class="{% block nav_graph %}{% endblock %}">Graph</a>
+            <a href="/memories" class="{% block nav_memories %}{% endblock %}">Memories</a>
+            <a href="/timeline" class="{% block nav_timeline %}{% endblock %}">Timeline</a>
+        </div>
+        <div class="nav-stats" id="nav-stats"
+             hx-get="/api/stats" hx-trigger="load" hx-swap="innerHTML">
+        </div>
+    </nav>
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+    <template id="stats-template">
+        <span class="stat-pill" title="Total memories">&#x1f9e0; <span id="stat-memories"></span></span>
+        <span class="stat-pill" title="Entities">&#x1f310; <span id="stat-entities"></span></span>
+        <span class="stat-pill" title="Relations">&#x1f517; <span id="stat-relations"></span></span>
+    </template>
+    <script>
+    // Render stats from JSON endpoint into nav
+    document.body.addEventListener('htmx:afterSwap', function(evt) {
+        if (evt.detail.target.id === 'nav-stats') {
+            try {
+                const stats = JSON.parse(evt.detail.target.textContent);
+                evt.detail.target.innerHTML =
+                    '<span class="stat-pill">' + (stats.total_memories || 0) + ' memories</span>' +
+                    '<span class="stat-pill">' + (stats.total_entities || 0) + ' entities</span>' +
+                    '<span class="stat-pill">' + (stats.total_relations || 0) + ' relations</span>';
+            } catch(e) {}
+        }
+    });
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>
