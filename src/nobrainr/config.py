@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     extraction_model: str = "qwen2.5:7b"
     extraction_enabled: bool = True
 
+    # Scheduler
+    scheduler_enabled: bool = True
+    maintenance_interval_hours: float = 6.0
+    feedback_interval_hours: float = 12.0
+
     # Dashboard
     dashboard_user: str = ""
     dashboard_password: str = ""
