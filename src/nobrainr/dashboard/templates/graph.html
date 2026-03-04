@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Knowledge Graph — nobrainr{% endblock %}
+{% block nav_graph %}active{% endblock %}
+{% block head %}
+<script src="/static/js/vendor/cytoscape.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="graph-container">
+    <div class="graph-controls">
+        <select id="type-filter" onchange="filterGraph()">
+            <option value="">All types</option>
+            <option value="person">Person</option>
+            <option value="project">Project</option>
+            <option value="technology">Technology</option>
+            <option value="concept">Concept</option>
+            <option value="file">File</option>
+            <option value="config">Config</option>
+            <option value="error">Error</option>
+            <option value="location">Location</option>
+            <option value="organization">Organization</option>
+        </select>
+        <input type="text" id="search-input" placeholder="Search entities..."
+               oninput="searchGraph(this.value)">
+        <button onclick="resetGraph()" title="Reset view">Reset</button>
+    </div>
+    <div id="cy"></div>
+    <div id="side-panel" class="side-panel hidden">
+        <button class="close-btn" onclick="closeSidePanel()">&times;</button>
+        <div id="side-panel-content"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/graph.js"></script>
+{% endblock %}

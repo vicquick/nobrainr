@@ -18,7 +18,7 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # Ollama for local embeddings
+  # Ollama for local embeddings + extraction
   ollama:
     image: ollama/ollama:latest
     container_name: nobrainr-ollama
@@ -33,19 +33,19 @@ services:
       retries: 3
     restart: unless-stopped
 
-  # Pull the embedding model on first start
+  # Pull embedding + extraction models on first start
   ollama-init:
     image: ollama/ollama:latest
     container_name: nobrainr-ollama-init
     depends_on:
       ollama:
         condition: service_healthy
-    entrypoint: ["ollama", "pull", "nomic-embed-text"]
+    entrypoint: ["/bin/sh", "-c", "ollama pull nomic-embed-text && ollama pull qwen2.5:7b"]
     environment:
       OLLAMA_HOST: http://ollama:11434
     restart: "no"
 
-  # nobrainr MCP server
+  # nobrainr MCP server + dashboard
   nobrainr:
     build: .
     container_name: nobrainr-mcp
@@ -59,6 +59,10 @@ services:
       NOBRAINR_OLLAMA_URL: http://ollama:11434
       NOBRAINR_HOST: "0.0.0.0"
       NOBRAINR_PORT: "8420"
+      NOBRAINR_EXTRACTION_MODEL: ${NOBRAINR_EXTRACTION_MODEL:-qwen2.5:7b}
+      NOBRAINR_EXTRACTION_ENABLED: ${NOBRAINR_EXTRACTION_ENABLED:-true}
+      NOBRAINR_DASHBOARD_USER: ${NOBRAINR_DASHBOARD_USER:-}
+      NOBRAINR_DASHBOARD_PASSWORD: ${NOBRAINR_DASHBOARD_PASSWORD:-}
     ports:
       - "8420:8420"
     restart: unless-stopped

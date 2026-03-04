@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Timeline — nobrainr{% endblock %}
+{% block nav_timeline %}active{% endblock %}
+
+{% block content %}
+<div class="timeline-container">
+    <div class="timeline-controls">
+        <select id="tl-category" onchange="loadTimeline()">
+            <option value="">All categories</option>
+        </select>
+        <select id="tl-machine" onchange="loadTimeline()">
+            <option value="">All machines</option>
+        </select>
+        <button id="tl-load-more" onclick="loadMore()">Load more</button>
+    </div>
+    <div class="timeline" id="timeline">
+        <p class="loading">Loading timeline...</p>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/timeline.js"></script>
+{% endblock %}
