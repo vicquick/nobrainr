@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Memory Browser — nobrainr{% endblock %}
+{% block nav_memories %}active{% endblock %}
+
+{% block content %}
+<div class="memories-container">
+    <div class="memories-sidebar">
+        <h2>Memory Browser</h2>
+        <div class="search-box">
+            <input type="search" id="memory-search" name="q"
+                   placeholder="Semantic search..."
+                   hx-get="/api/memories"
+                   hx-trigger="keyup changed delay:300ms"
+                   hx-target="#memory-list"
+                   hx-include="[name='category'],[name='source_machine']"
+                   hx-indicator="#search-spinner">
+            <span id="search-spinner" class="htmx-indicator">Searching...</span>
+        </div>
+        <div class="filter-row">
+            <select name="category" id="category-filter"
+                    hx-get="/api/memories"
+                    hx-trigger="change"
+                    hx-target="#memory-list"
+                    hx-include="#memory-search,[name='source_machine']">
+                <option value="">All categories</option>
+            </select>
+            <select name="source_machine" id="machine-filter"
+                    hx-get="/api/memories"
+                    hx-trigger="change"
+                    hx-target="#memory-list"
+                    hx-include="#memory-search,[name='category']">
+                <option value="">All machines</option>
+            </select>
+        </div>
+        <div id="memory-list"
+             hx-get="/api/memories"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+            <p class="loading">Loading memories...</p>
+        </div>
+    </div>
+    <div class="memories-detail" id="memory-detail">
+        <p class="placeholder">Select a memory to view details</p>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Populate category dropdown
+fetch('/api/categories')
+    .then(r => r.json())
+    .then(cats => {
+        const sel = document.getElementById('category-filter');
+        cats.forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c; opt.textContent = c;
+            sel.appendChild(opt);
+        });
+    });
+// Populate machine dropdown from stats
+fetch('/api/stats')
+    .then(r => r.json())
+    .then(stats => {
+        const sel = document.getElementById('machine-filter');
+        (stats.by_machine || []).forEach(m => {
+            const opt = document.createElement('option');
+            opt.value = m.source_machine; opt.textContent = m.source_machine;
+            sel.appendChild(opt);
+        });
+    });
+</script>
+{% endblock %}

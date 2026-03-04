@@ -1,0 +1,45 @@
+<div class="node-header">
+    <span class="entity-badge type-{{ entity.entity_type }}">{{ entity.entity_type }}</span>
+    <h3>{{ entity.name }}</h3>
+</div>
+
+{% if entity.description %}
+<p class="node-description">{{ entity.description }}</p>
+{% endif %}
+
+<div class="node-stats">
+    <span>{{ entity.mention_count }} mentions</span>
+    <span>Created: {{ entity.created_at[:10] if entity.created_at else '' }}</span>
+</div>
+
+{% if connections %}
+<div class="node-connections">
+    <h4>Connections ({{ connections|length }})</h4>
+    {% for conn in connections %}
+    <div class="connection-item">
+        <span class="conn-direction {{ conn.direction }}">{{ conn.direction }}</span>
+        <span class="conn-type">{{ conn.relationship_type }}</span>
+        <span class="conn-target entity-badge type-{{ conn.connected_type }}">{{ conn.connected_name }}</span>
+        <span class="conn-confidence">{{ "%.0f"|format(conn.confidence * 100) }}%</span>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+{% if memories %}
+<div class="node-memories">
+    <h4>Related Memories ({{ memories|length }})</h4>
+    {% for mem in memories[:10] %}
+    <div class="memory-card compact"
+         hx-get="/api/memories/{{ mem.id }}"
+         hx-target="#memory-detail"
+         hx-swap="innerHTML">
+        {% if mem.summary %}
+        <h5>{{ mem.summary }}</h5>
+        {% endif %}
+        <p>{{ mem.content[:120] }}{% if mem.content|length > 120 %}...{% endif %}</p>
+        <span class="date">{{ mem.created_at[:10] if mem.created_at else '' }}</span>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}

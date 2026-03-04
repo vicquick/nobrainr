@@ -1,0 +1,42 @@
+# Traefik dynamic config for nobrainr.example.internal
+# Deploy to: /data/coolify/proxy/dynamic/nobrainr.yaml
+#
+# HTTPS for proper TLS cert, but locked to VPN IPs only.
+
+http:
+  middlewares:
+    vpn-only:
+      ipAllowList:
+        sourceRange:
+          - "<vpn-host>/24"
+          - "127.0.0.1/32"
+
+    redirect-to-https:
+      redirectScheme:
+        scheme: https
+        permanent: true
+
+  routers:
+    nobrainr-http:
+      rule: "Host(`nobrainr.example.internal`)"
+      entryPoints:
+        - http
+      middlewares:
+        - redirect-to-https
+      service: nobrainr
+
+    nobrainr-https:
+      rule: "Host(`nobrainr.example.internal`)"
+      entryPoints:
+        - https
+      tls:
+        certResolver: letsencrypt
+      middlewares:
+        - vpn-only
+      service: nobrainr
+
+  services:
+    nobrainr:
+      loadBalancer:
+        servers:
+          - url: "http://nobrainr-mcp:8420"
