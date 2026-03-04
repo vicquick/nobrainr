@@ -44,6 +44,7 @@ async def extract_entities(text: str) -> ExtractionResult:
                         "temperature": 0.1,
                         "num_ctx": 4096,
                     },
+                    "keep_alive": "5m",
                 },
             )
             resp.raise_for_status()
@@ -55,4 +56,4 @@ async def extract_entities(text: str) -> ExtractionResult:
 
     except Exception:
         logger.exception("Entity extraction failed")
-        return ExtractionResult()
+        raise
