@@ -1,0 +1,42 @@
+# Traefik dynamic config for mcp.budinic.art
+# Deploy to: /data/coolify/proxy/dynamic/nobrainr.yaml
+#
+# HTTPS for proper TLS cert, but locked to VPN IPs only.
+
+http:
+  middlewares:
+    vpn-only:
+      ipAllowList:
+        sourceRange:
+          - "10.10.10.0/24"
+          - "127.0.0.1/32"
+
+    redirect-to-https:
+      redirectScheme:
+        scheme: https
+        permanent: true
+
+  routers:
+    nobrainr-http:
+      rule: "Host(`mcp.budinic.art`)"
+      entryPoints:
+        - http
+      middlewares:
+        - redirect-to-https
+      service: nobrainr
+
+    nobrainr-https:
+      rule: "Host(`mcp.budinic.art`)"
+      entryPoints:
+        - https
+      tls:
+        certResolver: letsencrypt
+      middlewares:
+        - vpn-only
+      service: nobrainr
+
+  services:
+    nobrainr:
+      loadBalancer:
+        servers:
+          - url: "http://nobrainr-mcp:8420"
