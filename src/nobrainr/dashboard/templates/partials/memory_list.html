@@ -1,0 +1,30 @@
+{% if memories %}
+{% for mem in memories %}
+<div class="memory-card"
+     hx-get="/api/memories/{{ mem.id }}"
+     hx-target="#memory-detail"
+     hx-swap="innerHTML">
+    <div class="memory-header">
+        {% if mem.get('similarity') %}
+        <span class="badge score" title="Similarity">{{ "%.0f"|format(mem.similarity * 100) }}%</span>
+        {% endif %}
+        {% if mem.get('relevance') %}
+        <span class="badge relevance" title="Relevance">R{{ "%.0f"|format(mem.relevance * 100) }}</span>
+        {% endif %}
+        <span class="badge category">{{ mem.category or 'uncategorized' }}</span>
+    </div>
+    {% if mem.summary %}
+    <h4>{{ mem.summary }}</h4>
+    {% endif %}
+    <p class="memory-preview">{{ mem.content[:150] }}{% if mem.content|length > 150 %}...{% endif %}</p>
+    <div class="memory-meta">
+        <span class="date">{{ mem.created_at[:10] if mem.created_at else '' }}</span>
+        {% if mem.tags %}
+        <span class="tags">{{ mem.tags|join(', ') }}</span>
+        {% endif %}
+    </div>
+</div>
+{% endfor %}
+{% else %}
+<p class="empty">No memories found.</p>
+{% endif %}

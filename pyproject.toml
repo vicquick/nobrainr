@@ -1,7 +1,7 @@
 [project]
 name = "nobrainr"
-version = "0.1.0"
-description = "Collective agent memory service — PostgreSQL 18 + pgvector + MCP server"
+version = "0.2.0"
+description = "Collective agent memory service with knowledge graph — PostgreSQL 18 + pgvector + MCP server"
 requires-python = ">=3.12"
 dependencies = [
     "mcp[cli]>=1.9.0",
@@ -12,6 +12,10 @@ dependencies = [
     "pydantic-settings>=2.7.0",
     "click>=8.1.0",
     "rich>=13.9.0",
+    "jinja2>=3.1.0",
+    "starlette>=0.41.0",
+    "uvicorn>=0.32.0",
+    "numpy>=1.26.0",
 ]
 
 [project.optional-dependencies]

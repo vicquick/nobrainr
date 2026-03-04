@@ -22,5 +22,13 @@ class Settings(BaseSettings):
     default_search_limit: int = 10
     default_similarity_threshold: float = 0.3
 
+    # Extraction (knowledge graph)
+    extraction_model: str = "qwen2.5:7b"
+    extraction_enabled: bool = True
+
+    # Dashboard
+    dashboard_user: str = ""
+    dashboard_password: str = ""
+
 
 settings = Settings()

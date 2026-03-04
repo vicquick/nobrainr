@@ -19,32 +19,47 @@ def main():
 
 @main.command()
 def serve():
-    """Start the MCP server (SSE transport)."""
-    from nobrainr.mcp.server import mcp
-    console.print("[bold green]Starting nobrainr MCP server...[/]")
-    mcp.run(transport="sse")
+    """Start the MCP server with dashboard (ASGI app via uvicorn)."""
+    from nobrainr.mcp.server import main as server_main
+    console.print("[bold green]Starting nobrainr server...[/]")
+    server_main()
 
 
 @main.command()
 def status():
-    """Check database and embedding model status."""
+    """Check database, models, and knowledge graph status."""
     async def _status():
         from nobrainr.db.pool import get_pool, close_pool
         from nobrainr.db.schema import init_schema
         from nobrainr.embeddings.ollama import check_model
         from nobrainr.db import queries
+        from nobrainr.config import settings
 
         try:
             pool = await get_pool()
             await init_schema(pool)
             stats = await queries.get_stats()
             model_ok = await check_model()
-            await close_pool()
-            return stats, model_ok
-        except Exception as e:
-            return None, str(e)
 
-    stats, model_ok = asyncio.run(_status())
+            # Check extraction model
+            import httpx
+            extraction_ok = False
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(f"{settings.ollama_url}/api/tags")
+                    models = resp.json().get("models", [])
+                    extraction_ok = any(
+                        m["name"].startswith(settings.extraction_model) for m in models
+                    )
+            except Exception:
+                pass
+
+            await close_pool()
+            return stats, model_ok, extraction_ok
+        except Exception as e:
+            return None, str(e), False
+
+    stats, model_ok, extraction_ok = asyncio.run(_status())
 
     if stats is None:
         console.print(f"[bold red]Database connection failed:[/] {model_ok}")
@@ -56,7 +71,12 @@ def status():
 
     table.add_row("Total memories", str(stats["total_memories"]))
     table.add_row("Raw conversations", str(stats["raw_conversations"]))
-    table.add_row("Embedding model", "OK" if model_ok is True else "NOT FOUND")
+    table.add_row("Entities", str(stats.get("total_entities", 0)))
+    table.add_row("Relations", str(stats.get("total_relations", 0)))
+    table.add_row("Extracted", str(stats.get("extraction_done", 0)))
+    table.add_row("Pending extraction", str(stats.get("extraction_pending", 0)))
+    table.add_row("Embedding model", "[green]OK[/]" if model_ok is True else "[red]NOT FOUND[/]")
+    table.add_row("Extraction model", "[green]OK[/]" if extraction_ok else "[red]NOT FOUND[/]")
 
     for src in stats.get("by_source", []):
         table.add_row(f"  Source: {src['source_type']}", str(src["cnt"]))
@@ -109,13 +129,78 @@ def search(query, limit, threshold, tags, category):
 
     for i, mem in enumerate(results, 1):
         sim = mem.get("similarity", 0)
-        console.print(f"\n[bold cyan]#{i}[/] [dim](similarity: {sim:.4f})[/]")
+        rel = mem.get("relevance", 0)
+        console.print(f"\n[bold cyan]#{i}[/] [dim](sim: {sim:.4f} | rel: {rel:.4f})[/]")
         if mem.get("summary"):
             console.print(f"  [bold]{mem['summary']}[/]")
         console.print(f"  {mem['content'][:200]}...")
         tags_str = ", ".join(mem.get("tags", []))
         if tags_str:
             console.print(f"  [dim]Tags: {tags_str}[/]")
+
+
+@main.command("extract-backfill")
+@click.option("--batch-size", "-b", default=5, help="Memories per batch")
+def extract_backfill(batch_size):
+    """Run entity extraction on all unprocessed memories."""
+    async def _backfill():
+        from nobrainr.db.pool import get_pool, close_pool
+        from nobrainr.db.schema import init_schema
+        from nobrainr.extraction.pipeline import backfill
+
+        pool = await get_pool()
+        await init_schema(pool)
+
+        def on_progress(count, memory):
+            summary = memory.get("summary") or memory.get("content", "")[:60]
+            console.print(f"  [green]#{count}[/] {summary}")
+
+        total = await backfill(batch_size=batch_size, on_progress=on_progress)
+        await close_pool()
+        return total
+
+    console.print("[bold]Starting entity extraction backfill...[/]")
+    total = asyncio.run(_backfill())
+    console.print(f"\n[bold green]Done![/] Processed {total} memories.")
+
+
+@main.command()
+@click.option("--type", "-t", "entity_type", help="Filter by entity type")
+@click.option("--limit", "-l", default=50, help="Max results")
+def entities(entity_type, limit):
+    """List extracted entities from the knowledge graph."""
+    async def _entities():
+        from nobrainr.db.pool import get_pool, close_pool
+        from nobrainr.db.schema import init_schema
+        from nobrainr.db import queries as q
+
+        pool = await get_pool()
+        await init_schema(pool)
+        results = await q.list_entities(entity_type=entity_type, limit=limit)
+        await close_pool()
+        return results
+
+    results = asyncio.run(_entities())
+
+    if not results:
+        console.print("[yellow]No entities found.[/]")
+        return
+
+    table = Table(title=f"Entities ({len(results)})")
+    table.add_column("Name", style="cyan")
+    table.add_column("Type", style="green")
+    table.add_column("Mentions", style="yellow", justify="right")
+    table.add_column("Description", max_width=50)
+
+    for e in results:
+        table.add_row(
+            e["name"],
+            e["entity_type"],
+            str(e.get("mention_count", 0)),
+            (e.get("description") or "")[:50],
+        )
+
+    console.print(table)
 
 
 @main.command("import-chatgpt")
