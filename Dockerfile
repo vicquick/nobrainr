@@ -18,8 +18,9 @@ RUN uv pip install --system --no-cache .
 # Expose MCP SSE port
 EXPOSE 8420
 
-# Health check
+# Health check — /sse is a streaming endpoint so curl always "times out" (exit 28).
+# Exit 0 or 28 = healthy (server responded), anything else = unhealthy.
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=15s \
-    CMD curl -sf http://localhost:8420/sse || exit 1
+    CMD curl -sf --max-time 2 -o /dev/null http://localhost:8420/sse; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 28 ]
 
 CMD ["nobrainr-mcp"]
