@@ -174,9 +174,28 @@ async def api_node_detail(request: Request) -> HTMLResponse | JSONResponse:
 
 
 async def api_stats(request: Request) -> JSONResponse:
-    """Dashboard statistics."""
+    """Dashboard statistics including feedback and event counts."""
     stats = await queries.get_stats()
+    feedback_stats = await queries.get_feedback_stats()
+    stats.update(feedback_stats)
     return JSONResponse(stats)
+
+
+async def api_scheduler(request: Request) -> JSONResponse:
+    """Scheduler status, recent events, and feedback summary."""
+    from nobrainr.config import settings
+    from nobrainr.scheduler import scheduler
+
+    events = await queries.get_scheduler_events(limit=50)
+    feedback_stats = await queries.get_feedback_stats()
+    return JSONResponse({
+        "scheduler_running": scheduler.running,
+        "scheduler_enabled": settings.scheduler_enabled,
+        "maintenance_interval_hours": settings.maintenance_interval_hours,
+        "feedback_interval_hours": settings.feedback_interval_hours,
+        "feedback": feedback_stats,
+        "recent_events": events,
+    })
 
 
 async def api_categories(request: Request) -> JSONResponse:
@@ -200,6 +219,7 @@ api_routes = [
     Route("/api/timeline", api_timeline),
     Route("/api/node/{entity_id}", api_node_detail),
     Route("/api/stats", api_stats),
+    Route("/api/scheduler", api_scheduler),
     Route("/api/categories", api_categories),
     Route("/api/tags", api_tags),
 ]

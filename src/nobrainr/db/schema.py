@@ -231,10 +231,10 @@ BEGIN
     age_days := EXTRACT(EPOCH FROM (now() - mem_created_at)) / 86400.0;
     recency_boost := EXP(-0.023 * age_days);  -- ln(2)/30 ≈ 0.023
 
-    -- Weighted composite: 70% similarity + 15% recency + 10% importance + 5% stability
-    RETURN (0.70 * cosine_sim)
+    -- Weighted composite: 65% similarity + 15% recency + 15% importance + 5% stability
+    RETURN (0.65 * cosine_sim)
          + (0.15 * recency_boost)
-         + (0.10 * COALESCE(mem_importance, 0.0))
+         + (0.15 * COALESCE(mem_importance, 0.0))
          + (0.05 * COALESCE(mem_stability, 1.0));
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;

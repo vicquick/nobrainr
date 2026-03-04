@@ -358,6 +358,96 @@ async def decay_stability() -> int:
         return int(result.split()[-1]) if result else 0
 
 
+async def store_memory_outcome(
+    memory_id: str,
+    was_useful: bool,
+    *,
+    context: str | None = None,
+    agent_id: str | None = None,
+    session_id: str | None = None,
+) -> dict:
+    """Record feedback on whether a memory search result was useful."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO memory_outcomes (memory_id, was_useful, context, agent_id, session_id)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING id, created_at
+            """,
+            UUID(memory_id), was_useful, context, agent_id, session_id,
+        )
+        return {"id": str(row["id"]), "created_at": row["created_at"].isoformat()}
+
+
+async def integrate_feedback_scores() -> int:
+    """Adjust importance based on memory_outcomes feedback. Needs 2+ entries per memory.
+    Positive ratio adjusts importance by ±0.1 max. Returns count updated."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE memories m
+            SET importance = LEAST(1.0, GREATEST(0.0,
+                m.importance + (
+                    CASE
+                        WHEN fb.positive_ratio >= 0.5 THEN LEAST(0.1, (fb.positive_ratio - 0.5) * 0.2)
+                        ELSE GREATEST(-0.1, (fb.positive_ratio - 0.5) * 0.2)
+                    END
+                )
+            ))
+            FROM (
+                SELECT memory_id,
+                       COUNT(*) AS total,
+                       COUNT(*) FILTER (WHERE was_useful) ::real / COUNT(*) AS positive_ratio
+                FROM memory_outcomes
+                GROUP BY memory_id
+                HAVING COUNT(*) >= 2
+            ) fb
+            WHERE m.id = fb.memory_id
+            """
+        )
+        return int(result.split()[-1]) if result else 0
+
+
+async def log_agent_event(
+    event_type: str,
+    description: str,
+    *,
+    agent_id: str | None = None,
+    session_id: str | None = None,
+    category: str | None = None,
+    related_memory_ids: list[str] | None = None,
+    metadata: dict | None = None,
+) -> dict:
+    """Log an agent activity event."""
+    pool = await get_pool()
+    mem_ids = [UUID(mid) for mid in related_memory_ids] if related_memory_ids else None
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO agent_events (event_type, description, agent_id, session_id,
+                                      category, related_memory_ids, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+            RETURNING id, created_at
+            """,
+            event_type, description, agent_id, session_id,
+            category, mem_ids, _jsonb(metadata),
+        )
+        return {"id": str(row["id"]), "created_at": row["created_at"].isoformat()}
+
+
+async def log_scheduler_event(job_name: str, result: dict) -> None:
+    """Log a scheduler job execution as an agent event."""
+    await log_agent_event(
+        event_type="scheduler",
+        description=f"Scheduled job '{job_name}' completed",
+        agent_id="scheduler",
+        category="system",
+        metadata={"job": job_name, "result": result},
+    )
+
+
 async def set_extraction_status(memory_id: str, status: str) -> None:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -853,6 +943,44 @@ async def get_stats() -> dict:
             "by_category": [dict(r) for r in by_category],
             "by_machine": [dict(r) for r in by_machine],
             "top_tags": [dict(r) for r in top_tags],
+        }
+
+
+async def get_scheduler_events(limit: int = 50) -> list[dict]:
+    """Get recent scheduler and agent events for the dashboard."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, agent_id, event_type, category, description, metadata, created_at
+            FROM agent_events
+            ORDER BY created_at DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [_row_to_dict(row) for row in rows]
+
+
+async def get_feedback_stats() -> dict:
+    """Get feedback and archive statistics for the dashboard."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        feedback_total = await conn.fetchval("SELECT count(*) FROM memory_outcomes")
+        feedback_positive = await conn.fetchval(
+            "SELECT count(*) FROM memory_outcomes WHERE was_useful = true"
+        )
+        archived = await conn.fetchval(
+            "SELECT count(*) FROM memories WHERE category = '_archived'"
+        )
+        events_24h = await conn.fetchval(
+            "SELECT count(*) FROM agent_events WHERE created_at > now() - interval '24 hours'"
+        )
+        return {
+            "feedback_total": feedback_total,
+            "feedback_positive": feedback_positive,
+            "archived_memories": archived,
+            "events_24h": events_24h,
         }
 
 
