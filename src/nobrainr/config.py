@@ -31,6 +31,18 @@ class Settings(BaseSettings):
     maintenance_interval_hours: float = 6.0
     feedback_interval_hours: float = 12.0
 
+    # LLM scheduler jobs
+    scheduler_llm_model: str = "qwen2.5:7b"
+    summarize_interval_hours: float = 4.0
+    summarize_batch_size: int = 10
+    consolidation_interval_hours: float = 8.0
+    consolidation_batch_size: int = 5
+    synthesis_interval_hours: float = 24.0
+    synthesis_batch_size: int = 3
+    entity_enrichment_interval_hours: float = 12.0
+    entity_enrichment_batch_size: int = 10
+    insight_extraction_interval_hours: float = 6.0
+    insight_extraction_batch_size: int = 20
 
 
 settings = Settings()
