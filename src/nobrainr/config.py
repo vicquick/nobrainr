@@ -44,7 +44,8 @@ class Settings(BaseSettings):
     insight_extraction_interval_hours: float = 6.0
     insight_extraction_batch_size: int = 20
     chatgpt_distill_interval_hours: float = 0.25
-    chatgpt_distill_batch_size: int = 15
+    chatgpt_distill_batch_size: int = 20
+    chatgpt_distill_model: str = "qwen2.5:3b"
 
 
 settings = Settings()
