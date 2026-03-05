@@ -158,6 +158,7 @@ async def api_scheduler(request: Request) -> JSONResponse:
         {"name": "entity_enrichment", "interval_hours": settings.entity_enrichment_interval_hours, "type": "llm"},
         {"name": "consolidation", "interval_hours": settings.consolidation_interval_hours, "type": "llm"},
         {"name": "synthesis", "interval_hours": settings.synthesis_interval_hours, "type": "llm"},
+        {"name": "chatgpt_distill", "interval_hours": settings.chatgpt_distill_interval_hours, "type": "llm"},
     ]
 
     # Enrich with last_run and run_count from events

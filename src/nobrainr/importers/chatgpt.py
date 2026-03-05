@@ -178,7 +178,7 @@ async def distill_conversations(
                 user=convo_text,
                 schema=DISTILL_SCHEMA,
                 model=llm_model,
-                timeout=120.0,
+                timeout=300.0,
             )
 
             learnings = result.get("learnings", []) if result.get("has_learnings") else []
