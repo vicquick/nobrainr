@@ -25,3 +25,11 @@ if [ -n "$OLLAMA" ]; then
     docker network connect --alias ollama mcp "$OLLAMA"
     echo "Connected $OLLAMA to mcp with alias 'ollama'"
 fi
+
+# --- dashboard ---
+DASHBOARD_CONTAINER=$(docker ps --format '{{.Names}}' | grep -i dashboard | head -1)
+if [ -n "$DASHBOARD_CONTAINER" ]; then
+    docker network disconnect mcp "$DASHBOARD_CONTAINER" 2>/dev/null || true
+    docker network connect --alias brain-dashboard mcp "$DASHBOARD_CONTAINER"
+    echo "Connected $DASHBOARD_CONTAINER to mcp with alias 'brain-dashboard'"
+fi
