@@ -75,10 +75,14 @@ else
 fi
 echo "Permissions updated: $SETTINGS_FILE"
 
-# 5. Copy nobrainr-query.py from bimavo (single source of truth)
+# 5. Copy nobrainr scripts from bimavo (single source of truth)
 scp -q "root@${BIMAVO_IP}:~/.claude/scripts/nobrainr-query.py" "$SCRIPTS_DIR/nobrainr-query.py"
 chmod +x "$SCRIPTS_DIR/nobrainr-query.py"
 echo "Deployed: $SCRIPTS_DIR/nobrainr-query.py"
+
+scp -q "root@${BIMAVO_IP}:~/.claude/scripts/nobrainr-recall.sh" "$SCRIPTS_DIR/nobrainr-recall.sh"
+chmod +x "$SCRIPTS_DIR/nobrainr-recall.sh"
+echo "Deployed: $SCRIPTS_DIR/nobrainr-recall.sh"
 
 # 6. Deploy stop hook with auto session capture
 STOP_HOOK="$HOOKS_DIR/stop-validation.sh"
