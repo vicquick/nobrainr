@@ -56,7 +56,7 @@ export function useMemories() {
   function fetchMachines() {
     const statsStore = useStatsStore()
     if (statsStore.stats) {
-      machines.value = Object.keys(statsStore.stats.by_machine)
+      machines.value = statsStore.stats.by_machine.map(m => m.source_machine)
     }
   }
 

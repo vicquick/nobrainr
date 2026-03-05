@@ -7,6 +7,7 @@ from uuid import UUID
 import numpy as np
 
 from nobrainr.db.pool import get_pool
+from nobrainr.events import publish
 
 logger = logging.getLogger("nobrainr")
 
@@ -48,7 +49,9 @@ async def store_memory(
             confidence,
             _jsonb(metadata),
         )
-        return {"id": str(row["id"]), "created_at": row["created_at"].isoformat()}
+        result = {"id": str(row["id"]), "created_at": row["created_at"].isoformat()}
+        publish("memory_created", {"id": result["id"]})
+        return result
 
 
 async def find_similar_memories(
@@ -251,7 +254,10 @@ async def update_memory(
             """,
             *params,
         )
-        return _row_to_dict(row) if row else None
+        result = _row_to_dict(row) if row else None
+        if result:
+            publish("memory_updated", {"id": memory_id})
+        return result
 
 
 async def delete_memory(memory_id: str) -> bool:
@@ -261,7 +267,10 @@ async def delete_memory(memory_id: str) -> bool:
             "DELETE FROM memories WHERE id = $1",
             UUID(memory_id),
         )
-        return result == "DELETE 1"
+        deleted = result == "DELETE 1"
+        if deleted:
+            publish("memory_deleted", {"id": memory_id})
+        return deleted
 
 
 async def query_memories(
@@ -377,6 +386,7 @@ async def store_memory_outcome(
             """,
             UUID(memory_id), was_useful, context, agent_id, session_id,
         )
+        publish("feedback_added", {"memory_id": memory_id, "was_useful": was_useful})
         return {"id": str(row["id"]), "created_at": row["created_at"].isoformat()}
 
 
@@ -434,6 +444,7 @@ async def log_agent_event(
             event_type, description, agent_id, session_id,
             category, mem_ids, _jsonb(metadata),
         )
+        publish("agent_event", {"event_type": event_type, "id": str(row["id"])})
         return {"id": str(row["id"]), "created_at": row["created_at"].isoformat()}
 
 
