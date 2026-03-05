@@ -65,6 +65,7 @@ export interface SchedulerStatus {
     last_run: string | null
     next_run: string | null
     run_count: number
+    type?: string
   }>
 }
 

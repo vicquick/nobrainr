@@ -147,13 +147,56 @@ async def api_scheduler(request: Request) -> JSONResponse:
 
     events = await queries.get_scheduler_events(limit=50)
     feedback_stats = await queries.get_feedback_stats()
+
+    # Build jobs list with all registered jobs
+    jobs = [
+        {"name": "maintenance", "interval_hours": settings.maintenance_interval_hours, "type": "sql"},
+        {"name": "feedback_integration", "interval_hours": settings.feedback_interval_hours, "type": "sql"},
+        {"name": "auto_summarize", "interval_hours": settings.summarize_interval_hours, "type": "llm"},
+        {"name": "insight_extraction", "interval_hours": settings.insight_extraction_interval_hours, "type": "llm"},
+        {"name": "entity_enrichment", "interval_hours": settings.entity_enrichment_interval_hours, "type": "llm"},
+        {"name": "consolidation", "interval_hours": settings.consolidation_interval_hours, "type": "llm"},
+        {"name": "synthesis", "interval_hours": settings.synthesis_interval_hours, "type": "llm"},
+    ]
+
+    # Enrich with last_run and run_count from events
+    for job in jobs:
+        job_events = [e for e in events if e.get("metadata", {}).get("job") == job["name"]]
+        job["last_run"] = job_events[0]["created_at"] if job_events else None
+        job["run_count"] = len(job_events)
+
+    # Map feedback stats to frontend-expected shape
+    total = feedback_stats.get("feedback_total", 0)
+    positive = feedback_stats.get("feedback_positive", 0)
+    negative = total - positive
+    feedback = {
+        "total": total,
+        "positive": positive,
+        "negative": negative,
+        "positive_rate": positive / total if total > 0 else 0,
+        "archived_memories": feedback_stats.get("archived_memories", 0),
+        "events_24h": feedback_stats.get("events_24h", 0),
+    }
+
+    # Map events to frontend-expected shape
+    mapped_events = []
+    for e in events:
+        mapped_events.append({
+            "id": e["id"],
+            "event_type": e.get("event_type", ""),
+            "event_data": e.get("metadata", {}),
+            "source": e.get("agent_id"),
+            "created_at": e.get("created_at", ""),
+        })
+
     return JSONResponse({
         "scheduler_running": scheduler.running,
         "scheduler_enabled": settings.scheduler_enabled,
         "maintenance_interval_hours": settings.maintenance_interval_hours,
         "feedback_interval_hours": settings.feedback_interval_hours,
-        "feedback": feedback_stats,
-        "recent_events": events,
+        "jobs": jobs,
+        "feedback": feedback,
+        "recent_events": mapped_events,
     })
 
 

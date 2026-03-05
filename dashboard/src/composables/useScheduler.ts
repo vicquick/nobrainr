@@ -14,29 +14,26 @@ export function useScheduler() {
       const { data } = await api.get<{
         scheduler_running: boolean
         scheduler_enabled: boolean
-        maintenance_interval_hours: number
-        feedback_interval_hours: number
+        jobs: Array<{
+          name: string
+          interval_hours: number
+          type: string
+          last_run: string | null
+          run_count: number
+        }>
         feedback: FeedbackStats
         recent_events: AgentEvent[]
       }>('/api/scheduler')
       status.value = {
         running: data.scheduler_running,
-        tasks: [
-          {
-            name: 'maintenance',
-            interval_hours: data.maintenance_interval_hours,
-            last_run: null,
-            next_run: null,
-            run_count: 0,
-          },
-          {
-            name: 'feedback_integration',
-            interval_hours: data.feedback_interval_hours,
-            last_run: null,
-            next_run: null,
-            run_count: 0,
-          },
-        ],
+        tasks: (data.jobs || []).map(job => ({
+          name: job.name,
+          interval_hours: job.interval_hours,
+          last_run: job.last_run,
+          next_run: null,
+          run_count: job.run_count,
+          type: job.type,
+        })),
       }
       events.value = data.recent_events
       feedbackStats.value = data.feedback
