@@ -200,6 +200,17 @@ async def api_scheduler(request: Request) -> JSONResponse:
     })
 
 
+async def api_recall(request: Request) -> JSONResponse:
+    """Fast text-only memory search (PostgreSQL full-text, no embedding call)."""
+    q = request.query_params.get("q", "").strip()
+    if not q:
+        return JSONResponse([])
+
+    limit = int(request.query_params.get("limit", "5"))
+    memories = await queries.query_memories(text_query=q, limit=limit)
+    return JSONResponse(memories)
+
+
 async def api_categories(request: Request) -> JSONResponse:
     """Unique categories for filter dropdowns."""
     categories = await queries.get_categories()
@@ -222,6 +233,7 @@ api_routes = [
     Route("/api/node/{entity_id}", api_node_detail),
     Route("/api/stats", api_stats),
     Route("/api/scheduler", api_scheduler),
+    Route("/api/recall", api_recall),
     Route("/api/categories", api_categories),
     Route("/api/tags", api_tags),
 ]
