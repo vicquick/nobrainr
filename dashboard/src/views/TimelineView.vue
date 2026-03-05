@@ -93,6 +93,7 @@
 import { computed, watch, onMounted } from 'vue'
 import { useTimeline } from '@/composables/useTimeline'
 import { useStatsStore } from '@/stores/stats'
+import { useSSE } from '@/composables/useSSE'
 
 const statsStore = useStatsStore()
 const {
@@ -108,12 +109,12 @@ const {
 
 const categoryOptions = computed(() => {
   if (!statsStore.stats) return []
-  return Object.keys(statsStore.stats.by_category)
+  return statsStore.stats.by_category.map(c => c.category)
 })
 
 const machineOptions = computed(() => {
   if (!statsStore.stats) return []
-  return Object.keys(statsStore.stats.by_machine)
+  return statsStore.stats.by_machine.map(m => m.source_machine)
 })
 
 const groupedMemories = computed(() => {
@@ -129,6 +130,12 @@ const groupedMemories = computed(() => {
     groups[day].push(mem)
   }
   return Object.entries(groups).map(([date, items]) => ({ date, items }))
+})
+
+useSSE((evt) => {
+  if (['memory_created', 'memory_updated', 'memory_deleted'].includes(evt.type)) {
+    fetchTimeline()
+  }
 })
 
 watch([categoryFilter, machineFilter], () => {
