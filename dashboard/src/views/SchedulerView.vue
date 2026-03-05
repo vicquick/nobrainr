@@ -38,7 +38,10 @@
               </thead>
               <tbody>
                 <tr v-for="task in status.tasks" :key="task.name">
-                  <td class="font-weight-medium">{{ task.name }}</td>
+                  <td class="font-weight-medium">
+                    {{ task.name }}
+                    <v-chip v-if="task.type" size="x-small" variant="tonal" :color="task.type === 'llm' ? 'warning' : 'info'" class="ml-1">{{ task.type }}</v-chip>
+                  </td>
                   <td>{{ task.interval_hours }}h</td>
                   <td class="text-caption">{{ task.last_run ? new Date(task.last_run).toLocaleString() : '--' }}</td>
                   <td class="text-caption">{{ task.next_run ? new Date(task.next_run).toLocaleString() : '--' }}</td>
