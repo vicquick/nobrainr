@@ -1,21 +1,28 @@
-# nobrainr — Collective Agent Memory Service v2
+# nobrainr — Collective Agent Memory Service v3
 
 ## What This Is
 A shared memory service with knowledge graph for all Claude instances across the VPN (10.0.0.0/24).
 Provides relevance-ranked semantic search, automatic entity extraction, on-write dedup,
-and a web dashboard with interactive graph visualization.
+and a Vue 3 dashboard with interactive graph visualization.
 
 ## Architecture
-- **PostgreSQL 18 + pgvector** — storage, vector similarity, knowledge graph (entities + relations)
+- **Backend** — Python ASGI: FastMCP SSE + pure JSON API (Starlette)
+- **Frontend** — Vue 3 + Vuetify + Cytoscape.js (separate Coolify app, nginx)
+- **PostgreSQL 18 + pgvector** — storage, vector similarity, knowledge graph
 - **Ollama + nomic-embed-text** — local embeddings (768 dimensions)
 - **Ollama + qwen2.5:7b** — entity/relationship extraction (structured output)
-- **Python ASGI app** — FastMCP SSE + Starlette dashboard + HTMX + Cytoscape.js
 - **Deployed via Coolify** on myserver (10.0.0.2)
-- **Dashboard** at mcp.example.com (VPN-only via Traefik ipAllowList)
+- **Domain:** mcp.example.com (VPN-only via Traefik ipAllowList)
+
+### Routing (Traefik path-based on mcp.example.com)
+| Path | Target | Priority |
+|------|--------|----------|
+| `/api/*`, `/sse`, `/messages/*` | nobrainr backend (port 8420) | 100 |
+| `/*` (catch-all) | brain-dashboard (nginx, port 80) | 1 |
 
 ## Project Layout
 ```
-src/nobrainr/
+src/nobrainr/              # Python backend
 ├── config.py              # Settings via env vars (NOBRAINR_ prefix)
 ├── cli.py                 # CLI: serve, status, search, extract-backfill, entities, imports
 ├── db/
@@ -30,20 +37,43 @@ src/nobrainr/
 │   ├── dedup.py           # Memory dedup (vector + LLM merge decision)
 │   └── pipeline.py        # Full pipeline: extract → dedup → store → link
 ├── dashboard/
-│   ├── app.py             # Parent ASSI app: create_app(), lifespan
-│   ├── routes.py          # Page handlers (Jinja2 → HTMLResponse)
-│   ├── api.py             # JSON + HTMX fragment endpoints
-│   ├── auth.py            # BasicAuthMiddleware
-│   ├── templates/         # Jinja2 templates (base, graph, timeline, memories, partials)
-│   └── static/            # CSS + vendored JS (HTMX, Cytoscape.js) + custom JS
+│   ├── app.py             # Parent ASGI app: create_app(), lifespan
+│   └── api.py             # Pure JSON API endpoints
 ├── mcp/
-│   └── server.py          # FastMCP server with 12 MCP tools
+│   └── server.py          # FastMCP server with 14 MCP tools
 └── importers/
     ├── chatgpt.py         # ChatGPT conversations.json parser
     └── claude.py          # Claude .claude/ directory scanner
+
+dashboard/                  # Vue 3 frontend (separate Coolify app)
+├── Dockerfile             # node:20-alpine build → nginx:alpine serve
+├── nginx.conf             # SPA routing, gzip, cache
+├── package.json
+├── vite.config.ts
+└── src/
+    ├── main.ts            # App entry: Vue + Vuetify + Router + Pinia
+    ├── App.vue
+    ├── api/client.ts      # Axios instance (same-origin)
+    ├── plugins/vuetify.ts # Dark theme (#0d1117, #161b22, #58a6ff)
+    ├── router/index.ts    # /graph, /memories, /timeline, /scheduler
+    ├── stores/stats.ts    # Global stats (Pinia)
+    ├── types/index.ts     # TypeScript interfaces
+    ├── composables/       # useMemories, useGraph, useTimeline, useScheduler
+    ├── views/             # GraphView, MemoriesView, TimelineView, SchedulerView
+    └── components/        # AppBar, MemoryCard, MemoryDetail, EntityBadge, GraphSidePanel
 ```
 
-## MCP Tools (12 total)
+## API Endpoints (pure JSON)
+- `/api/graph` — Full graph data (Cytoscape elements format)
+- `/api/memories` — Search/list memories (query: q, category, source_machine, tags, limit, offset)
+- `/api/memories/{id}` — GET detail (+entities), POST update (JSON body), DELETE
+- `/api/timeline` — Memories by date (query: category, source_machine, limit, offset)
+- `/api/node/{id}` — Entity detail + connections + related memories
+- `/api/stats` — Statistics + feedback
+- `/api/scheduler` — Scheduler status + events + feedback
+- `/api/categories`, `/api/tags` — Filter values
+
+## MCP Tools (14 total)
 | Tool | Purpose |
 |------|---------|
 | `memory_store` | Store memory with auto-embedding, dedup check, async entity extraction |
@@ -60,40 +90,6 @@ src/nobrainr/
 | `memory_import_chatgpt` | Import ChatGPT export JSON |
 | `memory_import_claude` | Import Claude memory files |
 
-## Database Tables
-- **memories** — core knowledge entries + v2 columns (last_accessed_at, access_count, stability, importance, extraction_status)
-- **entities** — knowledge graph nodes (name, type, canonical_name, embedding, mention_count)
-- **entity_memories** — junction linking entities to memories (role, confidence)
-- **entity_relations** — knowledge graph edges (source, target, relationship_type, confidence)
-- **conversations_raw** — imported conversation archives
-- **agent_events** — activity log
-- **memory_outcomes** — feedback tracking
-
-## Key Commands
-```bash
-nobrainr serve                           # Start server (MCP + dashboard)
-nobrainr status                          # Check DB + models + graph stats
-nobrainr search "query"                  # CLI semantic search (relevance-ranked)
-nobrainr extract-backfill --batch-size 5 # Entity extraction on all unprocessed memories
-nobrainr entities --type technology      # List extracted entities
-nobrainr import-chatgpt conversations.json --distill
-nobrainr import-claude /root/.claude --machine myserver
-```
-
-## Dashboard URLs
-- `/dashboard` — Knowledge graph visualization (Cytoscape.js)
-- `/memories` — Memory browser with HTMX search
-- `/timeline` — Timeline view of memories
-
-## API Endpoints
-- `/api/graph` — Full graph data (Cytoscape elements format)
-- `/api/memories` — Search/list (HTMX or JSON)
-- `/api/memories/{id}` — Detail, update, delete
-- `/api/timeline` — Memories by date
-- `/api/node/{id}` — Entity detail + connections
-- `/api/stats` — Statistics
-- `/api/categories`, `/api/tags` — Filter values
-
 ## Client Connection
 ```json
 {
@@ -108,8 +104,9 @@ nobrainr import-claude /root/.claude --machine myserver
 
 ## Development
 ```bash
-uv sync                     # Install deps
-uv run nobrainr status      # Test connection
-uv run nobrainr serve       # Run locally
-uv run pytest               # Run tests
+# Backend
+uv sync && uv run nobrainr serve
+
+# Frontend (local dev with proxy to backend)
+cd dashboard && npm install && npm run dev
 ```
