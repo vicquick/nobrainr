@@ -322,3 +322,19 @@ async def insight_extraction() -> dict:
         "processed": processed,
         "ran_at": datetime.now().isoformat(),
     }
+
+
+async def chatgpt_distill() -> dict:
+    """Distill raw ChatGPT conversations into memory learnings."""
+    from nobrainr.importers.chatgpt import distill_conversations
+
+    result = await distill_conversations(
+        batch_size=settings.chatgpt_distill_batch_size,
+        llm_model=settings.scheduler_llm_model,
+    )
+    return {
+        "distilled": result["distilled"],
+        "processed": result["processed"],
+        "skipped": result["skipped"],
+        "ran_at": datetime.now().isoformat(),
+    }

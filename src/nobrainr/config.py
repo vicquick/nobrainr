@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     entity_enrichment_batch_size: int = 10
     insight_extraction_interval_hours: float = 6.0
     insight_extraction_batch_size: int = 20
+    chatgpt_distill_interval_hours: float = 0.5
+    chatgpt_distill_batch_size: int = 5
 
 
 settings = Settings()
