@@ -722,6 +722,23 @@ async def get_entity_memories(entity_id: str) -> list[dict]:
         return [_row_to_dict(row) for row in rows]
 
 
+async def get_memory_entities(memory_id: str) -> list[dict]:
+    """Get all entities linked to a memory."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT e.id, e.name, e.entity_type, em.role, em.confidence
+            FROM entities e
+            JOIN entity_memories em ON em.entity_id = e.id
+            WHERE em.memory_id = $1
+            ORDER BY em.confidence DESC
+            """,
+            UUID(memory_id),
+        )
+        return [_row_to_dict(row) for row in rows]
+
+
 # ──────────────────────────────────────────────
 # Dashboard / API queries
 # ──────────────────────────────────────────────

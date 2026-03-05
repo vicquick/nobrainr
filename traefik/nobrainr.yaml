@@ -2,6 +2,7 @@
 # Deploy to: /data/coolify/proxy/dynamic/nobrainr.yaml
 #
 # HTTPS for proper TLS cert, but locked to VPN IPs only.
+# Path-based routing: /api, /sse, /messages → backend; everything else → dashboard.
 
 http:
   middlewares:
@@ -17,26 +18,46 @@ http:
         permanent: true
 
   routers:
+    # HTTP → HTTPS redirect
     nobrainr-http:
       rule: "Host(`mcp.budinic.art`)"
       entryPoints:
         - http
       middlewares:
         - redirect-to-https
-      service: nobrainr
+      service: noop@internal
 
-    nobrainr-https:
+    # API + MCP routes (higher priority)
+    nobrainr-api:
+      rule: "Host(`mcp.budinic.art`) && (PathPrefix(`/api`) || PathPrefix(`/sse`) || PathPrefix(`/messages`))"
+      entryPoints:
+        - https
+      middlewares:
+        - vpn-only
+      service: nobrainr-backend
+      tls:
+        certResolver: letsencrypt
+      priority: 100
+
+    # Dashboard catch-all (lower priority)
+    nobrainr-dashboard:
       rule: "Host(`mcp.budinic.art`)"
       entryPoints:
         - https
-      tls:
-        certResolver: letsencrypt
       middlewares:
         - vpn-only
-      service: nobrainr
+      service: nobrainr-frontend
+      tls:
+        certResolver: letsencrypt
+      priority: 1
 
   services:
-    nobrainr:
+    nobrainr-backend:
       loadBalancer:
         servers:
           - url: "http://nobrainr:8420"
+
+    nobrainr-frontend:
+      loadBalancer:
+        servers:
+          - url: "http://brain-dashboard:80"

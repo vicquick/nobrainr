@@ -1,1 +1,1 @@
-"""Web dashboard for nobrainr knowledge graph visualization."""
+"""JSON API for nobrainr knowledge graph."""

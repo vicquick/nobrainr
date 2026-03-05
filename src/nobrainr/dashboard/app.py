@@ -1,26 +1,20 @@
-"""Parent ASGI app — mounts MCP server + dashboard + API."""
+"""Parent ASGI app — mounts MCP server + JSON API."""
 
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from starlette.applications import Starlette
 from starlette.routing import Mount
-from starlette.staticfiles import StaticFiles
 
 from nobrainr.config import settings
 from nobrainr.db.pool import get_pool, close_pool
 from nobrainr.db.schema import init_schema
 from nobrainr.embeddings.ollama import check_model
 
-from nobrainr.dashboard.auth import BasicAuthMiddleware
-from nobrainr.dashboard.routes import page_routes
 from nobrainr.dashboard.api import api_routes
 
 logger = logging.getLogger("nobrainr")
-
-STATIC_DIR = Path(__file__).parent / "static"
 
 
 async def _auto_backfill():
@@ -71,20 +65,18 @@ async def lifespan(app):
 
 
 def create_app():
-    """Build the parent Starlette app with MCP + dashboard mounted."""
+    """Build the parent Starlette app with MCP + API mounted."""
     from nobrainr.mcp.server import mcp
 
     # Get the MCP ASGI app (SSE transport)
     mcp_app = mcp.sse_app()
 
-    # Build all routes: dashboard pages + API + static + MCP catch-all
+    # Build all routes: API + MCP catch-all
     routes = [
-        *page_routes,
         *api_routes,
-        Mount("/static", app=StaticFiles(directory=str(STATIC_DIR)), name="static"),
         # MCP SSE app as catch-all (handles /sse and /messages/)
         Mount("/", app=mcp_app),
     ]
 
     app = Starlette(routes=routes, lifespan=lifespan)
-    return BasicAuthMiddleware(app)
+    return app
