@@ -64,7 +64,7 @@
           </v-col>
           <v-col cols="6" sm="4">
             <div class="text-caption text-medium-emphasis">Source</div>
-            <div class="text-body-2">{{ memory.source || '--' }}</div>
+            <div class="text-body-2">{{ memory.source_type || '--' }}</div>
           </v-col>
           <v-col cols="6" sm="4">
             <div class="text-caption text-medium-emphasis">Machine</div>
