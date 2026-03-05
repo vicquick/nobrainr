@@ -87,6 +87,7 @@
 import { watch, onMounted } from 'vue'
 import { useMemories } from '@/composables/useMemories'
 import { useStatsStore } from '@/stores/stats'
+import { useSSE } from '@/composables/useSSE'
 import MemoryCard from '@/components/MemoryCard.vue'
 import MemoryDetail from '@/components/MemoryDetail.vue'
 
@@ -143,6 +144,14 @@ watch(searchQuery, () => {
 
 watch([categoryFilter, machineFilter], () => {
   fetchMemories(buildParams())
+})
+
+useSSE((evt) => {
+  if (['memory_created', 'memory_updated', 'memory_deleted'].includes(evt.type)) {
+    fetchMemories(buildParams())
+    fetchCategories()
+    fetchMachines()
+  }
 })
 
 onMounted(async () => {
