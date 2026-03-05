@@ -4,7 +4,7 @@ export interface Memory {
   summary: string | null
   category: string | null
   tags: string[]
-  source: string | null
+  source_type: string | null
   source_machine: string | null
   importance: number
   stability: number
