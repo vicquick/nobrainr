@@ -201,14 +201,40 @@ async def api_scheduler(request: Request) -> JSONResponse:
 
 
 async def api_recall(request: Request) -> JSONResponse:
-    """Fast text-only memory search (PostgreSQL full-text, no embedding call)."""
+    """Fast text-only memory search (PostgreSQL full-text, no embedding call).
+
+    Uses OR semantics so any matching word returns results, ranked by relevance.
+    """
     q = request.query_params.get("q", "").strip()
     if not q:
         return JSONResponse([])
 
     limit = int(request.query_params.get("limit", "5"))
-    memories = await queries.query_memories(text_query=q, limit=limit)
-    return JSONResponse(memories)
+
+    # Build OR-joined tsquery for better recall on multi-word queries
+    words = q.split()
+    tsquery_expr = " | ".join(f"'{w}'" for w in words if w)
+    if not tsquery_expr:
+        return JSONResponse([])
+
+    from nobrainr.db.pool import get_pool
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, content, summary, source_type, source_machine, tags, category,
+                   confidence, metadata, created_at, updated_at, importance, stability,
+                   ts_rank(to_tsvector('english', content), to_tsquery('english', $1)) AS rank
+            FROM memories
+            WHERE to_tsvector('english', content) @@ to_tsquery('english', $1)
+            ORDER BY rank DESC, importance DESC
+            LIMIT $2
+            """,
+            tsquery_expr,
+            limit,
+        )
+        return JSONResponse([queries._row_to_dict(row) for row in rows])
 
 
 async def api_categories(request: Request) -> JSONResponse:
