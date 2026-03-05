@@ -154,6 +154,16 @@ async def distill_conversations(
         machine = source_machine or metadata.get("source_machine")
 
         try:
+            # Pre-filter: skip trivial conversations without LLM call
+            relevant_msgs = [m for m in messages if m.get("role") in ("user", "assistant")]
+            total_content = sum(len(m.get("content", "")) for m in relevant_msgs)
+
+            if len(relevant_msgs) < 3 or total_content < 200:
+                await _mark_distilled(convo_id, 0)
+                skipped += 1
+                processed += 1
+                continue
+
             # Compress conversation to fit LLM context
             convo_text = _compress_for_llm(title, messages, max_chars=4000)
 
