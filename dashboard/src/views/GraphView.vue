@@ -46,6 +46,7 @@ import { ref, watch, onMounted, onUnmounted } from 'vue'
 import cytoscape from 'cytoscape'
 import fcose from 'cytoscape-fcose'
 import { useGraph } from '@/composables/useGraph'
+import { useSSE } from '@/composables/useSSE'
 import GraphSidePanel from '@/components/GraphSidePanel.vue'
 
 cytoscape.use(fcose)
@@ -212,6 +213,13 @@ watch(typeFilter, (types) => {
       e.hide()
     }
   })
+})
+
+useSSE(async (evt) => {
+  if (['memory_created', 'memory_deleted'].includes(evt.type)) {
+    await fetchGraph()
+    initCytoscape()
+  }
 })
 
 onMounted(async () => {
