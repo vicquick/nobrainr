@@ -1,18 +1,11 @@
-"""API endpoints — JSON + HTMX fragment responses."""
-
-import json
-from pathlib import Path
+"""API endpoints — pure JSON responses."""
 
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, Response
+from starlette.responses import JSONResponse
 from starlette.routing import Route
-from jinja2 import Environment, FileSystemLoader
 
 from nobrainr.db import queries
 from nobrainr.embeddings.ollama import embed_text
-
-TEMPLATE_DIR = Path(__file__).parent / "templates"
-jinja_env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)), autoescape=True)
 
 
 async def api_graph(request: Request) -> JSONResponse:
@@ -21,8 +14,8 @@ async def api_graph(request: Request) -> JSONResponse:
     return JSONResponse(data)
 
 
-async def api_memories(request: Request) -> HTMLResponse | JSONResponse:
-    """Search/list memories. Returns HTMX fragment if HX-Request header present."""
+async def api_memories(request: Request) -> JSONResponse:
+    """Search/list memories."""
     q = request.query_params.get("q", "").strip()
     category = request.query_params.get("category") or None
     source_machine = request.query_params.get("source_machine") or None
@@ -50,56 +43,34 @@ async def api_memories(request: Request) -> HTMLResponse | JSONResponse:
             offset=offset,
         )
 
-    # HTMX request → return HTML fragment
-    if request.headers.get("HX-Request"):
-        template = jinja_env.get_template("partials/memory_list.html")
-        return HTMLResponse(template.render(memories=memories, query=q))
-
     return JSONResponse(memories)
 
 
-async def api_memory_detail(request: Request) -> HTMLResponse | JSONResponse:
+async def api_memory_detail(request: Request) -> JSONResponse:
     """Single memory detail."""
     memory_id = request.path_params["memory_id"]
     memory = await queries.get_memory(memory_id)
     if not memory:
-        return Response(status_code=404, content="Memory not found")
+        return JSONResponse({"error": "Memory not found"}, status_code=404)
 
-    # Get linked entities
-    from nobrainr.db.pool import get_pool
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        entity_rows = await conn.fetch(
-            """
-            SELECT e.id, e.name, e.entity_type, em.role, em.confidence
-            FROM entities e
-            JOIN entity_memories em ON em.entity_id = e.id
-            WHERE em.memory_id = $1
-            ORDER BY em.confidence DESC
-            """,
-            __import__("uuid").UUID(memory_id),
-        )
-    entities = [dict(r) for r in entity_rows]
-    for e in entities:
-        e["id"] = str(e["id"])
-
-    if request.headers.get("HX-Request"):
-        template = jinja_env.get_template("partials/memory_detail.html")
-        return HTMLResponse(template.render(memory=memory, entities=entities))
+    entities = await queries.get_memory_entities(memory_id)
 
     return JSONResponse({"memory": memory, "entities": entities})
 
 
-async def api_memory_update(request: Request) -> HTMLResponse | JSONResponse:
-    """Update a memory via POST."""
+async def api_memory_update(request: Request) -> JSONResponse:
+    """Update a memory via POST (JSON body)."""
     memory_id = request.path_params["memory_id"]
-    form = await request.form()
+    body = await request.json()
 
-    content = form.get("content")
-    summary = form.get("summary")
-    category = form.get("category")
-    tags_str = form.get("tags", "")
-    tags = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else None
+    content = body.get("content")
+    summary = body.get("summary")
+    category = body.get("category")
+    tags_raw = body.get("tags", "")
+    if isinstance(tags_raw, list):
+        tags = tags_raw if tags_raw else None
+    else:
+        tags = [t.strip() for t in tags_raw.split(",") if t.strip()] if tags_raw else None
 
     embedding = None
     if content:
@@ -114,24 +85,18 @@ async def api_memory_update(request: Request) -> HTMLResponse | JSONResponse:
         category=category or None,
     )
     if not updated:
-        return Response(status_code=404, content="Memory not found")
-
-    if request.headers.get("HX-Request"):
-        template = jinja_env.get_template("partials/memory_detail.html")
-        return HTMLResponse(template.render(memory=updated, entities=[]))
+        return JSONResponse({"error": "Memory not found"}, status_code=404)
 
     return JSONResponse(updated)
 
 
-async def api_memory_delete(request: Request) -> Response:
+async def api_memory_delete(request: Request) -> JSONResponse:
     """Delete a memory."""
     memory_id = request.path_params["memory_id"]
     deleted = await queries.delete_memory(memory_id)
     if deleted:
-        if request.headers.get("HX-Request"):
-            return HTMLResponse("")
         return JSONResponse({"status": "deleted"})
-    return Response(status_code=404, content="Memory not found")
+    return JSONResponse({"error": "Memory not found"}, status_code=404)
 
 
 async def api_timeline(request: Request) -> JSONResponse:
@@ -150,21 +115,15 @@ async def api_timeline(request: Request) -> JSONResponse:
     return JSONResponse(memories)
 
 
-async def api_node_detail(request: Request) -> HTMLResponse | JSONResponse:
+async def api_node_detail(request: Request) -> JSONResponse:
     """Entity detail + connections for graph node click."""
     entity_id = request.path_params["entity_id"]
     entity = await queries.get_entity_by_id(entity_id)
     if not entity:
-        return Response(status_code=404, content="Entity not found")
+        return JSONResponse({"error": "Entity not found"}, status_code=404)
 
     connections = await queries.get_entity_connections(entity_id)
     memories = await queries.get_entity_memories(entity_id)
-
-    if request.headers.get("HX-Request"):
-        template = jinja_env.get_template("partials/node_detail.html")
-        return HTMLResponse(template.render(
-            entity=entity, connections=connections, memories=memories
-        ))
 
     return JSONResponse({
         "entity": entity,

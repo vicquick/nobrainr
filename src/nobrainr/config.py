@@ -31,9 +31,6 @@ class Settings(BaseSettings):
     maintenance_interval_hours: float = 6.0
     feedback_interval_hours: float = 12.0
 
-    # Dashboard
-    dashboard_user: str = ""
-    dashboard_password: str = ""
 
 
 settings = Settings()
