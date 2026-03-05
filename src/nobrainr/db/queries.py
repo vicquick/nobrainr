@@ -448,6 +448,158 @@ async def log_scheduler_event(job_name: str, result: dict) -> None:
     )
 
 
+async def get_unsummarized_memories(limit: int = 10) -> list[dict]:
+    """Get memories with no summary and content longer than 50 chars."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, content
+            FROM memories
+            WHERE summary IS NULL AND LENGTH(content) > 50
+            ORDER BY created_at ASC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [_row_to_dict(row) for row in rows]
+
+
+async def get_similar_memory_pairs(
+    threshold: float = 0.88,
+    limit: int = 5,
+) -> list[dict]:
+    """Find memory pairs with high cosine similarity that haven't been consolidation-checked."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT a.id AS id_a, a.content AS content_a,
+                   b.id AS id_b, b.content AS content_b,
+                   1 - (a.embedding <=> b.embedding) AS similarity
+            FROM memories a
+            JOIN memories b ON a.id < b.id
+            WHERE a.embedding IS NOT NULL AND b.embedding IS NOT NULL
+              AND 1 - (a.embedding <=> b.embedding) > $1
+              AND NOT EXISTS (
+                  SELECT 1 FROM agent_events
+                  WHERE event_type = 'consolidation_checked'
+                    AND metadata->>'id_a' = a.id::text
+                    AND metadata->>'id_b' = b.id::text
+              )
+            ORDER BY (a.embedding <=> b.embedding) ASC
+            LIMIT $2
+            """,
+            threshold, limit,
+        )
+        return [_row_to_dict(row) for row in rows]
+
+
+async def mark_memories_consolidation_checked(id_a: str, id_b: str) -> None:
+    """Mark a pair of memories as checked for consolidation."""
+    await log_agent_event(
+        event_type="consolidation_checked",
+        description=f"Checked pair {id_a[:8]}../{id_b[:8]}.. for consolidation",
+        agent_id="scheduler",
+        category="system",
+        metadata={"id_a": id_a, "id_b": id_b},
+    )
+
+
+async def get_synthesis_candidates(limit: int = 3) -> list[dict]:
+    """Get entities with 3+ linked memories that haven't been synthesized in 7 days."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT e.id AS entity_id, e.name AS entity_name, e.entity_type,
+                   COUNT(em.memory_id) AS memory_count,
+                   ARRAY_AGG(m.content ORDER BY m.created_at DESC) AS memory_contents,
+                   ARRAY_AGG(m.id ORDER BY m.created_at DESC) AS memory_ids
+            FROM entities e
+            JOIN entity_memories em ON em.entity_id = e.id
+            JOIN memories m ON m.id = em.memory_id
+            WHERE NOT EXISTS (
+                SELECT 1 FROM agent_events
+                WHERE event_type = 'synthesis'
+                  AND metadata->>'entity_id' = e.id::text
+                  AND created_at > now() - interval '7 days'
+            )
+            GROUP BY e.id, e.name, e.entity_type
+            HAVING COUNT(em.memory_id) >= 3
+            ORDER BY COUNT(em.memory_id) DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [_row_to_dict(row) for row in rows]
+
+
+async def get_underdescribed_entities(limit: int = 10) -> list[dict]:
+    """Get entities with no/short description and 2+ mentions."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT e.id, e.name, e.entity_type, e.description, e.mention_count,
+                   ARRAY_AGG(m.content ORDER BY m.created_at DESC) AS memory_contents
+            FROM entities e
+            JOIN entity_memories em ON em.entity_id = e.id
+            JOIN memories m ON m.id = em.memory_id
+            WHERE (e.description IS NULL OR LENGTH(e.description) < 20)
+              AND e.mention_count >= 2
+            GROUP BY e.id, e.name, e.entity_type, e.description, e.mention_count
+            ORDER BY e.mention_count DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [_row_to_dict(row) for row in rows]
+
+
+async def update_entity_description(entity_id: str, description: str) -> None:
+    """Update an entity's description."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE entities SET description = $1 WHERE id = $2",
+            description, UUID(entity_id),
+        )
+
+
+async def get_unprocessed_events(limit: int = 20) -> list[dict]:
+    """Get agent events not yet processed for insight extraction."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, event_type, description, metadata, created_at, agent_id, category
+            FROM agent_events
+            WHERE event_type IN ('decision', 'error', 'task_complete', 'session_end')
+              AND NOT EXISTS (
+                  SELECT 1 FROM agent_events ae2
+                  WHERE ae2.event_type = 'insight_processed'
+                    AND ae2.metadata->>'source_event_id' = agent_events.id::text
+              )
+            ORDER BY created_at ASC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [_row_to_dict(row) for row in rows]
+
+
+async def mark_event_processed(event_id: str) -> None:
+    """Mark an agent event as processed for insight extraction."""
+    await log_agent_event(
+        event_type="insight_processed",
+        description=f"Processed event {event_id[:8]}.. for insights",
+        agent_id="scheduler",
+        category="system",
+        metadata={"source_event_id": event_id},
+    )
+
+
 async def set_extraction_status(memory_id: str, status: str) -> None:
     pool = await get_pool()
     async with pool.acquire() as conn:

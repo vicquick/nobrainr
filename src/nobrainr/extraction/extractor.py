@@ -1,11 +1,8 @@
 """Ollama structured output client for entity extraction."""
 
-import json
 import logging
 
-import httpx
-
-from nobrainr.config import settings
+from nobrainr.extraction.llm import ollama_chat
 from nobrainr.extraction.models import ExtractionResult
 
 logger = logging.getLogger("nobrainr")
@@ -29,30 +26,13 @@ Rules:
 async def extract_entities(text: str) -> ExtractionResult:
     """Extract entities and relationships from text using Ollama structured output."""
     try:
-        async with httpx.AsyncClient(timeout=180.0) as client:
-            resp = await client.post(
-                f"{settings.ollama_url}/api/chat",
-                json={
-                    "model": settings.extraction_model,
-                    "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": f"Extract entities and relationships from this memory:\n\n{text}"},
-                    ],
-                    "format": ExtractionResult.model_json_schema(),
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.1,
-                        "num_ctx": 4096,
-                    },
-                    "keep_alive": "5m",
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-
-            content = data["message"]["content"]
-            parsed = json.loads(content)
-            return ExtractionResult.model_validate(parsed)
+        parsed = await ollama_chat(
+            system=SYSTEM_PROMPT,
+            user=f"Extract entities and relationships from this memory:\n\n{text}",
+            schema=ExtractionResult.model_json_schema(),
+            keep_alive="5m",
+        )
+        return ExtractionResult.model_validate(parsed)
 
     except Exception:
         logger.exception("Entity extraction failed")
