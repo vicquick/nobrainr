@@ -18,10 +18,11 @@ LLM_JOB_DELAYS = {
     "entity_enrichment": 25 * 60,
     "consolidation": 35 * 60,
     "synthesis": 45 * 60,
+    "chatgpt_distill": 2 * 60,
 }
 
 # Per-job timeout for LLM operations
-LLM_JOB_TIMEOUT = 5 * 60  # 5 minutes
+LLM_JOB_TIMEOUT = 10 * 60  # 10 minutes (increased for distillation)
 
 
 class Scheduler:
@@ -73,6 +74,8 @@ class Scheduler:
              settings.consolidation_interval_hours * 3600),
             ("synthesis", scheduler_jobs.synthesis,
              settings.synthesis_interval_hours * 3600),
+            ("chatgpt_distill", scheduler_jobs.chatgpt_distill,
+             settings.chatgpt_distill_interval_hours * 3600),
         ]
 
         for name, job_func, interval in llm_jobs:
