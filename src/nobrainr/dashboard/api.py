@@ -1,11 +1,12 @@
-"""API endpoints — pure JSON responses."""
+"""API endpoints — pure JSON responses + SSE stream."""
 
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 from nobrainr.db import queries
 from nobrainr.embeddings.ollama import embed_text
+from nobrainr.events import subscribe
 
 
 async def api_graph(request: Request) -> JSONResponse:
@@ -237,6 +238,37 @@ async def api_recall(request: Request) -> JSONResponse:
         return JSONResponse([queries._row_to_dict(row) for row in rows])
 
 
+async def api_memory_feedback(request: Request) -> JSONResponse:
+    """Record feedback on a memory (was it useful?)."""
+    memory_id = request.path_params["memory_id"]
+    body = await request.json()
+    was_useful = body.get("was_useful", True)
+    context = body.get("context")
+    agent_id = body.get("agent_id")
+    session_id = body.get("session_id")
+
+    result = await queries.store_memory_outcome(
+        memory_id,
+        was_useful,
+        context=context,
+        agent_id=agent_id,
+        session_id=session_id,
+    )
+    return JSONResponse(result)
+
+
+async def api_events(request: Request) -> StreamingResponse:
+    """SSE stream for real-time dashboard updates."""
+    return StreamingResponse(
+        subscribe(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 async def api_categories(request: Request) -> JSONResponse:
     """Unique categories for filter dropdowns."""
     categories = await queries.get_categories()
@@ -255,6 +287,7 @@ api_routes = [
     Route("/api/memories/{memory_id}", api_memory_detail, methods=["GET"]),
     Route("/api/memories/{memory_id}", api_memory_update, methods=["POST"]),
     Route("/api/memories/{memory_id}", api_memory_delete, methods=["DELETE"]),
+    Route("/api/memories/{memory_id}/feedback", api_memory_feedback, methods=["POST"]),
     Route("/api/timeline", api_timeline),
     Route("/api/node/{entity_id}", api_node_detail),
     Route("/api/stats", api_stats),
@@ -262,4 +295,5 @@ api_routes = [
     Route("/api/recall", api_recall),
     Route("/api/categories", api_categories),
     Route("/api/tags", api_tags),
+    Route("/api/events", api_events),
 ]

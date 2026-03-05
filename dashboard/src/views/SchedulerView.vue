@@ -144,8 +144,15 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
 import { useScheduler } from '@/composables/useScheduler'
+import { useSSE } from '@/composables/useSSE'
 
 const { status, events, feedbackStats, loading, fetchScheduler } = useScheduler()
+
+useSSE((evt) => {
+  if (['agent_event', 'feedback_added'].includes(evt.type)) {
+    fetchScheduler()
+  }
+})
 
 onMounted(() => {
   fetchScheduler()
