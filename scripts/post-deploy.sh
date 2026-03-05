@@ -27,9 +27,9 @@ if [ -n "$OLLAMA" ]; then
 fi
 
 # --- dashboard ---
-DASHBOARD_CONTAINER=$(docker ps --format '{{.Names}}' | grep -i dashboard | head -1)
-if [ -n "$DASHBOARD_CONTAINER" ]; then
-    docker network disconnect mcp "$DASHBOARD_CONTAINER" 2>/dev/null || true
-    docker network connect --alias brain-dashboard mcp "$DASHBOARD_CONTAINER"
-    echo "Connected $DASHBOARD_CONTAINER to mcp with alias 'brain-dashboard'"
+DASHBOARD=$(docker ps --format '{{.Names}}' | grep '^k8kocgowg8sggc84cosso0o0-')
+if [ -n "$DASHBOARD" ]; then
+    docker network disconnect mcp "$DASHBOARD" 2>/dev/null || true
+    docker network connect --alias brain-dashboard mcp "$DASHBOARD"
+    echo "Connected $DASHBOARD to mcp with alias 'brain-dashboard'"
 fi
