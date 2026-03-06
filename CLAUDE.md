@@ -1,7 +1,11 @@
 # nobrainr — Collective Agent Memory Service
 
 ## What This Is
-A shared memory service with knowledge graph for AI agents.
+Persistent shared memory for AI coding agents. If you're an agent reading this:
+you can store learnings with `memory_store`, search past knowledge with `memory_search`,
+and explore the knowledge graph with `entity_search` / `entity_graph`. Everything you
+store is available to every other agent instance connected to this server.
+
 Provides relevance-ranked semantic search, automatic entity extraction, on-write dedup,
 and a Vue 3 dashboard with interactive graph visualization.
 
