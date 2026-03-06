@@ -1,0 +1,37 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  id-token: write  # Trusted Publishing
+  contents: write  # GitHub Release
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - run: uv sync --extra dev
+
+      - run: uv run ruff check src/
+
+      - run: uv run pytest
+
+      - run: uv build
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" dist/* --generate-notes
