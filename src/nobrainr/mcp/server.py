@@ -72,6 +72,7 @@ async def memory_store(
         confidence: How reliable is this knowledge (0.0-1.0, default 1.0).
         metadata: Any additional structured data.
     """
+    confidence = max(0.0, min(confidence, 1.0))
     embedding = await embed_text(content)
 
     # Dedup check: see if this memory should merge with an existing one
@@ -158,6 +159,8 @@ async def memory_search(
         source_machine: Filter to specific host.
         hybrid: Also apply text search on the query for hybrid results.
     """
+    limit = max(1, min(limit, 100))
+    threshold = max(0.0, min(threshold, 1.0))
     embedding = await embed_text(query)
     return await queries.search_memories(
         embedding=embedding,
@@ -195,6 +198,8 @@ async def memory_query(
         limit: Max results (default 50).
         offset: Pagination offset.
     """
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
     return await queries.query_memories(
         tags=tags,
         category=category,
@@ -488,8 +493,12 @@ async def memory_import_chatgpt(file_path: str, distill: bool = False) -> dict:
         file_path: Path to conversations.json from ChatGPT export.
         distill: If true, also extract key learnings into memories (slower).
     """
+    from pathlib import Path
+    resolved = Path(file_path).resolve()
+    if not resolved.is_file():
+        return {"error": f"File not found: {file_path}"}
     from nobrainr.importers.chatgpt import import_chatgpt_export
-    return await import_chatgpt_export(file_path, distill=distill)
+    return await import_chatgpt_export(str(resolved), distill=distill)
 
 
 @mcp.tool()
@@ -500,8 +509,12 @@ async def memory_import_claude(directory: str, machine_name: str | None = None) 
         directory: Path to the .claude directory (e.g. /root/.claude).
         machine_name: Name of the machine this came from.
     """
+    from pathlib import Path
+    resolved = Path(directory).resolve()
+    if not resolved.is_dir():
+        return {"error": f"Directory not found: {directory}"}
     from nobrainr.importers.claude import import_claude_memory
-    return await import_claude_memory(directory, machine_name=machine_name)
+    return await import_claude_memory(str(resolved), machine_name=machine_name)
 
 
 # ──────────────────────────────────────────────
