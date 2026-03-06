@@ -8,3 +8,4 @@ build/
 .git/
 tests/
 *.md
+!README.md
