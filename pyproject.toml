@@ -12,9 +12,6 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
-[project.urls]
-Repository = "https://github.com/youruser/nobrainr"
-Issues = "https://github.com/youruser/nobrainr/issues"
 dependencies = [
     "mcp[cli]>=1.9.0",
     "asyncpg>=0.30.0",
@@ -28,6 +25,10 @@ dependencies = [
     "uvicorn>=0.32.0",
     "numpy>=1.26.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/youruser/nobrainr"
+Issues = "https://github.com/youruser/nobrainr/issues"
 
 [project.optional-dependencies]
 dev = [
