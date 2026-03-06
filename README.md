@@ -1,8 +1,10 @@
 # nobrainr
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python 3.12+](https://img.shields.io/badge/Python-3.12+-green.svg)](https://python.org)
-[![MCP](https://img.shields.io/badge/MCP-SSE-purple.svg)](https://modelcontextprotocol.io)
+[![PyPI version](https://img.shields.io/pypi/v/nobrainr)](https://pypi.org/project/nobrainr/)
+[![Python 3.12+](https://img.shields.io/pypi/pyversions/nobrainr)](https://pypi.org/project/nobrainr/)
+[![License: MIT](https://img.shields.io/github/license/vicquick/nobrainr)](LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/vicquick/nobrainr/ci.yml?label=CI)](https://github.com/vicquick/nobrainr/actions)
+[![MCP](https://img.shields.io/badge/MCP-compatible-blue)](https://modelcontextprotocol.io)
 
 **Your AI agents forget everything between sessions. nobrainr fixes that.**
 
@@ -26,23 +28,36 @@ memory_store(content="pg_dump ignores --schema when used with --table",
 memory_search(query="postgres backup gotcha")
 ```
 
-### How it works
+### Architecture
 
-```
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│  machine A   │     │  machine B   │     │  machine C   │
-│  Claude Code │     │  Claude Code │     │  Claude Code  │
-└──────┬───────┘     └──────┬───────┘     └──────┬───────┘
-       │    MCP (SSE)       │                     │
-       └────────────────────┼─────────────────────┘
-                            │
-                    ┌───────▼────────┐
-                    │   nobrainr     │
-                    │   :8420/sse    │
-                    ├────────────────┤
-                    │ PG18+pgvector  │
-                    │ Ollama embeddings
-                    └────────────────┘
+```mermaid
+graph TB
+    subgraph Agents
+        A1[Claude Code<br/>Machine A]
+        A2[Claude Code<br/>Machine B]
+        A3[Cursor / Windsurf<br/>Machine C]
+    end
+
+    A1 & A2 & A3 -->|MCP SSE| NB
+
+    subgraph nobrainr [nobrainr server :8420]
+        NB[FastMCP SSE + JSON API]
+        NB --> EMB[Ollama<br/>nomic-embed-text]
+        NB --> EXT[Ollama<br/>qwen2.5:7b<br/>Entity Extraction]
+        NB --> PG[(PostgreSQL 18<br/>+ pgvector)]
+    end
+
+    subgraph Storage [Knowledge]
+        PG --> MEM[Memories<br/>vector similarity]
+        PG --> KG[Knowledge Graph<br/>entities + relations]
+        PG --> EVT[Events + Feedback]
+    end
+
+    NB --> DASH[Vue 3 Dashboard<br/>Graph · Memories · Timeline]
+
+    style nobrainr fill:#1a1a2e,stroke:#16213e,color:#e6e6e6
+    style Agents fill:#0d1117,stroke:#30363d,color:#e6e6e6
+    style Storage fill:#0d1117,stroke:#30363d,color:#e6e6e6
 ```
 
 Fully local. No API keys. No cloud. Your data stays on your hardware. Built on PostgreSQL + pgvector for storage, Ollama for free local embeddings, and MCP (SSE) as the standard interface.
@@ -85,10 +100,14 @@ uv run nobrainr serve
 cd dashboard && npm install && npm run dev
 ```
 
-## Connect Claude Code
+## Connect your AI client
+
+Replace `<your-server>` with your nobrainr host IP or domain.
+
+<details>
+<summary><b>Claude Code</b></summary>
 
 Add to `~/.claude/mcp.json`:
-
 ```json
 {
   "mcpServers": {
@@ -100,14 +119,51 @@ Add to `~/.claude/mcp.json`:
 }
 ```
 
-Add `"nobrainr"` to `enabledMcpjsonServers` and `"mcp__nobrainr"` to `permissions.allow` in `~/.claude/settings.json`.
-
-There's a setup script that automates this:
-
+Or use the setup script:
 ```bash
-# On the machine where Claude Code runs:
 NOBRAINR_HOST=<your-server> bash scripts/setup-client.sh
 ```
+</details>
+
+<details>
+<summary><b>Claude Desktop</b></summary>
+
+Add to `claude_desktop_config.json` (Settings > Developer > Edit Config):
+```json
+{
+  "mcpServers": {
+    "nobrainr": {
+      "type": "sse",
+      "url": "http://<your-server>:8420/sse"
+    }
+  }
+}
+```
+</details>
+
+<details>
+<summary><b>Cursor</b></summary>
+
+Settings > MCP > Add Server:
+- **Type:** SSE
+- **URL:** `http://<your-server>:8420/sse`
+</details>
+
+<details>
+<summary><b>Windsurf / Cline / any MCP client</b></summary>
+
+Any MCP-compatible client that supports SSE transport can connect:
+```json
+{
+  "mcpServers": {
+    "nobrainr": {
+      "type": "sse",
+      "url": "http://<your-server>:8420/sse"
+    }
+  }
+}
+```
+</details>
 
 ## MCP Tools
 
