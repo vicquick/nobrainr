@@ -227,7 +227,7 @@ def import_chatgpt(file_path, distill):
 
 @main.command("import-claude")
 @click.argument("directory")
-@click.option("--machine", "-m", help="Machine name (e.g. 'myserver', 'workserver')")
+@click.option("--machine", "-m", help="Machine name (e.g. 'my-server', 'laptop')")
 def import_claude(directory, machine):
     """Import Claude memory files from .claude directory."""
     async def _import():

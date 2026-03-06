@@ -8,3 +8,5 @@ build/
 *.bak
 .ruff_cache/
 .pytest_cache/
+.claude/
+node_modules/

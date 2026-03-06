@@ -67,7 +67,7 @@ async def memory_store(
         tags: List of tags for categorization (e.g. ["python", "debugging", "asyncio"]).
         category: High-level category (e.g. "architecture", "debugging", "ops", "pattern").
         source_type: Where this came from ("manual", "chatgpt", "claude", "agent").
-        source_machine: Which VPN host generated this (e.g. "myserver", "workserver").
+        source_machine: Which host generated this (e.g. "my-server", "laptop").
         source_ref: Reference to original source (conversation ID, file path, etc.).
         confidence: How reliable is this knowledge (0.0-1.0, default 1.0).
         metadata: Any additional structured data.
