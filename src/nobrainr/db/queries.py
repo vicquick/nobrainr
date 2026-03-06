@@ -1091,7 +1091,18 @@ async def list_entities(
 async def get_stats() -> dict:
     pool = await get_pool()
     async with pool.acquire() as conn:
-        total = await conn.fetchval("SELECT count(*) FROM memories")
+        # Single query for all scalar counts
+        counts = await conn.fetchrow(
+            """
+            SELECT
+                (SELECT count(*) FROM memories) AS total_memories,
+                (SELECT count(*) FROM conversations_raw) AS raw_conversations,
+                (SELECT count(*) FROM entities) AS total_entities,
+                (SELECT count(*) FROM entity_relations WHERE valid = true) AS total_relations,
+                (SELECT count(*) FROM memories WHERE extraction_status = 'done') AS extraction_done,
+                (SELECT count(*) FROM memories WHERE extraction_status IS NULL OR extraction_status = 'failed') AS extraction_pending
+            """
+        )
         by_source = await conn.fetch(
             "SELECT source_type, count(*) as cnt FROM memories GROUP BY source_type ORDER BY cnt DESC"
         )
@@ -1104,21 +1115,14 @@ async def get_stats() -> dict:
         top_tags = await conn.fetch(
             "SELECT unnest(tags) as tag, count(*) as cnt FROM memories GROUP BY tag ORDER BY cnt DESC LIMIT 20"
         )
-        raw_convos = await conn.fetchval("SELECT count(*) FROM conversations_raw")
-        total_entities = await conn.fetchval("SELECT count(*) FROM entities")
-        total_relations = await conn.fetchval("SELECT count(*) FROM entity_relations WHERE valid = true")
-        extracted = await conn.fetchval("SELECT count(*) FROM memories WHERE extraction_status = 'done'")
-        pending = await conn.fetchval(
-            "SELECT count(*) FROM memories WHERE extraction_status IS NULL OR extraction_status = 'failed'"
-        )
 
         return {
-            "total_memories": total,
-            "raw_conversations": raw_convos,
-            "total_entities": total_entities,
-            "total_relations": total_relations,
-            "extraction_done": extracted,
-            "extraction_pending": pending,
+            "total_memories": counts["total_memories"],
+            "raw_conversations": counts["raw_conversations"],
+            "total_entities": counts["total_entities"],
+            "total_relations": counts["total_relations"],
+            "extraction_done": counts["extraction_done"],
+            "extraction_pending": counts["extraction_pending"],
             "by_source": [dict(r) for r in by_source],
             "by_category": [dict(r) for r in by_category],
             "by_machine": [dict(r) for r in by_machine],

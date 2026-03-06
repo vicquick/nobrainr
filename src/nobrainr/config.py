@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     default_search_limit: int = 10
     default_similarity_threshold: float = 0.3
 
+    # Security
+    cors_origins: list[str] = ["*"]
+    max_content_length: int = 50000  # 50KB max memory content
+
     # Extraction (knowledge graph)
     extraction_model: str = "qwen2.5:7b"
     extraction_enabled: bool = True

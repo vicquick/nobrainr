@@ -9,6 +9,15 @@ from nobrainr.config import settings
 
 logger = logging.getLogger("nobrainr")
 
+_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None or _client.is_closed:
+        _client = httpx.AsyncClient(base_url=settings.ollama_url, timeout=180.0)
+    return _client
+
 
 async def ollama_chat(
     system: str,
@@ -39,24 +48,25 @@ async def ollama_chat(
     Raises:
         Exception on HTTP or parsing errors.
     """
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(
-            f"{settings.ollama_url}/api/chat",
-            json={
-                "model": model or settings.extraction_model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                "format": schema,
-                "stream": False,
-                "options": {
-                    "temperature": temperature,
-                    "num_ctx": num_ctx,
-                },
-                "keep_alive": keep_alive,
+    client = _get_client()
+    resp = await client.post(
+        "/api/chat",
+        json={
+            "model": model or settings.extraction_model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "format": schema,
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "num_ctx": num_ctx,
             },
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return json.loads(data["message"]["content"])
+            "keep_alive": keep_alive,
+        },
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return json.loads(data["message"]["content"])

@@ -5,6 +5,8 @@ import logging
 from contextlib import asynccontextmanager
 
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
 from starlette.routing import Mount
 
 from nobrainr.config import settings
@@ -116,5 +118,14 @@ def create_app():
         Mount("/", app=mcp_app),
     ]
 
-    app = Starlette(routes=routes, lifespan=lifespan)
+    middleware = [
+        Middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origins,
+            allow_methods=["GET", "POST", "DELETE"],
+            allow_headers=["*"],
+        ),
+    ]
+
+    app = Starlette(routes=routes, lifespan=lifespan, middleware=middleware)
     return app

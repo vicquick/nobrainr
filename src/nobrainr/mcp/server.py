@@ -2,12 +2,19 @@
 
 import asyncio
 import logging
+from uuid import UUID
 
 from mcp.server.fastmcp import FastMCP
 
 from nobrainr.config import settings
 from nobrainr.db import queries
 from nobrainr.embeddings.ollama import embed_text
+
+
+def _validate_uuid(value: str) -> str:
+    """Validate and return a UUID string. Raises ValueError on invalid input."""
+    UUID(value)
+    return value
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("nobrainr")
@@ -72,6 +79,9 @@ async def memory_store(
         confidence: How reliable is this knowledge (0.0-1.0, default 1.0).
         metadata: Any additional structured data.
     """
+    if len(content) > settings.max_content_length:
+        return {"error": f"Content too large ({len(content)} chars, max {settings.max_content_length})"}
+
     confidence = max(0.0, min(confidence, 1.0))
     embedding = await embed_text(content)
 
@@ -221,6 +231,10 @@ async def memory_get(memory_id: str) -> dict | None:
     Args:
         memory_id: The UUID of the memory to retrieve.
     """
+    try:
+        _validate_uuid(memory_id)
+    except ValueError:
+        return {"error": "Invalid memory_id format"}
     return await queries.get_memory(memory_id)
 
 
@@ -248,6 +262,10 @@ async def memory_update(
         confidence: New confidence score.
         metadata: Additional metadata to merge.
     """
+    try:
+        _validate_uuid(memory_id)
+    except ValueError:
+        return {"error": "Invalid memory_id format"}
     embedding = None
     if content is not None:
         embedding = await embed_text(content)
@@ -274,6 +292,10 @@ async def memory_delete(memory_id: str) -> dict:
     Args:
         memory_id: The UUID of the memory to delete.
     """
+    try:
+        _validate_uuid(memory_id)
+    except ValueError:
+        return {"error": "Invalid memory_id format"}
     deleted = await queries.delete_memory(memory_id)
     if deleted:
         return {"status": "deleted", "id": memory_id}
@@ -367,6 +389,10 @@ async def memory_extract(memory_id: str) -> dict:
     Args:
         memory_id: The UUID of the memory to extract entities from.
     """
+    try:
+        _validate_uuid(memory_id)
+    except ValueError:
+        return {"error": "Invalid memory_id format"}
     memory = await queries.get_memory(memory_id)
     if not memory:
         return {"status": "not_found", "id": memory_id}
@@ -394,6 +420,10 @@ async def memory_feedback(
         was_useful: True if the memory was helpful, False if not.
         context: Optional context about how/why it was or wasn't useful.
     """
+    try:
+        _validate_uuid(memory_id)
+    except ValueError:
+        return {"error": "Invalid memory_id format"}
     result = await queries.store_memory_outcome(
         memory_id, was_useful, context=context,
     )

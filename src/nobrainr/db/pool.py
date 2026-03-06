@@ -19,8 +19,8 @@ async def get_pool() -> asyncpg.Pool:
         if _pool is None:
             _pool = await asyncpg.create_pool(
                 settings.database_url,
-                min_size=2,
-                max_size=10,
+                min_size=5,
+                max_size=25,
                 init=_init_connection,
             )
     return _pool
@@ -28,6 +28,12 @@ async def get_pool() -> asyncpg.Pool:
 
 async def _init_connection(conn: asyncpg.Connection) -> None:
     await register_vector(conn)
+    await conn.execute("SET hnsw.ef_search = 100")
+    # pgvector 0.8.0+: iterative scan for filtered vector queries
+    try:
+        await conn.execute("SET hnsw.iterative_scan = on")
+    except Exception:
+        pass  # older pgvector versions don't support this
 
 
 async def close_pool() -> None:
