@@ -31,7 +31,6 @@ logger = logging.getLogger("nobrainr")
 def _patch_mcp_session_init_race():
     try:
         from mcp.server.session import ServerSession, InitializationState
-        import types as _types
 
         _original = ServerSession._received_request
 
