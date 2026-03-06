@@ -107,17 +107,36 @@ function initCytoscape() {
         style: {
           'line-color': '#30363d',
           width: (ele: cytoscape.EdgeSingular) =>
-            Math.max(1, Math.min(5, (ele.data('confidence') || 0.5) * 5)),
+            Math.max(1, Math.min(4, (ele.data('confidence') || 0.5) * 4)),
           'curve-style': 'bezier',
           'target-arrow-shape': 'triangle',
           'target-arrow-color': '#30363d',
+          label: '',
+          opacity: 0.6,
+        } as cytoscape.Css.Edge,
+      },
+      {
+        selector: 'edge.highlighted',
+        style: {
           label: 'data(label)',
           'font-size': '8px',
           color: '#8b949e',
           'text-rotation': 'autorotate',
           'text-outline-color': '#0d1117',
           'text-outline-width': 1,
+          opacity: 1,
+          'line-color': '#58a6ff',
+          'target-arrow-color': '#58a6ff',
         } as cytoscape.Css.Edge,
+      },
+      {
+        selector: 'node[[degree = 0]]',
+        style: {
+          opacity: 0.4,
+          width: 12,
+          height: 12,
+          'font-size': '7px',
+        } as cytoscape.Css.Node,
       },
       {
         selector: '.dimmed',
@@ -131,13 +150,18 @@ function initCytoscape() {
     layout: {
       name: 'fcose',
       quality: 'default',
-      nodeRepulsion: 8000,
-      idealEdgeLength: 120,
-      gravity: 0.25,
-      numIter: 2500,
+      nodeRepulsion: 50000,
+      idealEdgeLength: 200,
+      edgeElasticity: 0.1,
+      gravity: 0.05,
+      gravityRange: 1.5,
+      numIter: 5000,
+      nodeSeparation: 100,
       animate: false,
+      fit: true,
+      padding: 50,
     } as cytoscape.LayoutOptions,
-    minZoom: 0.1,
+    minZoom: 0.05,
     maxZoom: 5,
   })
 
