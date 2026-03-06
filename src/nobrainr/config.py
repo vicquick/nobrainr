@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     maintenance_interval_hours: float = 6.0
     feedback_interval_hours: float = 12.0
 
+    # Machine identifier for scheduler-created memories (defaults to hostname)
+    source_machine: str = ""
+
     # LLM scheduler jobs
     scheduler_llm_model: str = "qwen2.5:7b"
     summarize_interval_hours: float = 4.0

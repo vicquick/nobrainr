@@ -30,7 +30,7 @@ RELATIONSHIP_TYPES = Literal[
 
 
 class ExtractedEntity(BaseModel):
-    name: str = Field(description="Entity name (e.g. 'PostgreSQL', 'myserver', 'John')")
+    name: str = Field(description="Entity name (e.g. 'PostgreSQL', 'Docker', 'nginx')")
     entity_type: ENTITY_TYPES = Field(description="Type of entity")
     description: str = Field(description="Brief description of the entity in context")
 

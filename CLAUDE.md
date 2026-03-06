@@ -1,24 +1,22 @@
-# nobrainr — Collective Agent Memory Service v3
+# nobrainr — Collective Agent Memory Service
 
 ## What This Is
-A shared memory service with knowledge graph for all Claude instances across the VPN (10.0.0.0/24).
+A shared memory service with knowledge graph for AI agents.
 Provides relevance-ranked semantic search, automatic entity extraction, on-write dedup,
 and a Vue 3 dashboard with interactive graph visualization.
 
 ## Architecture
 - **Backend** — Python ASGI: FastMCP SSE + pure JSON API (Starlette)
-- **Frontend** — Vue 3 + Vuetify + Cytoscape.js (separate Coolify app, nginx)
+- **Frontend** — Vue 3 + Vuetify + Cytoscape.js (separate container, nginx)
 - **PostgreSQL 18 + pgvector** — storage, vector similarity, knowledge graph
 - **Ollama + nomic-embed-text** — local embeddings (768 dimensions)
-- **Ollama + qwen2.5:7b** — entity/relationship extraction (structured output)
-- **Deployed via Coolify** on myserver (10.0.0.2)
-- **Domain:** mcp.example.com (VPN-only via Traefik ipAllowList)
+- **Ollama + qwen2.5:7b** — entity/relationship extraction (structured output, optional)
 
-### Routing (Traefik path-based on mcp.example.com)
-| Path | Target | Priority |
-|------|--------|----------|
-| `/api/*`, `/sse`, `/messages/*` | nobrainr backend (port 8420) | 100 |
-| `/*` (catch-all) | brain-dashboard (nginx, port 80) | 1 |
+### Routing (when using a reverse proxy)
+| Path | Target |
+|------|--------|
+| `/api/*`, `/sse`, `/messages/*` | nobrainr backend (port 8420) |
+| `/*` (catch-all) | dashboard (nginx, port 80) |
 
 ## Project Layout
 ```
@@ -35,17 +33,20 @@ src/nobrainr/              # Python backend
 │   ├── models.py          # Pydantic: ExtractedEntity, ExtractedRelationship, ExtractionResult
 │   ├── extractor.py       # Ollama /api/chat with structured output
 │   ├── dedup.py           # Memory dedup (vector + LLM merge decision)
+│   ├── llm.py             # Shared Ollama chat helper
 │   └── pipeline.py        # Full pipeline: extract → dedup → store → link
 ├── dashboard/
 │   ├── app.py             # Parent ASGI app: create_app(), lifespan
 │   └── api.py             # Pure JSON API endpoints
 ├── mcp/
-│   └── server.py          # FastMCP server with 14 MCP tools
+│   └── server.py          # FastMCP server with all MCP tools
+├── scheduler.py           # APScheduler background job runner
+├── scheduler_jobs.py      # Autonomous learning jobs (summarize, consolidate, synthesize, etc.)
 └── importers/
     ├── chatgpt.py         # ChatGPT conversations.json parser
     └── claude.py          # Claude .claude/ directory scanner
 
-dashboard/                  # Vue 3 frontend (separate Coolify app)
+dashboard/                  # Vue 3 frontend (separate build)
 ├── Dockerfile             # node:20-alpine build → nginx:alpine serve
 ├── nginx.conf             # SPA routing, gzip, cache
 ├── package.json
@@ -54,7 +55,7 @@ dashboard/                  # Vue 3 frontend (separate Coolify app)
     ├── main.ts            # App entry: Vue + Vuetify + Router + Pinia
     ├── App.vue
     ├── api/client.ts      # Axios instance (same-origin)
-    ├── plugins/vuetify.ts # Dark theme (#0d1117, #161b22, #58a6ff)
+    ├── plugins/vuetify.ts # Dark theme
     ├── router/index.ts    # /graph, /memories, /timeline, /scheduler
     ├── stores/stats.ts    # Global stats (Pinia)
     ├── types/index.ts     # TypeScript interfaces
@@ -73,7 +74,7 @@ dashboard/                  # Vue 3 frontend (separate Coolify app)
 - `/api/scheduler` — Scheduler status + events + feedback
 - `/api/categories`, `/api/tags` — Filter values
 
-## MCP Tools (14 total)
+## MCP Tools
 | Tool | Purpose |
 |------|---------|
 | `memory_store` | Store memory with auto-embedding, dedup check, async entity extraction |
@@ -87,6 +88,9 @@ dashboard/                  # Vue 3 frontend (separate Coolify app)
 | `entity_graph` | Recursive graph traversal from a named entity |
 | `memory_maintenance` | Recompute importance + decay stability |
 | `memory_extract` | Manually trigger entity extraction for a memory |
+| `memory_feedback` | Report whether search results were helpful |
+| `memory_reflect` | Batch-save learnings from a session |
+| `log_event` | Record significant agent activity |
 | `memory_import_chatgpt` | Import ChatGPT export JSON |
 | `memory_import_claude` | Import Claude memory files |
 
@@ -96,7 +100,7 @@ dashboard/                  # Vue 3 frontend (separate Coolify app)
   "mcpServers": {
     "nobrainr": {
       "type": "sse",
-      "url": "http://10.0.0.2:8420/sse"
+      "url": "http://<your-server>:8420/sse"
     }
   }
 }
@@ -109,4 +113,10 @@ uv sync && uv run nobrainr serve
 
 # Frontend (local dev with proxy to backend)
 cd dashboard && npm install && npm run dev
+
+# Lint
+uv run ruff check src/
+
+# Test
+uv run pytest
 ```
