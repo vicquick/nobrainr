@@ -39,7 +39,7 @@ ALTER TABLE memories ADD COLUMN IF NOT EXISTS extraction_status text;
 -- HNSW index for fast approximate nearest neighbor search
 CREATE INDEX IF NOT EXISTS idx_memories_embedding_hnsw
     ON memories USING hnsw (embedding vector_cosine_ops)
-    WITH (m = 16, ef_construction = 64);
+    WITH (m = 24, ef_construction = 200);
 
 -- GIN index for tag queries
 CREATE INDEX IF NOT EXISTS idx_memories_tags
@@ -105,7 +105,7 @@ END $$;
 
 CREATE INDEX IF NOT EXISTS idx_entities_embedding_hnsw
     ON entities USING hnsw (embedding vector_cosine_ops)
-    WITH (m = 16, ef_construction = 64);
+    WITH (m = 24, ef_construction = 200);
 
 CREATE INDEX IF NOT EXISTS idx_entities_type
     ON entities (entity_type);

@@ -1,5 +1,7 @@
 """API endpoints — pure JSON responses + SSE stream."""
 
+from uuid import UUID
+
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
@@ -7,6 +9,14 @@ from starlette.routing import Route
 from nobrainr.db import queries
 from nobrainr.embeddings.ollama import embed_text
 from nobrainr.events import subscribe
+
+
+def _valid_uuid(value: str) -> bool:
+    try:
+        UUID(value)
+        return True
+    except ValueError:
+        return False
 
 
 async def api_graph(request: Request) -> JSONResponse:
@@ -22,8 +32,11 @@ async def api_memories(request: Request) -> JSONResponse:
     source_machine = request.query_params.get("source_machine") or None
     tags_param = request.query_params.get("tags", "").strip()
     tags = [t.strip() for t in tags_param.split(",") if t.strip()] if tags_param else None
-    limit = min(int(request.query_params.get("limit", "50")), 200)
-    offset = max(int(request.query_params.get("offset", "0")), 0)
+    try:
+        limit = min(int(request.query_params.get("limit", "50")), 200)
+        offset = max(int(request.query_params.get("offset", "0")), 0)
+    except ValueError:
+        return JSONResponse({"error": "Invalid limit/offset"}, status_code=400)
 
     if q:
         embedding = await embed_text(q)
@@ -50,6 +63,8 @@ async def api_memories(request: Request) -> JSONResponse:
 async def api_memory_detail(request: Request) -> JSONResponse:
     """Single memory detail."""
     memory_id = request.path_params["memory_id"]
+    if not _valid_uuid(memory_id):
+        return JSONResponse({"error": "Invalid memory_id"}, status_code=400)
     memory = await queries.get_memory(memory_id)
     if not memory:
         return JSONResponse({"error": "Memory not found"}, status_code=404)
@@ -62,6 +77,8 @@ async def api_memory_detail(request: Request) -> JSONResponse:
 async def api_memory_update(request: Request) -> JSONResponse:
     """Update a memory via POST (JSON body)."""
     memory_id = request.path_params["memory_id"]
+    if not _valid_uuid(memory_id):
+        return JSONResponse({"error": "Invalid memory_id"}, status_code=400)
     body = await request.json()
 
     content = body.get("content")
@@ -94,6 +111,8 @@ async def api_memory_update(request: Request) -> JSONResponse:
 async def api_memory_delete(request: Request) -> JSONResponse:
     """Delete a memory."""
     memory_id = request.path_params["memory_id"]
+    if not _valid_uuid(memory_id):
+        return JSONResponse({"error": "Invalid memory_id"}, status_code=400)
     deleted = await queries.delete_memory(memory_id)
     if deleted:
         return JSONResponse({"status": "deleted"})
@@ -119,6 +138,8 @@ async def api_timeline(request: Request) -> JSONResponse:
 async def api_node_detail(request: Request) -> JSONResponse:
     """Entity detail + connections for graph node click."""
     entity_id = request.path_params["entity_id"]
+    if not _valid_uuid(entity_id):
+        return JSONResponse({"error": "Invalid entity_id"}, status_code=400)
     entity = await queries.get_entity_by_id(entity_id)
     if not entity:
         return JSONResponse({"error": "Entity not found"}, status_code=404)
@@ -236,6 +257,8 @@ async def api_recall(request: Request) -> JSONResponse:
 async def api_memory_feedback(request: Request) -> JSONResponse:
     """Record feedback on a memory (was it useful?)."""
     memory_id = request.path_params["memory_id"]
+    if not _valid_uuid(memory_id):
+        return JSONResponse({"error": "Invalid memory_id"}, status_code=400)
     body = await request.json()
     was_useful = body.get("was_useful", True)
     context = body.get("context")
