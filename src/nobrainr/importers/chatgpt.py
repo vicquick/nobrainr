@@ -165,7 +165,7 @@ async def distill_conversations(
                 continue
 
             # Compress conversation to fit LLM context
-            convo_text = _compress_for_llm(title, messages, max_chars=4000)
+            convo_text = _compress_for_llm(title, messages, max_chars=2000)
 
             if len(convo_text) < 100:
                 # Too short to be useful
@@ -176,19 +176,15 @@ async def distill_conversations(
 
             result = await ollama_chat(
                 system=(
-                    "You are a knowledge distiller. Given a ChatGPT conversation, extract "
-                    "reusable learnings worth remembering. Focus on:\n"
-                    "- Technical decisions and their rationale\n"
-                    "- Solutions to problems (what worked, what didn't)\n"
-                    "- Patterns, configurations, or commands that could be reused\n"
-                    "- Architecture or design insights\n\n"
-                    "Skip small talk, generic questions, or trivial code. "
-                    "Return has_learnings=false if the conversation is not worth remembering."
+                    "Extract reusable technical learnings from this conversation. "
+                    "Focus on solutions, commands, configs, patterns. "
+                    "Return has_learnings=false if trivial or generic."
                 ),
                 user=convo_text,
                 schema=DISTILL_SCHEMA,
                 model=llm_model,
                 timeout=300.0,
+                num_ctx=3072,
             )
 
             learnings = result.get("learnings", []) if result.get("has_learnings") else []
