@@ -1,6 +1,7 @@
 """LLM-powered scheduler jobs for autonomous knowledge growth."""
 
 import logging
+import socket
 from datetime import datetime
 from uuid import UUID
 
@@ -14,6 +15,10 @@ from nobrainr.extraction.dedup import DEDUP_SCHEMA
 from nobrainr.extraction.llm import ollama_chat
 
 logger = logging.getLogger("nobrainr")
+
+
+def _hostname() -> str:
+    return socket.gethostname()
 
 SUMMARIZE_SCHEMA = {
     "type": "object",
@@ -191,7 +196,7 @@ async def synthesis() -> dict:
                     embedding=embedding,
                     summary=f"Synthesis: {cand['entity_name']}",
                     source_type="synthesis",
-                    source_machine="bimavo",
+                    source_machine=settings.source_machine or _hostname(),
                     category="insight",
                     tags=["synthesized", cand["entity_type"]],
                     confidence=result.get("confidence", 0.7),
@@ -304,7 +309,7 @@ async def insight_extraction() -> dict:
                     content=learning,
                     embedding=embedding,
                     source_type="insight",
-                    source_machine="bimavo",
+                    source_machine=settings.source_machine or _hostname(),
                     category=result.get("category", "learned-pattern"),
                     tags=tags,
                     confidence=0.7,
