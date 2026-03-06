@@ -155,7 +155,7 @@ async def memory_search(
         tags: Filter to memories with any of these tags.
         category: Filter to specific category.
         source_type: Filter by source ("chatgpt", "claude", "manual", "agent").
-        source_machine: Filter to specific VPN host.
+        source_machine: Filter to specific host.
         hybrid: Also apply text search on the query for hybrid results.
     """
     embedding = await embed_text(query)
@@ -190,7 +190,7 @@ async def memory_query(
         tags: Filter to memories with any of these tags.
         category: Filter to specific category.
         source_type: Filter by source ("chatgpt", "claude", "manual", "agent").
-        source_machine: Filter to specific VPN host.
+        source_machine: Filter to specific host.
         text_query: Full-text search on content.
         limit: Max results (default 50).
         offset: Pagination offset.
