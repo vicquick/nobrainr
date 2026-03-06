@@ -1,9 +1,8 @@
 # nobrainr
 
-[![PyPI version](https://img.shields.io/pypi/v/nobrainr)](https://pypi.org/project/nobrainr/)
-[![Python 3.12+](https://img.shields.io/pypi/pyversions/nobrainr)](https://pypi.org/project/nobrainr/)
 [![License: MIT](https://img.shields.io/github/license/youruser/nobrainr)](LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/youruser/nobrainr/ci.yml?label=CI)](https://github.com/youruser/nobrainr/actions)
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12+-green)](https://python.org)
 [![MCP](https://img.shields.io/badge/MCP-compatible-blue)](https://modelcontextprotocol.io)
 
 **Your AI agents forget everything between sessions. nobrainr fixes that.**
