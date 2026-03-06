@@ -22,8 +22,8 @@ async def api_memories(request: Request) -> JSONResponse:
     source_machine = request.query_params.get("source_machine") or None
     tags_param = request.query_params.get("tags", "").strip()
     tags = [t.strip() for t in tags_param.split(",") if t.strip()] if tags_param else None
-    limit = int(request.query_params.get("limit", "50"))
-    offset = int(request.query_params.get("offset", "0"))
+    limit = min(int(request.query_params.get("limit", "50")), 200)
+    offset = max(int(request.query_params.get("offset", "0")), 0)
 
     if q:
         embedding = await embed_text(q)
@@ -104,8 +104,8 @@ async def api_timeline(request: Request) -> JSONResponse:
     """Timeline data — memories ordered by date."""
     category = request.query_params.get("category") or None
     source_machine = request.query_params.get("source_machine") or None
-    limit = int(request.query_params.get("limit", "100"))
-    offset = int(request.query_params.get("offset", "0"))
+    limit = min(int(request.query_params.get("limit", "100")), 500)
+    offset = max(int(request.query_params.get("offset", "0")), 0)
 
     memories = await queries.get_timeline_memories(
         limit=limit,
@@ -211,13 +211,7 @@ async def api_recall(request: Request) -> JSONResponse:
     if not q:
         return JSONResponse([])
 
-    limit = int(request.query_params.get("limit", "5"))
-
-    # Build OR-joined tsquery for better recall on multi-word queries
-    words = q.split()
-    tsquery_expr = " | ".join(f"'{w}'" for w in words if w)
-    if not tsquery_expr:
-        return JSONResponse([])
+    limit = min(int(request.query_params.get("limit", "5")), 100)
 
     from nobrainr.db.pool import get_pool
 
@@ -227,13 +221,13 @@ async def api_recall(request: Request) -> JSONResponse:
             """
             SELECT id, content, summary, source_type, source_machine, tags, category,
                    confidence, metadata, created_at, updated_at, importance, stability,
-                   ts_rank(to_tsvector('english', content), to_tsquery('english', $1)) AS rank
+                   ts_rank(to_tsvector('english', content), websearch_to_tsquery('english', $1)) AS rank
             FROM memories
-            WHERE to_tsvector('english', content) @@ to_tsquery('english', $1)
+            WHERE to_tsvector('english', content) @@ websearch_to_tsquery('english', $1)
             ORDER BY rank DESC, importance DESC
             LIMIT $2
             """,
-            tsquery_expr,
+            q,
             limit,
         )
         return JSONResponse([queries._row_to_dict(row) for row in rows])
