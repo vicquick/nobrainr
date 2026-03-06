@@ -1,19 +1,24 @@
 #!/bin/bash
-# Setup nobrainr MCP client on a remote machine.
-# Run via: ssh <machine> 'bash -s' < scripts/setup-client.sh
+# Setup nobrainr MCP client on this machine.
 #
-# Expects: machine has Claude Code installed, connectivity to 10.10.10.12:8420
+# Usage:
+#   NOBRAINR_HOST=192.168.1.100 bash scripts/setup-client.sh
+#   NOBRAINR_HOST=my-server.local bash scripts/setup-client.sh
+#
+# Expects: Claude Code installed, connectivity to nobrainr server on port 8420
 
 set -euo pipefail
 
-NOBRAINR_URL="http://10.10.10.12:8420"
-BIMAVO_IP="10.10.10.12"
+NOBRAINR_HOST="${NOBRAINR_HOST:?Set NOBRAINR_HOST to the IP or hostname of your nobrainr server}"
+NOBRAINR_PORT="${NOBRAINR_PORT:-8420}"
+NOBRAINR_URL="http://${NOBRAINR_HOST}:${NOBRAINR_PORT}"
 CLAUDE_DIR="$HOME/.claude"
 SCRIPTS_DIR="$CLAUDE_DIR/scripts"
 HOOKS_DIR="$CLAUDE_DIR/hooks"
 MACHINE=$(hostname)
 
 echo "=== nobrainr client setup on $MACHINE ==="
+echo "Server: $NOBRAINR_URL"
 
 # 1. Verify connectivity
 echo -n "Checking connectivity to $NOBRAINR_URL... "
@@ -21,7 +26,7 @@ if curl -sf --max-time 5 "$NOBRAINR_URL/api/stats" >/dev/null 2>&1; then
     echo "OK"
 else
     echo "FAILED"
-    echo "Cannot reach $NOBRAINR_URL. Ensure VPN is connected."
+    echo "Cannot reach $NOBRAINR_URL. Check that nobrainr is running and the host is reachable."
     exit 1
 fi
 
@@ -30,16 +35,17 @@ mkdir -p "$SCRIPTS_DIR" "$HOOKS_DIR"
 
 # 3. Add nobrainr to MCP config
 MCP_FILE="$CLAUDE_DIR/mcp.json"
+SSE_URL="http://${NOBRAINR_HOST}:${NOBRAINR_PORT}/sse"
 if [[ -f "$MCP_FILE" ]]; then
-    jq '.mcpServers.nobrainr = {"type": "sse", "url": "http://10.10.10.12:8420/sse"}' \
+    jq --arg url "$SSE_URL" '.mcpServers.nobrainr = {"type": "sse", "url": $url}' \
         "$MCP_FILE" > "${MCP_FILE}.tmp" && mv "${MCP_FILE}.tmp" "$MCP_FILE"
 else
-    cat > "$MCP_FILE" << 'MCPEOF'
+    cat > "$MCP_FILE" << MCPEOF
 {
   "mcpServers": {
     "nobrainr": {
       "type": "sse",
-      "url": "http://10.10.10.12:8420/sse"
+      "url": "$SSE_URL"
     }
   }
 }
@@ -61,6 +67,8 @@ NOBRAINR_PERMS=(
     "mcp__nobrainr__entity_graph"
     "mcp__nobrainr__memory_maintenance"
     "mcp__nobrainr__memory_extract"
+    "mcp__nobrainr__memory_feedback"
+    "mcp__nobrainr__memory_reflect"
     "mcp__nobrainr__log_event"
     "mcp__nobrainr__memory_import_chatgpt"
     "mcp__nobrainr__memory_import_claude"
@@ -75,21 +83,11 @@ else
 fi
 echo "Permissions updated: $SETTINGS_FILE"
 
-# 5. Copy nobrainr scripts from bimavo (single source of truth)
-scp -q "root@${BIMAVO_IP}:~/.claude/scripts/nobrainr-query.py" "$SCRIPTS_DIR/nobrainr-query.py"
-chmod +x "$SCRIPTS_DIR/nobrainr-query.py"
-echo "Deployed: $SCRIPTS_DIR/nobrainr-query.py"
-
-scp -q "root@${BIMAVO_IP}:~/.claude/scripts/nobrainr-recall.sh" "$SCRIPTS_DIR/nobrainr-recall.sh"
-chmod +x "$SCRIPTS_DIR/nobrainr-recall.sh"
-echo "Deployed: $SCRIPTS_DIR/nobrainr-recall.sh"
-
-# 6. Deploy stop hook with auto session capture
+# 5. Deploy stop hook with auto session capture
 STOP_HOOK="$HOOKS_DIR/stop-validation.sh"
 if [[ -f "$STOP_HOOK" ]] && grep -q 'store-session' "$STOP_HOOK" 2>/dev/null; then
     echo "Stop hook already has auto session capture"
 else
-    # Create or overwrite with session capture hook
     cat > "$STOP_HOOK" << 'HOOKEOF'
 #!/bin/bash
 # Stop Hook: Auto-capture session activity to nobrainr
@@ -124,7 +122,7 @@ HOOKEOF
     echo "Created stop hook: $STOP_HOOK"
 fi
 
-# 7. Verify with test query
+# 6. Verify with test query
 echo -n "Verifying nobrainr connection... "
 if python3 "$SCRIPTS_DIR/nobrainr-query.py" --recent 1 --timeout 8 >/dev/null 2>&1; then
     echo "OK"
@@ -135,5 +133,8 @@ fi
 echo ""
 echo "=== Setup complete on $MACHINE ==="
 echo "nobrainr MCP: $NOBRAINR_URL"
-echo "Client script: $SCRIPTS_DIR/nobrainr-query.py"
 echo "Stop hook: $STOP_HOOK"
+echo ""
+echo "Note: The nobrainr-query.py script is not included in this repo."
+echo "It will be available from the nobrainr server or you can write your own"
+echo "MCP SSE client. See CLAUDE.md for the protocol details."
