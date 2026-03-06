@@ -1,15 +1,18 @@
 [project]
 name = "nobrainr"
 version = "0.2.0"
-description = "Collective agent memory service with knowledge graph — PostgreSQL 18 + pgvector + MCP server"
+description = "Persistent memory and knowledge graph for AI agents via MCP"
+readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
 keywords = ["mcp", "ai-memory", "knowledge-graph", "ai-agents", "pgvector", "ollama", "claude-code", "model-context-protocol"]
 classifiers = [
     "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 
 dependencies = [
@@ -28,7 +31,9 @@ dependencies = [
 
 [project.urls]
 Repository = "https://github.com/youruser/nobrainr"
+Documentation = "https://github.com/youruser/nobrainr#readme"
 Issues = "https://github.com/youruser/nobrainr/issues"
+Changelog = "https://github.com/youruser/nobrainr/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [
