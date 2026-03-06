@@ -17,6 +17,45 @@ from nobrainr.dashboard.api import api_routes
 logger = logging.getLogger("nobrainr")
 
 
+# ──────────────────────────────────────────────
+# Workaround: MCP SSE initialization race condition
+# ──────────────────────────────────────────────
+# Some MCP clients (including Claude Code) occasionally send tool call
+# requests before the initialize/initialized handshake completes. The
+# MCP library (mcp>=1.26) raises RuntimeError which becomes a -32602
+# "Invalid request parameters" error — permanently breaking the session.
+#
+# Fix: patch ServerSession._received_request to auto-promote the session
+# to Initialized state instead of raising.
+# ──────────────────────────────────────────────
+def _patch_mcp_session_init_race():
+    try:
+        from mcp.server.session import ServerSession, InitializationState
+        import types as _types
+
+        _original = ServerSession._received_request
+
+        async def _tolerant_received_request(self, responder):
+            if self._initialization_state != InitializationState.Initialized:
+                req_type = type(responder.request.root).__name__
+                if req_type not in ("InitializeRequest", "PingRequest"):
+                    logger.warning(
+                        "MCP request before initialization complete — auto-promoting session "
+                        "(client likely skipped handshake). Request: %s",
+                        req_type,
+                    )
+                    self._initialization_state = InitializationState.Initialized
+            return await _original(self, responder)
+
+        ServerSession._received_request = _tolerant_received_request
+        logger.info("Patched MCP ServerSession for initialization race tolerance")
+    except Exception:
+        logger.warning("Could not patch MCP session init race — upgrade mcp package if issues persist")
+
+
+_patch_mcp_session_init_race()
+
+
 async def _auto_backfill():
     """Background task: extract entities from any unprocessed memories on startup."""
     if not settings.extraction_enabled:
