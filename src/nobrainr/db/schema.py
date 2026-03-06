@@ -53,6 +53,14 @@ CREATE INDEX IF NOT EXISTS idx_memories_category
 CREATE INDEX IF NOT EXISTS idx_memories_source_type
     ON memories (source_type);
 
+-- Index for source_machine filtering
+CREATE INDEX IF NOT EXISTS idx_memories_source_machine
+    ON memories (source_machine);
+
+-- Index for extraction_status (backfill queries)
+CREATE INDEX IF NOT EXISTS idx_memories_extraction_status
+    ON memories (extraction_status);
+
 -- Full-text search on content
 CREATE INDEX IF NOT EXISTS idx_memories_content_fts
     ON memories USING gin (to_tsvector('english', content));
@@ -167,6 +175,10 @@ CREATE INDEX IF NOT EXISTS idx_agent_events_type
 CREATE INDEX IF NOT EXISTS idx_agent_events_created
     ON agent_events (created_at DESC);
 
+-- GIN index for metadata filtering on agent_events
+CREATE INDEX IF NOT EXISTS idx_agent_events_metadata
+    ON agent_events USING gin (metadata);
+
 -- ──────────────────────────────────────────────
 -- Memory outcomes (feedback tracking)
 -- ──────────────────────────────────────────────
@@ -237,7 +249,7 @@ BEGIN
          + (0.15 * COALESCE(mem_importance, 0.0))
          + (0.05 * COALESCE(mem_stability, 1.0));
 END;
-$$ LANGUAGE plpgsql IMMUTABLE;
+$$ LANGUAGE plpgsql STABLE;
 """
 
 

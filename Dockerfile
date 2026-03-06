@@ -15,6 +15,10 @@ COPY src/ src/
 # Install dependencies
 RUN uv pip install --system --no-cache .
 
+# Run as non-root user
+RUN useradd --create-home --shell /bin/bash nobrainr
+USER nobrainr
+
 # Expose MCP SSE port
 EXPOSE 8420
 
