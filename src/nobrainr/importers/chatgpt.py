@@ -61,8 +61,13 @@ DISTILL_SCHEMA = {
 # Phase 1: Raw import (fast)
 # ──────────────────────────────────────────────
 
-async def import_chatgpt_export(file_path: str, *, source_machine: str | None = None) -> dict:
-    """Import conversations from ChatGPT export JSON into conversations_raw table."""
+async def import_chatgpt_export(
+    file_path: str, *, distill: bool = False, source_machine: str | None = None,
+) -> dict:
+    """Import conversations from ChatGPT export JSON into conversations_raw table.
+
+    If distill=True, also runs LLM distillation after import.
+    """
     path = Path(file_path)
     if not path.exists():
         return {"error": f"File not found: {file_path}"}
@@ -103,12 +108,18 @@ async def import_chatgpt_export(file_path: str, *, source_machine: str | None = 
         )
         imported += 1
 
-    return {
+    result = {
         "status": "complete",
         "conversations_imported": imported,
         "conversations_skipped": skipped,
         "total_conversations": len(conversations),
     }
+
+    if distill and imported > 0:
+        distill_result = await distill_conversations(source_machine=source_machine)
+        result["distill"] = distill_result
+
+    return result
 
 
 # ──────────────────────────────────────────────
