@@ -1,5 +1,9 @@
 # nobrainr
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12+-green.svg)](https://python.org)
+[![MCP](https://img.shields.io/badge/MCP-SSE-purple.svg)](https://modelcontextprotocol.io)
+
 **Your AI agents forget everything between sessions. nobrainr fixes that.**
 
 Every time you start a new Claude Code session, your agent starts from zero. It doesn't remember what it debugged yesterday, what architecture decisions were made last week, or what patterns it discovered across your projects. You lose hours re-explaining context.
@@ -12,6 +16,15 @@ nobrainr is a self-hosted memory service that gives your AI agents persistent, s
 - Agent discovers a project convention? Every future session starts with that context.
 - Import your ChatGPT history? All 2000 conversations become searchable agent memory.
 - A knowledge graph builds itself in the background — entities, relationships, and insights extracted automatically.
+
+```python
+# Agent stores a learning
+memory_store(content="pg_dump ignores --schema when used with --table",
+             tags=["postgresql", "backup"], category="gotchas")
+
+# Any agent, any machine, any session — finds it instantly
+memory_search(query="postgres backup gotcha")
+```
 
 ### How it works
 
