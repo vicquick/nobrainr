@@ -12,6 +12,9 @@ from nobrainr.embeddings.ollama import embed_text
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("nobrainr")
 
+# Rate-limit entity extraction: max 1 concurrent, 30s cooldown between
+_extraction_semaphore = asyncio.Semaphore(1)
+
 # ──────────────────────────────────────────────
 # FastMCP instance (no lifespan — parent app handles it)
 # ──────────────────────────────────────────────
@@ -110,11 +113,19 @@ async def memory_store(
         metadata=metadata,
     )
 
-    # Fire-and-forget entity extraction
+    # Fire-and-forget entity extraction (rate-limited: 1 at a time, 30s cooldown)
     if settings.extraction_enabled:
+        async def _rate_limited_extract(mem_id, mem_content, mem_tags):
+            async with _extraction_semaphore:
+                try:
+                    from nobrainr.extraction.pipeline import process_memory
+                    await process_memory(mem_id, mem_content, mem_tags)
+                except Exception:
+                    logger.exception("Extraction failed for %s", mem_id)
+                await asyncio.sleep(30)
+
         try:
-            from nobrainr.extraction.pipeline import process_memory
-            asyncio.create_task(process_memory(result["id"], content, tags))
+            asyncio.create_task(_rate_limited_extract(result["id"], content, tags))
         except Exception:
             logger.exception("Failed to start extraction task")
 
