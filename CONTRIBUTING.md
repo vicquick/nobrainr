@@ -5,7 +5,7 @@ Thanks for your interest in nobrainr! Here's how to get started.
 ## Development Setup
 
 ```bash
-git clone https://github.com/nobrainr/nobrainr.git
+git clone https://github.com/youruser/nobrainr.git
 cd nobrainr
 
 # Backend
