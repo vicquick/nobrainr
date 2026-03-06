@@ -1,10 +1,19 @@
 # nobrainr
 
-Shared memory for AI agents. Store learnings, search them later, across machines and sessions.
+**Your AI agents forget everything between sessions. nobrainr fixes that.**
 
-PostgreSQL + pgvector for storage, Ollama for local embeddings, MCP (SSE) for the interface. Every Claude Code instance on your network gets the same memory.
+Every time you start a new Claude Code session, your agent starts from zero. It doesn't remember what it debugged yesterday, what architecture decisions were made last week, or what patterns it discovered across your projects. You lose hours re-explaining context.
 
-## How it works
+nobrainr is a self-hosted memory service that gives your AI agents persistent, searchable memory across sessions, machines, and projects. Agents store what they learn. Next session — on any machine — they recall it instantly.
+
+### What it actually does
+
+- Agent fixes a tricky Docker networking issue on your laptop? That knowledge is available on your server too.
+- Agent discovers a project convention? Every future session starts with that context.
+- Import your ChatGPT history? All 2000 conversations become searchable agent memory.
+- A knowledge graph builds itself in the background — entities, relationships, and insights extracted automatically.
+
+### How it works
 
 ```
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
@@ -23,14 +32,14 @@ PostgreSQL + pgvector for storage, Ollama for local embeddings, MCP (SSE) for th
                     └────────────────┘
 ```
 
-Agents store what they learn. Next session, any agent on the network can recall it.
+Fully local. No API keys. No cloud. Your data stays on your hardware. Built on PostgreSQL + pgvector for storage, Ollama for free local embeddings, and MCP (SSE) as the standard interface.
 
 ## Quick start
 
 ### Docker (recommended)
 
 ```bash
-git clone https://github.com/nobrainr/nobrainr.git
+git clone https://github.com/youruser/nobrainr.git
 cd nobrainr
 cp .env.example .env
 
