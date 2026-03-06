@@ -1,5 +1,6 @@
 """Orchestrator — runs extraction pipeline on memories."""
 
+import asyncio
 import logging
 from typing import Callable
 
@@ -112,6 +113,9 @@ async def backfill(
 
             if on_progress:
                 on_progress(total, memory)
+
+            # Rate limit: 30s cooldown between extractions to avoid CPU overload
+            await asyncio.sleep(30)
 
     logger.info("Backfill complete: %d memories processed", total)
     return total
