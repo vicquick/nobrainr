@@ -4,6 +4,8 @@ __pycache__/
 dist/
 build/
 .venv/
+uv.lock
+site/
 .env
 *.bak
 .ruff_cache/
