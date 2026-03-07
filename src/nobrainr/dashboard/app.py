@@ -112,11 +112,13 @@ def create_app():
     sse_app = mcp.sse_app()
     streamable_app = mcp.streamable_http_app()
 
-    # Build all routes: API + streamable-http at /mcp + SSE catch-all
+    # Build all routes: API + streamable-http + SSE catch-all
+    # Note: streamable_http_app() already creates its own /mcp route internally,
+    # so we mount it at "/" to avoid doubling the path to /mcp/mcp.
     routes = [
         *api_routes,
-        # Streamable HTTP transport (preferred by Claude Code)
-        Mount("/mcp", app=streamable_app),
+        # Streamable HTTP transport (preferred by Claude Code) — serves /mcp
+        Mount("/", app=streamable_app),
         # SSE transport (backward compat, handles /sse and /messages/)
         Mount("/", app=sse_app),
     ]
