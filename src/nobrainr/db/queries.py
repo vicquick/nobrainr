@@ -611,6 +611,64 @@ async def mark_event_processed(event_id: str) -> None:
     )
 
 
+async def archive_stale_memories(limit: int = 50) -> int:
+    """Archive low-value, never-accessed memories older than 30 days."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute("""
+            UPDATE memories
+            SET category = '_archived'
+            WHERE id IN (
+                SELECT id FROM memories
+                WHERE stability < 0.3
+                  AND importance < 0.2
+                  AND access_count = 0
+                  AND category != '_archived'
+                  AND source_type NOT IN ('synthesis', 'insight', 'agent_learning')
+                  AND created_at < now() - interval '30 days'
+                ORDER BY importance ASC, stability ASC
+                LIMIT $1
+            )
+        """, limit)
+        count = int(result.split()[-1])
+        return count
+
+
+async def get_potential_contradictions(limit: int = 5) -> list[dict]:
+    """Find high-similarity memory pairs from different sources that haven't been checked."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            WITH candidates AS (
+                SELECT
+                    m1.id as id_a, m2.id as id_b,
+                    m1.content as content_a, m2.content as content_b,
+                    m1.source_machine as machine_a, m2.source_machine as machine_b,
+                    1 - (m1.embedding <=> m2.embedding) as similarity
+                FROM memories m1
+                JOIN memories m2 ON m1.id < m2.id
+                WHERE m1.embedding IS NOT NULL
+                  AND m2.embedding IS NOT NULL
+                  AND m1.category != '_archived'
+                  AND m2.category != '_archived'
+                  AND 1 - (m1.embedding <=> m2.embedding) BETWEEN 0.75 AND 0.92
+                  AND (m1.source_machine != m2.source_machine
+                       OR m1.source_type != m2.source_type
+                       OR m1.created_at < m2.created_at - interval '7 days')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM memories m3
+                      WHERE m3.source_type = 'contradiction'
+                        AND m3.metadata->>'memory_a' = m1.id::text
+                        AND m3.metadata->>'memory_b' = m2.id::text
+                  )
+                ORDER BY similarity DESC
+                LIMIT $1
+            )
+            SELECT * FROM candidates
+        """, limit)
+        return [dict(r) for r in rows]
+
+
 async def set_extraction_status(memory_id: str, status: str) -> None:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -1166,6 +1224,76 @@ async def get_feedback_stats() -> dict:
             "archived_memories": archived,
             "events_24h": events_24h,
         }
+
+
+async def get_cross_machine_clusters(limit: int = 3) -> list[dict]:
+    """Find entity clusters that span multiple machines."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT
+                e.id as entity_id,
+                e.name as entity_name,
+                e.entity_type,
+                array_agg(DISTINCT m.source_machine) as machines,
+                count(DISTINCT m.source_machine) as machine_count,
+                array_agg(DISTINCT LEFT(m.content, 300)) as memory_contents
+            FROM entities e
+            JOIN entity_memories em ON em.entity_id = e.id
+            JOIN memories m ON m.id = em.memory_id
+            WHERE m.category != '_archived'
+              AND m.source_machine IS NOT NULL
+              AND m.source_machine != ''
+            GROUP BY e.id, e.name, e.entity_type
+            HAVING count(DISTINCT m.source_machine) >= 2
+            AND NOT EXISTS (
+                SELECT 1 FROM memories m2
+                WHERE m2.source_type = 'cross_machine_insight'
+                  AND m2.metadata->>'entity_id' = e.id::text
+                  AND m2.created_at > now() - interval '7 days'
+            )
+            ORDER BY count(DISTINCT m.source_machine) DESC, count(*) DESC
+            LIMIT $1
+        """, limit)
+        return [dict(r) for r in rows]
+
+
+async def get_extraction_samples(limit: int = 10) -> list[dict]:
+    """Get recently extracted entities with their source memory for quality check."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT
+                e.id as entity_id,
+                e.name as entity_name,
+                e.entity_type,
+                e.description as entity_description,
+                m.id as memory_id,
+                LEFT(m.content, 500) as memory_content,
+                em.confidence as link_confidence
+            FROM entity_memories em
+            JOIN entities e ON e.id = em.entity_id
+            JOIN memories m ON m.id = em.memory_id
+            WHERE e.created_at > now() - interval '7 days'
+              AND NOT EXISTS (
+                  SELECT 1 FROM agent_events ae
+                  WHERE ae.event_type = 'extraction_validated'
+                    AND ae.metadata->>'entity_id' = e.id::text
+              )
+            ORDER BY e.created_at DESC
+            LIMIT $1
+        """, limit)
+        return [dict(r) for r in rows]
+
+
+async def update_entity_confidence(entity_id: str, memory_id: str, confidence: float) -> None:
+    """Update extraction confidence for an entity-memory link."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE entity_memories SET confidence = $1 WHERE entity_id = $2 AND memory_id = $3",
+            confidence, UUID(entity_id), UUID(memory_id),
+        )
 
 
 async def store_raw_conversation(

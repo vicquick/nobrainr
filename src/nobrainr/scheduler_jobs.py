@@ -57,6 +57,25 @@ ENTITY_DESC_SCHEMA = {
     "required": ["description"],
 }
 
+CONTRADICTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "contradicts": {
+            "type": "boolean",
+            "description": "Whether the two memories contradict each other",
+        },
+        "explanation": {
+            "type": "string",
+            "description": "Brief explanation of the contradiction or why they don't contradict",
+        },
+        "resolution": {
+            "type": "string",
+            "description": "Which memory is likely more accurate, or 'unclear'",
+        },
+    },
+    "required": ["contradicts", "explanation", "resolution"],
+}
+
 INSIGHT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -327,6 +346,236 @@ async def insight_extraction() -> dict:
         "processed": processed,
         "ran_at": datetime.now().isoformat(),
     }
+
+
+async def memory_decay() -> dict:
+    """Archive stale, low-value memories that are never accessed."""
+    count = await queries.archive_stale_memories(settings.decay_batch_size)
+    return {"archived": count, "ran_at": datetime.now().isoformat()}
+
+
+async def contradiction_detection() -> dict:
+    """Find and flag contradicting memories."""
+    model = settings.scheduler_llm_model
+    candidates = await queries.get_potential_contradictions(
+        settings.contradiction_batch_size
+    )
+    if not candidates:
+        return {"contradictions_found": 0, "checked": 0, "ran_at": datetime.now().isoformat()}
+
+    found = 0
+    checked = 0
+    for pair in candidates:
+        try:
+            result = await ollama_chat(
+                system=(
+                    "You are a contradiction detector. Compare two knowledge entries and determine "
+                    "if they contain conflicting information. Minor differences in wording are NOT "
+                    "contradictions — only flag genuine factual conflicts."
+                ),
+                user=(
+                    f"Memory A (from {pair.get('machine_a', 'unknown')}):\n{pair['content_a'][:500]}\n\n"
+                    f"Memory B (from {pair.get('machine_b', 'unknown')}):\n{pair['content_b'][:500]}\n\n"
+                    "Do these memories contradict each other?"
+                ),
+                schema=CONTRADICTION_SCHEMA,
+                model=model,
+                timeout=90.0,
+            )
+
+            if result.get("contradicts"):
+                explanation = result.get("explanation", "")
+                resolution = result.get("resolution", "unclear")
+                embedding = await embed_text(
+                    f"Contradiction: {explanation}"
+                )
+                await queries.store_memory(
+                    content=f"Contradiction detected:\n\nMemory A: {pair['content_a'][:200]}\n\nMemory B: {pair['content_b'][:200]}\n\nExplanation: {explanation}\n\nResolution: {resolution}",
+                    embedding=embedding,
+                    source_type="contradiction",
+                    source_machine=settings.source_machine or _hostname(),
+                    category="contradiction",
+                    tags=["auto-detected", "needs-review"],
+                    confidence=0.8,
+                    metadata={
+                        "memory_a": str(pair["id_a"]),
+                        "memory_b": str(pair["id_b"]),
+                        "resolution": resolution,
+                    },
+                )
+                found += 1
+
+            checked += 1
+        except Exception:
+            logger.exception("contradiction_detection failed for pair")
+
+    return {"contradictions_found": found, "checked": checked, "ran_at": datetime.now().isoformat()}
+
+
+CROSS_MACHINE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "has_insight": {
+            "type": "boolean",
+            "description": "Whether a meaningful cross-machine pattern exists",
+        },
+        "insight": {
+            "type": "string",
+            "description": "The cross-machine insight or pattern discovered",
+        },
+        "machines_involved": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Which machines contributed to this insight",
+        },
+    },
+    "required": ["has_insight", "insight", "machines_involved"],
+}
+
+QUALITY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "is_valid": {
+            "type": "boolean",
+            "description": "Whether the entity was correctly extracted from the memory",
+        },
+        "correct_type": {
+            "type": "string",
+            "description": "The correct entity type if mistyped, or same if correct",
+        },
+        "confidence": {
+            "type": "number",
+            "description": "Confidence that this entity belongs to this memory (0-1)",
+        },
+    },
+    "required": ["is_valid", "correct_type", "confidence"],
+}
+
+
+async def cross_machine_insights() -> dict:
+    """Discover patterns that span multiple machines/agents."""
+    model = settings.scheduler_llm_model
+    clusters = await queries.get_cross_machine_clusters(
+        settings.cross_machine_batch_size
+    )
+    if not clusters:
+        return {"insights": 0, "checked": 0, "ran_at": datetime.now().isoformat()}
+
+    count = 0
+    for cluster in clusters:
+        try:
+            machines = cluster.get("machines", [])
+            contents = cluster.get("memory_contents", [])
+            memories_text = "\n---\n".join(c[:300] for c in contents[:6])
+
+            result = await ollama_chat(
+                system=(
+                    "You are a cross-system analyst. Given memories about the same entity from "
+                    "different machines/agents, identify patterns, discrepancies, or insights that "
+                    "only become visible when comparing across sources. Focus on actionable findings."
+                ),
+                user=(
+                    f"Entity: {cluster['entity_name']} ({cluster['entity_type']})\n"
+                    f"Seen on machines: {', '.join(str(m) for m in machines)}\n\n"
+                    f"Memories:\n{memories_text}\n\n"
+                    "What cross-machine patterns or insights emerge?"
+                ),
+                schema=CROSS_MACHINE_SCHEMA,
+                model=model,
+                timeout=120.0,
+            )
+
+            if result.get("has_insight") and result.get("insight"):
+                insight = result["insight"].strip()
+                embedding = await embed_text(insight)
+                await queries.store_memory(
+                    content=insight,
+                    embedding=embedding,
+                    summary=f"Cross-machine: {cluster['entity_name']}",
+                    source_type="cross_machine_insight",
+                    source_machine=settings.source_machine or _hostname(),
+                    category="insight",
+                    tags=["cross-machine", cluster["entity_type"]] + [str(m) for m in machines],
+                    confidence=0.75,
+                    metadata={
+                        "entity_id": str(cluster["entity_id"]),
+                        "machines": [str(m) for m in machines],
+                    },
+                )
+                count += 1
+        except Exception:
+            logger.exception("cross_machine_insights failed for %s", cluster["entity_name"])
+
+    return {"insights": count, "checked": len(clusters), "ran_at": datetime.now().isoformat()}
+
+
+async def extraction_quality() -> dict:
+    """Validate extraction quality by sampling recent entities."""
+    model = settings.scheduler_llm_model
+    samples = await queries.get_extraction_samples(
+        settings.quality_batch_size
+    )
+    if not samples:
+        return {"validated": 0, "invalid": 0, "ran_at": datetime.now().isoformat()}
+
+    validated = 0
+    invalid = 0
+    for sample in samples:
+        try:
+            result = await ollama_chat(
+                system=(
+                    "You are an extraction quality validator. Given a memory and an entity "
+                    "extracted from it, verify if the extraction is correct. Check if the entity "
+                    "name, type, and association are accurate."
+                ),
+                user=(
+                    f"Memory content:\n{sample['memory_content']}\n\n"
+                    f"Extracted entity: {sample['entity_name']} (type: {sample['entity_type']})\n\n"
+                    "Is this entity correctly extracted from this memory?"
+                ),
+                schema=QUALITY_SCHEMA,
+                model=model,
+                timeout=60.0,
+                think=False,
+            )
+
+            confidence = result.get("confidence", 0.5)
+            await queries.update_entity_confidence(
+                str(sample["entity_id"]),
+                str(sample["memory_id"]),
+                confidence,
+            )
+
+            if not result.get("is_valid"):
+                invalid += 1
+                # If confidence is very low, remove the entity-memory link
+                if confidence < 0.2:
+                    pool = await get_pool()
+                    async with pool.acquire() as conn:
+                        await conn.execute(
+                            "DELETE FROM entity_memories WHERE entity_id = $1 AND memory_id = $2",
+                            UUID(str(sample["entity_id"])),
+                            UUID(str(sample["memory_id"])),
+                        )
+
+            # Log validation
+            await queries.log_agent_event(
+                event_type="extraction_validated",
+                description=f"Validated entity '{sample['entity_name']}' ({sample['entity_type']}): valid={result.get('is_valid')}, confidence={confidence:.2f}",
+                agent_id="scheduler",
+                category="system",
+                metadata={
+                    "entity_id": str(sample["entity_id"]),
+                    "memory_id": str(sample["memory_id"]),
+                    "is_valid": result.get("is_valid"),
+                    "confidence": confidence,
+                },
+            )
+            validated += 1
+        except Exception:
+            logger.exception("extraction_quality failed for entity %s", sample["entity_name"])
+
+    return {"validated": validated, "invalid": invalid, "ran_at": datetime.now().isoformat()}
 
 
 async def chatgpt_distill() -> dict:

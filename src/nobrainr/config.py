@@ -53,6 +53,18 @@ class Settings(BaseSettings):
     chatgpt_distill_interval_hours: float = 0.5
     chatgpt_distill_batch_size: int = 3
     chatgpt_distill_model: str = "qwen3:8b"
+    # Memory decay
+    decay_interval_hours: float = 24.0
+    decay_batch_size: int = 50
+    # Contradiction detection
+    contradiction_interval_hours: float = 12.0
+    contradiction_batch_size: int = 5
+    # Cross-machine insights
+    cross_machine_interval_hours: float = 24.0
+    cross_machine_batch_size: int = 3
+    # Extraction quality
+    quality_interval_hours: float = 12.0
+    quality_batch_size: int = 10
 
 
 settings = Settings()
