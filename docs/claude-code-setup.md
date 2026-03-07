@@ -8,7 +8,7 @@ Set up this machine for full integration with nobrainr, a shared memory service 
 
 **Before doing anything, ask me two things:**
 1. **Machine name** — a short identifier for this machine (e.g. "workpc", "laptop", "desktop-home"). Used in all `source_machine` fields so memories are tagged by origin.
-2. **Nobrainr server URL** — the base URL where nobrainr is running (e.g. `http://my-server:8420`). Must be reachable from this machine.
+2. **Nobrainr server URL** — the base URL where nobrainr is running (e.g. `https://mcp.example.com` or `http://localhost:8420` for local). Must be reachable from this machine. Use HTTPS for remote access.
 
 Do NOT proceed until I've confirmed both. Use `MACHINE_NAME` and `NOBRAINR_URL` as placeholders below — replace them everywhere with my answers.
 
@@ -32,7 +32,7 @@ Create/update `~/.claude/mcp.json` — add the nobrainr server:
 {
   "mcpServers": {
     "nobrainr": {
-      "type": "streamable-http",
+      "type": "http",
       "url": "NOBRAINR_URL/mcp"
     }
   }

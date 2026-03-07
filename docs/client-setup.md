@@ -1,6 +1,8 @@
 # Client Setup
 
-nobrainr supports two MCP transports: **Streamable HTTP** (recommended) and **SSE** (legacy).
+nobrainr supports two MCP transports: **HTTP** (recommended) and **SSE** (legacy).
+
+For remote access across machines, always use HTTPS via a reverse proxy (see [Deployment — Security](deployment.md#security)).
 
 ## Claude Code
 
@@ -10,12 +12,14 @@ Add to `~/.claude/mcp.json`:
 {
   "mcpServers": {
     "nobrainr": {
-      "type": "streamable-http",
-      "url": "http://your-server:8420/mcp"
+      "type": "http",
+      "url": "https://your-domain/mcp"
     }
   }
 }
 ```
+
+For local-only access (same machine), you can use `http://localhost:8420/mcp` without the `type` field.
 
 Or follow the [Claude Code setup guide](claude-code-setup.md) which sets up everything via a single prompt. This installs hooks and slash commands:
 
@@ -32,8 +36,8 @@ Open Settings > Developer > Edit Config, then add:
 {
   "mcpServers": {
     "nobrainr": {
-      "type": "streamable-http",
-      "url": "http://your-server:8420/mcp"
+      "type": "http",
+      "url": "https://your-domain/mcp"
     }
   }
 }
@@ -43,8 +47,8 @@ Open Settings > Developer > Edit Config, then add:
 
 Go to Settings > MCP > Add Server:
 
-- **Type:** Streamable HTTP
-- **URL:** `http://your-server:8420/mcp`
+- **Type:** HTTP
+- **URL:** `https://your-domain/mcp`
 
 ## Windsurf
 
@@ -54,8 +58,8 @@ Add to your MCP configuration:
 {
   "mcpServers": {
     "nobrainr": {
-      "type": "streamable-http",
-      "url": "http://your-server:8420/mcp"
+      "type": "http",
+      "url": "https://your-domain/mcp"
     }
   }
 }
@@ -63,23 +67,24 @@ Add to your MCP configuration:
 
 ## Any MCP client
 
-Any client that supports MCP Streamable HTTP can connect:
+Any client that supports MCP HTTP transport can connect:
 
 ```
-http://your-server:8420/mcp
+https://your-domain/mcp
 ```
 
 For clients that only support SSE (legacy), use:
 
 ```
-http://your-server:8420/sse
+https://your-domain/sse
 ```
 
 !!! note
-    Replace `your-server` with the IP or hostname where nobrainr is running. If running locally, use `localhost`.
+    Replace `your-domain` with the domain or hostname where nobrainr is accessible. For local-only use, `localhost:8420` works without TLS.
 
 !!! warning
-    The MCP port (8420) is bound to localhost by default in `docker-compose.yml`. If connecting from other machines, either:
+    Never expose port 8420 directly to the internet. MCP traffic includes memory content in plaintext. For multi-machine setups:
 
-    - Use a reverse proxy with TLS (recommended)
-    - Change the port binding to `0.0.0.0:8420:8420` (not recommended without a firewall)
+    - Use a reverse proxy with TLS (required)
+    - Restrict access via VPN or IP allowlist (recommended)
+    - See [Deployment — Security](deployment.md#security) for examples
