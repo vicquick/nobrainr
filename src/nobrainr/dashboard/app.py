@@ -120,18 +120,29 @@ def create_app():
 
     # Get MCP ASGI apps for both transports
     sse_app = mcp.sse_app()
-    streamable_app = mcp.streamable_http_app()
 
-    # streamable_http_app() creates its own /mcp route internally and needs
-    # its session_manager.run() called in the parent lifespan (done above).
-    # Mount at "/" so the internal /mcp path isn't doubled to /mcp/mcp.
+    # For streamable HTTP: extract the actual ASGI handler from the app
+    # and mount it as a direct Route at /mcp (the app internally creates
+    # a /mcp route, so we grab the handler to avoid path doubling).
+    streamable_starlette = mcp.streamable_http_app()
+    streamable_handler = None
+    for route in streamable_starlette.routes:
+        if hasattr(route, 'path') and route.path == '/mcp':
+            streamable_handler = route.endpoint
+            break
+
+    from starlette.routing import Route
+
     routes = [
         *api_routes,
-        # Streamable HTTP transport (serves /mcp)
-        Mount("/", app=streamable_app),
-        # SSE transport (backward compat, handles /sse and /messages/)
-        Mount("/", app=sse_app),
     ]
+
+    # Streamable HTTP at /mcp (preferred transport)
+    if streamable_handler is not None:
+        routes.append(Route("/mcp", endpoint=streamable_handler, methods=["GET", "POST", "DELETE"]))
+
+    # SSE transport (backward compat, handles /sse and /messages/)
+    routes.append(Mount("/", app=sse_app))
 
     middleware = [
         Middleware(
