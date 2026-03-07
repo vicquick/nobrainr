@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     max_content_length: int = 50000  # 50KB max memory content
 
     # Extraction (knowledge graph)
-    extraction_model: str = "qwen2.5:7b"
+    extraction_model: str = "qwen3:8b"
     extraction_enabled: bool = True
 
     # Scheduler
@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     source_machine: str = ""
 
     # LLM scheduler jobs
-    scheduler_llm_model: str = "qwen2.5:7b"
+    scheduler_llm_model: str = "qwen3:8b"
     summarize_interval_hours: float = 4.0
     summarize_batch_size: int = 10
     consolidation_interval_hours: float = 8.0
@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     insight_extraction_batch_size: int = 20
     chatgpt_distill_interval_hours: float = 0.5
     chatgpt_distill_batch_size: int = 3
-    chatgpt_distill_model: str = "qwen2.5:3b"
+    chatgpt_distill_model: str = "qwen3:8b"
 
 
 settings = Settings()
