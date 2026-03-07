@@ -30,7 +30,7 @@ async def extract_entities(text: str) -> ExtractionResult:
             system=SYSTEM_PROMPT,
             user=f"Extract entities and relationships from this memory:\n\n{text}",
             schema=ExtractionResult.model_json_schema(),
-            keep_alive="5m",
+            keep_alive="24h",
         )
         return ExtractionResult.model_validate(parsed)
 

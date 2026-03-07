@@ -29,7 +29,7 @@ async def ollama_chat(
     temperature: float = 0.1,
     num_ctx: int = 4096,
     timeout: float = 180.0,
-    keep_alive: str = "5m",
+    keep_alive: str = "24h",
 ) -> dict:
     """Send a structured-output chat request to Ollama.
 
