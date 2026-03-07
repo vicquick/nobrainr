@@ -510,7 +510,7 @@ async def mark_memories_consolidation_checked(id_a: str, id_b: str) -> None:
     """Mark a pair of memories as checked for consolidation."""
     await log_agent_event(
         event_type="consolidation_checked",
-        description=f"Checked pair {id_a[:8]}../{id_b[:8]}.. for consolidation",
+        description=f"Checked pair {str(id_a)[:8]}../{str(id_b)[:8]}.. for consolidation",
         agent_id="scheduler",
         category="system",
         metadata={"id_a": id_a, "id_b": id_b},

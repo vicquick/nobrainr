@@ -158,18 +158,21 @@ async def consolidation() -> dict:
                 timeout=90.0,
             )
 
+            id_a = str(pair["id_a"])
+            id_b = str(pair["id_b"])
+
             if result.get("should_merge") and result.get("merged_content"):
                 # Update the winner with merged content, re-embed
                 merged_content = result["merged_content"]
                 embedding = await embed_text(merged_content)
                 await queries.update_memory(
-                    pair["id_a"], content=merged_content, embedding=embedding,
+                    id_a, content=merged_content, embedding=embedding,
                 )
                 # Soft-delete the loser by archiving
-                await queries.update_memory(pair["id_b"], category="_archived")
+                await queries.update_memory(id_b, category="_archived")
                 merged += 1
             else:
-                await queries.mark_memories_consolidation_checked(pair["id_a"], pair["id_b"])
+                await queries.mark_memories_consolidation_checked(id_a, id_b)
 
             checked += 1
         except Exception:
