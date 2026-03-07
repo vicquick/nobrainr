@@ -250,8 +250,9 @@ async def distill_conversations(
                 results["processed"] += 1
 
         except Exception as e:
-            logger.warning("Distillation failed for '%s': %s", title, e)
-            await _mark_distilled(convo_id, 0, error=str(e))
+            err_msg = f"{type(e).__name__}: {e}" or "unknown error"
+            logger.warning("Distillation failed for '%s': %s", title, err_msg, exc_info=True)
+            await _mark_distilled(convo_id, 0, error=err_msg)
             async with lock:
                 results["processed"] += 1
 
