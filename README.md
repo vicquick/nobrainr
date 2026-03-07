@@ -43,7 +43,6 @@ graph TB
         NB[FastMCP + JSON API]
         NB --> EMB[Ollama<br/>nomic-embed-text]
         NB --> EXT[Ollama<br/>qwen3:8b<br/>Entity Extraction]
-        NB --> CHAT[Ollama<br/>gemma3:12b<br/>Chatbot + LoRA]
         NB --> PG[(PostgreSQL 18<br/>+ pgvector)]
     end
 
@@ -85,8 +84,6 @@ curl -sf http://localhost:8420/api/stats | jq .total_memories
 ```
 
 The extraction model (`qwen3:8b`, ~5.2GB) is also pulled on first start. If you don't need automatic entity extraction (knowledge graph), set `NOBRAINR_EXTRACTION_ENABLED=false` in `.env` to skip it.
-
-For chatbot features (support assistant, domain-specific LoRA adapters), `gemma3:12b` (~8-9GB) is recommended. Pull it manually: `docker exec ollama ollama pull gemma3:12b`.
 
 ### Local development
 
@@ -269,7 +266,6 @@ See the [Claude Code setup guide](docs/claude-code-setup.md) for full setup inst
 | pgvector | HNSW index | Similarity search |
 | Ollama | nomic-embed-text | Local embeddings (768d, free, no API costs) |
 | Ollama | qwen3:8b | Entity extraction + autonomous learning (optional) |
-| Ollama | gemma3:12b | Chatbot base model — support + domain LoRA adapters (optional) |
 | FastMCP | HTTP + SSE | MCP server |
 | Python | 3.12+ | Runtime |
 | Vue 3 | Vuetify + Cytoscape.js | Dashboard (optional, separate container) |
