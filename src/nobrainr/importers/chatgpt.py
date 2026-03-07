@@ -137,12 +137,15 @@ async def distill_conversations(
     *,
     batch_size: int = 20,
     source_machine: str | None = None,
-    llm_model: str = "qwen2.5:7b",
+    llm_model: str | None = None,
 ) -> dict:
     """Distill raw conversations into memory learnings using LLM.
 
     Processes conversations that haven't been distilled yet (no 'distilled' in metadata).
     """
+    if llm_model is None:
+        from nobrainr.config import settings
+        llm_model = settings.chatgpt_distill_model
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
