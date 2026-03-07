@@ -25,7 +25,7 @@ LLM_JOB_DELAYS = {
 }
 
 # Per-job timeout for LLM operations
-LLM_JOB_TIMEOUT = 20 * 60  # 20 minutes for larger batch sizes
+LLM_JOB_TIMEOUT = 30 * 60  # 30 minutes for larger batch sizes
 
 
 class Scheduler:
