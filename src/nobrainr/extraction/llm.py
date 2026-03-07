@@ -1,5 +1,6 @@
 """Shared Ollama chat helper for LLM-powered tasks."""
 
+import asyncio
 import json
 import logging
 
@@ -49,24 +50,34 @@ async def ollama_chat(
         Exception on HTTP or parsing errors.
     """
     client = _get_client()
-    resp = await client.post(
-        "/api/chat",
-        json={
-            "model": model or settings.extraction_model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "format": schema,
-            "stream": False,
-            "options": {
-                "temperature": temperature,
-                "num_ctx": num_ctx,
-            },
-            "keep_alive": keep_alive,
+    payload = {
+        "model": model or settings.extraction_model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "format": schema,
+        "stream": False,
+        "options": {
+            "temperature": temperature,
+            "num_ctx": num_ctx,
         },
-        timeout=timeout,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    return json.loads(data["message"]["content"])
+        "keep_alive": keep_alive,
+    }
+
+    last_exc = None
+    for attempt in range(5):
+        resp = await client.post("/api/chat", json=payload, timeout=timeout)
+        if resp.status_code == 404:
+            last_exc = httpx.HTTPStatusError(
+                f"404 on attempt {attempt + 1}", request=resp.request, response=resp,
+            )
+            wait = 2 ** attempt
+            logger.warning("Ollama /api/chat returned 404 (attempt %d/5), retrying in %ds", attempt + 1, wait)
+            await asyncio.sleep(wait)
+            continue
+        resp.raise_for_status()
+        data = resp.json()
+        return json.loads(data["message"]["content"])
+
+    raise last_exc
