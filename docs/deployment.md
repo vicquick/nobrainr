@@ -24,15 +24,24 @@ docker run -d -p 3000:80 nobrainr-dashboard
 
 ## Behind a reverse proxy
 
-nobrainr serves both MCP SSE and a JSON API on port 8420. Behind nginx/Traefik/Caddy:
+nobrainr serves MCP (Streamable HTTP + SSE) and a JSON API on port 8420. Behind nginx/Traefik/Caddy:
 
-- `/sse` and `/messages/*` → backend (SSE — disable buffering)
+- `/mcp` → backend (Streamable HTTP transport — recommended)
+- `/sse` and `/messages/*` → backend (SSE transport — legacy, disable buffering)
 - `/api/*` → backend (regular HTTP)
 - `/*` → dashboard (static files)
 
 ### nginx example
 
 ```nginx
+location /mcp {
+    proxy_pass http://localhost:8420;
+    proxy_http_version 1.1;
+    proxy_set_header Connection '';
+    proxy_buffering off;
+    proxy_cache off;
+}
+
 location /sse {
     proxy_pass http://localhost:8420;
     proxy_http_version 1.1;

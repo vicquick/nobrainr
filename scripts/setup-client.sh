@@ -35,17 +35,17 @@ mkdir -p "$SCRIPTS_DIR" "$HOOKS_DIR"
 
 # 3. Add nobrainr to MCP config
 MCP_FILE="$CLAUDE_DIR/mcp.json"
-SSE_URL="http://${NOBRAINR_HOST}:${NOBRAINR_PORT}/sse"
+MCP_URL="http://${NOBRAINR_HOST}:${NOBRAINR_PORT}/mcp"
 if [[ -f "$MCP_FILE" ]]; then
-    jq --arg url "$SSE_URL" '.mcpServers.nobrainr = {"type": "sse", "url": $url}' \
+    jq --arg url "$MCP_URL" '.mcpServers.nobrainr = {"type": "streamable-http", "url": $url}' \
         "$MCP_FILE" > "${MCP_FILE}.tmp" && mv "${MCP_FILE}.tmp" "$MCP_FILE"
 else
     cat > "$MCP_FILE" << MCPEOF
 {
   "mcpServers": {
     "nobrainr": {
-      "type": "sse",
-      "url": "$SSE_URL"
+      "type": "streamable-http",
+      "url": "$MCP_URL"
     }
   }
 }
@@ -137,4 +137,4 @@ echo "Stop hook: $STOP_HOOK"
 echo ""
 echo "Note: The nobrainr-query.py script is not included in this repo."
 echo "It will be available from the nobrainr server or you can write your own"
-echo "MCP SSE client. See CLAUDE.md for the protocol details."
+echo "MCP client. See CLAUDE.md for the protocol details."

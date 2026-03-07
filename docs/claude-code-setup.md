@@ -32,8 +32,8 @@ Create/update `~/.claude/mcp.json` — add the nobrainr server:
 {
   "mcpServers": {
     "nobrainr": {
-      "type": "sse",
-      "url": "NOBRAINR_URL/sse"
+      "type": "streamable-http",
+      "url": "NOBRAINR_URL/mcp"
     }
   }
 }

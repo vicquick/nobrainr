@@ -37,12 +37,12 @@ graph TB
         A3[Cursor / Windsurf<br/>Machine C]
     end
 
-    A1 & A2 & A3 -->|MCP SSE| NB
+    A1 & A2 & A3 -->|MCP Streamable HTTP| NB
 
     subgraph nobrainr [nobrainr server :8420]
-        NB[FastMCP SSE + JSON API]
+        NB[FastMCP + JSON API]
         NB --> EMB[Ollama<br/>nomic-embed-text]
-        NB --> EXT[Ollama<br/>qwen2.5:7b<br/>Entity Extraction]
+        NB --> EXT[Ollama<br/>qwen3:8b<br/>Entity Extraction]
         NB --> PG[(PostgreSQL 18<br/>+ pgvector)]
     end
 
@@ -59,7 +59,7 @@ graph TB
     style Storage fill:#0d1117,stroke:#30363d,color:#e6e6e6
 ```
 
-Fully local. No API keys. No cloud. Your data stays on your hardware. Built on PostgreSQL + pgvector for storage, Ollama for free local embeddings, and MCP (SSE) as the standard interface.
+Fully local. No API keys. No cloud. Your data stays on your hardware. Built on PostgreSQL + pgvector for storage, Ollama for free local embeddings, and MCP (Streamable HTTP) as the standard interface.
 
 ## Quick start
 
@@ -80,10 +80,10 @@ docker compose up -d
 docker compose logs -f ollama-init
 
 # Verify
-curl -sf http://localhost:8420/sse  # Should hang (SSE stream) — Ctrl+C
+curl -sf http://localhost:8420/api/stats | jq .total_memories
 ```
 
-The extraction model (`qwen2.5:7b`, ~4.7GB) is also pulled on first start. If you don't need automatic entity extraction (knowledge graph), set `NOBRAINR_EXTRACTION_ENABLED=false` in `.env` to skip it.
+The extraction model (`qwen3:8b`, ~5.2GB) is also pulled on first start. If you don't need automatic entity extraction (knowledge graph), set `NOBRAINR_EXTRACTION_ENABLED=false` in `.env` to skip it.
 
 ### Local development
 
@@ -111,8 +111,8 @@ Add to `~/.claude/mcp.json`:
 {
   "mcpServers": {
     "nobrainr": {
-      "type": "sse",
-      "url": "http://<your-server>:8420/sse"
+      "type": "streamable-http",
+      "url": "http://<your-server>:8420/mcp"
     }
   }
 }
@@ -132,8 +132,8 @@ Add to `claude_desktop_config.json` (Settings > Developer > Edit Config):
 {
   "mcpServers": {
     "nobrainr": {
-      "type": "sse",
-      "url": "http://<your-server>:8420/sse"
+      "type": "streamable-http",
+      "url": "http://<your-server>:8420/mcp"
     }
   }
 }
@@ -144,14 +144,26 @@ Add to `claude_desktop_config.json` (Settings > Developer > Edit Config):
 <summary><b>Cursor</b></summary>
 
 Settings > MCP > Add Server:
-- **Type:** SSE
-- **URL:** `http://<your-server>:8420/sse`
+- **Type:** Streamable HTTP
+- **URL:** `http://<your-server>:8420/mcp`
 </details>
 
 <details>
 <summary><b>Windsurf / Cline / any MCP client</b></summary>
 
-Any MCP-compatible client that supports SSE transport can connect:
+Streamable HTTP (recommended):
+```json
+{
+  "mcpServers": {
+    "nobrainr": {
+      "type": "streamable-http",
+      "url": "http://<your-server>:8420/mcp"
+    }
+  }
+}
+```
+
+SSE (legacy, still supported):
 ```json
 {
   "mcpServers": {
@@ -207,12 +219,16 @@ nobrainr runs background scheduler jobs that continuously improve the knowledge 
 | Job | Interval | What it does |
 |-----|----------|-------------|
 | Maintenance | 6h | Recompute importance scores, decay stale memories |
-| Summarize | 4h | Auto-summarize memories that lack summaries |
-| Consolidation | 8h | Merge near-duplicate memories (cosine > 0.88) |
-| Synthesis | 24h | Generate insights from entity clusters |
-| Entity enrichment | 12h | Improve entity descriptions |
-| Insight extraction | 6h | Extract learnings from agent events |
-| ChatGPT distillation | 30min | Distill imported ChatGPT conversations into memories |
+| Summarize | 1h | Auto-summarize memories that lack summaries |
+| Consolidation | 2h | Merge near-duplicate memories (cosine > 0.88) |
+| Synthesis | 4h | Generate insights from entity clusters |
+| Entity enrichment | 2h | Improve entity descriptions |
+| Insight extraction | 1h | Extract learnings from agent events |
+| ChatGPT distillation | 6min | Distill imported ChatGPT conversations into memories |
+| Contradiction detection | 4h | Find and flag contradicting memories |
+| Cross-machine insights | 6h | Discover patterns across machines |
+| Extraction quality | 4h | Validate entity extractions, prune bad links |
+| Memory decay | 24h | Archive low-value, never-accessed old memories |
 
 All jobs are configurable via environment variables. See `.env.example`.
 
@@ -239,8 +255,8 @@ Run `scripts/setup-client.sh` on each machine to install these automatically.
 | PostgreSQL | 18 | Storage (UUIDv7 native) |
 | pgvector | HNSW index | Similarity search |
 | Ollama | nomic-embed-text | Local embeddings (768d, free, no API costs) |
-| Ollama | qwen2.5:7b | Entity extraction + autonomous learning (optional) |
-| FastMCP | SSE transport | MCP server |
+| Ollama | qwen3:8b | Entity extraction + autonomous learning (optional) |
+| FastMCP | Streamable HTTP + SSE | MCP server |
 | Python | 3.12+ | Runtime |
 | Vue 3 | Vuetify + Cytoscape.js | Dashboard (optional, separate container) |
 
@@ -256,7 +272,7 @@ All via environment variables with `NOBRAINR_` prefix:
 | `NOBRAINR_HOST` | `0.0.0.0` | Server bind address |
 | `NOBRAINR_PORT` | `8420` | Server port |
 | `NOBRAINR_EXTRACTION_ENABLED` | `true` | Enable entity extraction (knowledge graph) |
-| `NOBRAINR_EXTRACTION_MODEL` | `qwen2.5:7b` | Ollama model for extraction |
+| `NOBRAINR_EXTRACTION_MODEL` | `qwen3:8b` | Ollama model for extraction |
 | `NOBRAINR_SOURCE_MACHINE` | `<hostname>` | Machine name for scheduler-created memories |
 | `NOBRAINR_SCHEDULER_ENABLED` | `true` | Enable background scheduler jobs |
 
@@ -315,15 +331,24 @@ docker run -d -p 3000:80 nobrainr-dashboard
 
 ### Behind a reverse proxy
 
-nobrainr serves both the MCP SSE endpoint and a JSON API on the same port (default 8420). If you put it behind a reverse proxy (nginx, Traefik, Caddy):
+nobrainr serves MCP (Streamable HTTP + SSE) and a JSON API on the same port (default 8420). If you put it behind a reverse proxy (nginx, Traefik, Caddy):
 
-- Route `/sse` and `/messages/*` to the backend (SSE — don't buffer these)
+- Route `/mcp` to the backend (Streamable HTTP transport — recommended)
+- Route `/sse` and `/messages/*` to the backend (SSE transport — legacy, don't buffer)
 - Route `/api/*` to the backend (regular HTTP)
 - Route everything else to the dashboard (static files)
 
 Example nginx snippet:
 
 ```nginx
+location /mcp {
+    proxy_pass http://localhost:8420;
+    proxy_http_version 1.1;
+    proxy_set_header Connection '';
+    proxy_buffering off;
+    proxy_cache off;
+}
+
 location /sse {
     proxy_pass http://localhost:8420;
     proxy_http_version 1.1;
