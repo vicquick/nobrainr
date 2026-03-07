@@ -1303,9 +1303,25 @@ async def store_raw_conversation(
     *,
     source_file: str | None = None,
     metadata: dict | None = None,
-) -> str:
+) -> str | None:
+    """Store a raw conversation, skipping if a duplicate (same title+message_count) exists."""
     pool = await get_pool()
+    msg_count = len(messages)
     async with pool.acquire() as conn:
+        # Dedup check: same source_type + title + message_count
+        existing = await conn.fetchval(
+            """
+            SELECT id FROM conversations_raw
+            WHERE source_type = $1 AND title = $2 AND message_count = $3
+            LIMIT 1
+            """,
+            source_type,
+            title,
+            msg_count,
+        )
+        if existing is not None:
+            return None  # duplicate
+
         row = await conn.fetchrow(
             """
             INSERT INTO conversations_raw (source_type, source_file, title, messages, message_count, metadata)
@@ -1316,7 +1332,7 @@ async def store_raw_conversation(
             source_file,
             title,
             json.dumps(messages),
-            len(messages),
+            msg_count,
             _jsonb(metadata),
         )
         return str(row["id"])
