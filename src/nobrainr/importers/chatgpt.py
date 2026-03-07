@@ -139,7 +139,7 @@ async def distill_conversations(
     batch_size: int = 20,
     source_machine: str | None = None,
     llm_model: str | None = None,
-    concurrency: int = 2,
+    concurrency: int = 1,
 ) -> dict:
     """Distill raw conversations into memory learnings using LLM.
 
@@ -211,7 +211,7 @@ async def distill_conversations(
                     user=convo_text,
                     schema=DISTILL_SCHEMA,
                     model=llm_model,
-                    timeout=600.0,
+                    timeout=900.0,
                     num_ctx=3072,
                     think=False,
                 )
