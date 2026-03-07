@@ -85,37 +85,42 @@ async def process_memory(
 
 async def backfill(
     batch_size: int = 5,
+    concurrency: int = 4,
     on_progress: Callable[[int, dict], None] | None = None,
 ) -> int:
-    """Process all unextracted memories in batches.
+    """Process all unextracted memories in batches with concurrency.
 
     Args:
         batch_size: Number of memories to fetch per batch.
+        concurrency: Max concurrent extraction tasks (match Ollama NUM_PARALLEL).
         on_progress: Optional callback(processed_count, memory_dict) for CLI progress.
 
     Returns:
         Total number of memories processed.
     """
     total = 0
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _process_one(memory: dict) -> None:
+        async with sem:
+            await process_memory(
+                memory_id=memory["id"],
+                content=memory["content"],
+                tags=memory.get("tags"),
+            )
 
     while True:
         batch = await get_unextracted_memories(batch_size)
         if not batch:
             break
 
-        for memory in batch:
-            await process_memory(
-                memory_id=memory["id"],
-                content=memory["content"],
-                tags=memory.get("tags"),
-            )
-            total += 1
+        tasks = [asyncio.create_task(_process_one(m)) for m in batch]
+        await asyncio.gather(*tasks, return_exceptions=True)
 
+        for memory in batch:
+            total += 1
             if on_progress:
                 on_progress(total, memory)
-
-            # Brief yield to avoid starving the event loop
-            await asyncio.sleep(1)
 
     logger.info("Backfill complete: %d memories processed", total)
     return total

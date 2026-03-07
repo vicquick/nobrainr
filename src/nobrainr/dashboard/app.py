@@ -63,7 +63,7 @@ async def _auto_backfill():
         return
     try:
         from nobrainr.extraction.pipeline import backfill
-        total = await backfill(batch_size=5)
+        total = await backfill(batch_size=10, concurrency=4)
         if total:
             logger.info("Auto-backfill complete: %d memories extracted", total)
     except Exception:
