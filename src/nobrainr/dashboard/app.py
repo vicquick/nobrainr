@@ -108,14 +108,17 @@ def create_app():
     """Build the parent Starlette app with MCP + API mounted."""
     from nobrainr.mcp.server import mcp
 
-    # Get the MCP ASGI app (SSE transport)
-    mcp_app = mcp.sse_app()
+    # Get MCP ASGI apps for both transports
+    sse_app = mcp.sse_app()
+    streamable_app = mcp.streamable_http_app()
 
-    # Build all routes: API + MCP catch-all
+    # Build all routes: API + streamable-http at /mcp + SSE catch-all
     routes = [
         *api_routes,
-        # MCP SSE app as catch-all (handles /sse and /messages/)
-        Mount("/", app=mcp_app),
+        # Streamable HTTP transport (preferred by Claude Code)
+        Mount("/mcp", app=streamable_app),
+        # SSE transport (backward compat, handles /sse and /messages/)
+        Mount("/", app=sse_app),
     ]
 
     middleware = [

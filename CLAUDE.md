@@ -103,6 +103,20 @@ dashboard/                  # Vue 3 frontend (separate build)
 | `memory_import_claude` | Import Claude memory files |
 
 ## Client Connection
+
+**Streamable HTTP (recommended — used by Claude Code):**
+```json
+{
+  "mcpServers": {
+    "nobrainr": {
+      "type": "streamable-http",
+      "url": "http://<your-server>:8420/mcp"
+    }
+  }
+}
+```
+
+**SSE (legacy, still supported):**
 ```json
 {
   "mcpServers": {
@@ -116,25 +130,25 @@ dashboard/                  # Vue 3 frontend (separate build)
 
 ## Scheduler Jobs
 
-The scheduler runs 11 autonomous jobs (3 SQL + 8 LLM). LLM jobs share a lock to avoid
-GPU contention and have staggered initial delays.
+The scheduler runs 11 autonomous jobs (3 SQL + 8 LLM). LLM jobs use a semaphore(3)
+allowing up to 3 concurrent GPU jobs. Structured labeling jobs use `think=False` for ~10x speed.
 
 ### Knowledge Lifecycle
-| Job | Interval | Type | Purpose |
-|-----|----------|------|---------|
-| `chatgpt_distill` | 30m | LLM | Convert raw ChatGPT conversations → structured memories |
-| `auto_summarize` | 4h | LLM | Generate 1-line summaries for unsummarized memories |
-| `insight_extraction` | 6h | LLM | Extract reusable learnings from agent events |
-| `consolidation` | 8h | LLM | Find near-duplicates (>88% similar) and merge via LLM |
-| `entity_enrichment` | 12h | LLM | Generate descriptions for underdescribed entities |
-| `synthesis` | 24h | LLM | Cross-entity insight generation from memory clusters |
+| Job | Interval | Batch | Type | Purpose |
+|-----|----------|-------|------|---------|
+| `chatgpt_distill` | 6m | 20 | LLM | Convert raw ChatGPT conversations → structured memories |
+| `auto_summarize` | 1h | 20 | LLM | Generate 1-line summaries for unsummarized memories |
+| `insight_extraction` | 1h | 30 | LLM | Extract reusable learnings from agent events |
+| `consolidation` | 2h | 10 | LLM | Find near-duplicates (>88% similar) and merge via LLM |
+| `entity_enrichment` | 2h | 20 | LLM | Generate descriptions for underdescribed entities |
+| `synthesis` | 4h | 5 | LLM | Cross-entity insight generation from memory clusters |
 
 ### Quality & Integrity
-| Job | Interval | Type | Purpose |
-|-----|----------|------|---------|
-| `extraction_quality` | 12h | LLM | Validate entity extractions, update confidence, prune bad links |
-| `contradiction_detection` | 12h | LLM | Find semantically similar memories that contradict each other |
-| `cross_machine_insights` | 24h | LLM | Discover patterns across different machines/agents |
+| Job | Interval | Batch | Type | Purpose |
+|-----|----------|-------|------|---------|
+| `extraction_quality` | 4h | 20 | LLM | Validate entity extractions, update confidence, prune bad links |
+| `contradiction_detection` | 4h | 10 | LLM | Find semantically similar memories that contradict each other |
+| `cross_machine_insights` | 6h | 5 | LLM | Discover patterns across different machines/agents |
 
 ### Maintenance
 | Job | Interval | Type | Purpose |
@@ -145,12 +159,17 @@ GPU contention and have staggered initial delays.
 
 ## Deployment Notes
 
-### Ollama Models
-Only two models are needed — remove any others to free VRAM:
-- `nomic-embed-text` — embeddings (274 MB)
-- `qwen3:8b` — extraction + scheduler LLM jobs (5.2 GB)
+### Ollama Configuration (dedicated-gpu-server: GPU (20GB VRAM), 20GB VRAM)
+Two models loaded, using ~8GB of 20GB VRAM:
+- `nomic-embed-text` — embeddings (0.6 GB VRAM)
+- `qwen3:8b` — extraction + scheduler LLM jobs (7.6 GB VRAM)
 
-Both should run 100% on GPU with `OLLAMA_KEEP_ALIVE=24h`.
+Key env vars:
+- `OLLAMA_FLASH_ATTENTION=1` — reduces VRAM, speeds inference
+- `OLLAMA_KV_CACHE_TYPE=q8_0` — halves KV cache memory per slot
+- `OLLAMA_NUM_PARALLEL=8` — 8 concurrent inference slots
+- `OLLAMA_KEEP_ALIVE=24h` — keep models hot in VRAM
+- `OLLAMA_MAX_LOADED_MODELS=2` — only our two models
 
 ### Extraction Performance
 - `ollama_chat()` uses `"think": false` for entity extraction (structured labeling doesn't need reasoning)
