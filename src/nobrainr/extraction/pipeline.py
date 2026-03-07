@@ -114,8 +114,8 @@ async def backfill(
             if on_progress:
                 on_progress(total, memory)
 
-            # Rate limit: 30s cooldown between extractions to avoid CPU overload
-            await asyncio.sleep(30)
+            # Brief yield to avoid starving the event loop
+            await asyncio.sleep(1)
 
     logger.info("Backfill complete: %d memories processed", total)
     return total
