@@ -108,34 +108,37 @@ async def search_memories(
     text_query: str | None = None,
 ) -> list[dict]:
     pool = await get_pool()
-    conditions = ["1=1"]
     vec = np.array(embedding, dtype=np.float32)
-    params: list = [vec, limit]
-    idx = 3
+
+    # If hybrid mode with text_query: run RRF fusion of vector + FTS
+    if text_query:
+        return await _hybrid_search_rrf(
+            pool, vec, text_query,
+            limit=limit, threshold=threshold,
+            tags=tags, category=category,
+            source_type=source_type, source_machine=source_machine,
+        )
+
+    # Standard vector search with threshold in SQL WHERE
+    conditions = ["embedding IS NOT NULL"]
+    params: list = [vec, threshold, limit]
+    idx = 4
 
     if tags:
         conditions.append(f"tags && ${idx}::text[]")
         params.append(tags)
         idx += 1
-
     if category:
         conditions.append(f"category = ${idx}")
         params.append(category)
         idx += 1
-
     if source_type:
         conditions.append(f"source_type = ${idx}")
         params.append(source_type)
         idx += 1
-
     if source_machine:
         conditions.append(f"source_machine = ${idx}")
         params.append(source_machine)
-        idx += 1
-
-    if text_query:
-        conditions.append(f"to_tsvector('english', content) @@ plainto_tsquery('english', ${idx})")
-        params.append(text_query)
         idx += 1
 
     where = " AND ".join(conditions)
@@ -147,22 +150,144 @@ async def search_memories(
                    confidence, metadata, created_at, updated_at, importance, stability,
                    access_count, last_accessed_at,
                    1 - (embedding <=> $1) AS similarity,
-                   memory_relevance($1, embedding, created_at, importance, stability) AS relevance
+                   memory_relevance($1, embedding, created_at, importance, stability, access_count) AS relevance
             FROM memories
             WHERE {where}
-              AND embedding IS NOT NULL
-            ORDER BY memory_relevance($1, embedding, created_at, importance, stability) DESC
-            LIMIT $2
+              AND 1 - (embedding <=> $1) >= $2
+            ORDER BY memory_relevance($1, embedding, created_at, importance, stability, access_count) DESC
+            LIMIT $3
             """,
             *params,
         )
-        results = [
-            _row_to_dict(row)
-            for row in rows
-            if row["similarity"] >= threshold
-        ]
+        results = [_row_to_dict(row) for row in rows]
 
-        # Track access for returned results
+        if results:
+            result_ids = [UUID(r["id"]) for r in results]
+            await conn.execute(
+                """
+                UPDATE memories
+                SET last_accessed_at = now(),
+                    access_count = access_count + 1
+                WHERE id = ANY($1)
+                """,
+                result_ids,
+            )
+
+        return results
+
+
+def _build_filter_clause(
+    start_idx: int,
+    tags: list[str] | None,
+    category: str | None,
+    source_type: str | None,
+    source_machine: str | None,
+) -> tuple[str, list, int]:
+    """Build shared WHERE filter fragment for hybrid search sub-queries."""
+    conditions = []
+    params = []
+    idx = start_idx
+    if tags:
+        conditions.append(f"tags && ${idx}::text[]")
+        params.append(tags)
+        idx += 1
+    if category:
+        conditions.append(f"category = ${idx}")
+        params.append(category)
+        idx += 1
+    if source_type:
+        conditions.append(f"source_type = ${idx}")
+        params.append(source_type)
+        idx += 1
+    if source_machine:
+        conditions.append(f"source_machine = ${idx}")
+        params.append(source_machine)
+        idx += 1
+    clause = (" AND " + " AND ".join(conditions)) if conditions else ""
+    return clause, params, idx
+
+
+async def _hybrid_search_rrf(
+    pool,
+    embedding,
+    text_query: str,
+    *,
+    limit: int = 10,
+    threshold: float = 0.3,
+    tags: list[str] | None = None,
+    category: str | None = None,
+    source_type: str | None = None,
+    source_machine: str | None = None,
+    rrf_k: int = 60,
+) -> list[dict]:
+    """Hybrid search using Reciprocal Rank Fusion of vector + full-text results."""
+    overfetch = max(limit * 3, 20)
+
+    async with pool.acquire() as conn:
+        # 1) Vector search: $1=embedding, $2=threshold, $3=overfetch, filters from $4+
+        vec_extra, vec_fparams, _ = _build_filter_clause(
+            4, tags, category, source_type, source_machine,
+        )
+        vec_rows = await conn.fetch(
+            f"""
+            SELECT id, content, summary, source_type, source_machine, tags, category,
+                   confidence, metadata, created_at, updated_at, importance, stability,
+                   access_count, last_accessed_at,
+                   1 - (embedding <=> $1) AS similarity,
+                   memory_relevance($1, embedding, created_at, importance, stability, access_count) AS relevance
+            FROM memories
+            WHERE embedding IS NOT NULL
+              AND 1 - (embedding <=> $1) >= $2
+              {vec_extra}
+            ORDER BY memory_relevance($1, embedding, created_at, importance, stability, access_count) DESC
+            LIMIT $3
+            """,
+            embedding, threshold, overfetch, *vec_fparams,
+        )
+
+        # 2) Full-text search: $1=query, $2=overfetch, filters from $3+
+        fts_extra, fts_fparams, _ = _build_filter_clause(
+            3, tags, category, source_type, source_machine,
+        )
+        fts_rows = await conn.fetch(
+            f"""
+            SELECT id, content, summary, source_type, source_machine, tags, category,
+                   confidence, metadata, created_at, updated_at, importance, stability,
+                   access_count, last_accessed_at,
+                   ts_rank(to_tsvector('english', content), plainto_tsquery('english', $1)) AS fts_rank
+            FROM memories
+            WHERE to_tsvector('english', content) @@ plainto_tsquery('english', $1)
+              {fts_extra}
+            ORDER BY fts_rank DESC
+            LIMIT $2
+            """,
+            text_query, overfetch, *fts_fparams,
+        )
+
+        # 3) Reciprocal Rank Fusion
+        rrf_scores: dict[str, float] = {}
+        rows_by_id: dict[str, object] = {}
+
+        for rank, row in enumerate(vec_rows, start=1):
+            rid = str(row["id"])
+            rrf_scores[rid] = rrf_scores.get(rid, 0.0) + 1.0 / (rrf_k + rank)
+            rows_by_id[rid] = row
+
+        for rank, row in enumerate(fts_rows, start=1):
+            rid = str(row["id"])
+            rrf_scores[rid] = rrf_scores.get(rid, 0.0) + 1.0 / (rrf_k + rank)
+            if rid not in rows_by_id:
+                rows_by_id[rid] = row
+
+        sorted_ids = sorted(rrf_scores, key=rrf_scores.get, reverse=True)[:limit]
+
+        results = []
+        for rid in sorted_ids:
+            row = rows_by_id[rid]
+            d = _row_to_dict(row)
+            d["rrf_score"] = rrf_scores[rid]
+            results.append(d)
+
         if results:
             result_ids = [UUID(r["id"]) for r in results]
             await conn.execute(
@@ -365,6 +490,16 @@ async def decay_stability() -> int:
             """
         )
         return int(result.split()[-1]) if result else 0
+
+
+async def analyze_tables() -> None:
+    """Run ANALYZE on core tables to refresh planner statistics."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("ANALYZE memories")
+        await conn.execute("ANALYZE entities")
+        await conn.execute("ANALYZE entity_memories")
+        await conn.execute("ANALYZE entity_relations")
 
 
 async def store_memory_outcome(
@@ -1116,55 +1251,56 @@ async def merge_entities(winner_id: str, loser_id: str) -> None:
     w = UUID(winner_id)
     l = UUID(loser_id)
     async with pool.acquire() as conn:
-        # Transfer entity_memories (skip duplicates)
-        await conn.execute(
-            """
-            INSERT INTO entity_memories (entity_id, memory_id, role, confidence)
-            SELECT $1, memory_id, role, confidence
-            FROM entity_memories WHERE entity_id = $2
-            ON CONFLICT DO NOTHING
-            """,
-            w, l,
-        )
-        # Transfer relations (source side)
-        await conn.execute(
-            """
-            UPDATE entity_relations SET source_entity_id = $1
-            WHERE source_entity_id = $2
-            AND NOT EXISTS (
-                SELECT 1 FROM entity_relations er2
-                WHERE er2.source_entity_id = $1
-                  AND er2.target_entity_id = entity_relations.target_entity_id
-                  AND er2.relationship_type = entity_relations.relationship_type
+        async with conn.transaction():
+            # Transfer entity_memories (skip duplicates)
+            await conn.execute(
+                """
+                INSERT INTO entity_memories (entity_id, memory_id, role, confidence)
+                SELECT $1, memory_id, role, confidence
+                FROM entity_memories WHERE entity_id = $2
+                ON CONFLICT DO NOTHING
+                """,
+                w, l,
             )
-            """,
-            w, l,
-        )
-        # Transfer relations (target side)
-        await conn.execute(
-            """
-            UPDATE entity_relations SET target_entity_id = $1
-            WHERE target_entity_id = $2
-            AND NOT EXISTS (
-                SELECT 1 FROM entity_relations er2
-                WHERE er2.source_entity_id = entity_relations.source_entity_id
-                  AND er2.target_entity_id = $1
-                  AND er2.relationship_type = entity_relations.relationship_type
+            # Transfer relations (source side)
+            await conn.execute(
+                """
+                UPDATE entity_relations SET source_entity_id = $1
+                WHERE source_entity_id = $2
+                AND NOT EXISTS (
+                    SELECT 1 FROM entity_relations er2
+                    WHERE er2.source_entity_id = $1
+                      AND er2.target_entity_id = entity_relations.target_entity_id
+                      AND er2.relationship_type = entity_relations.relationship_type
+                )
+                """,
+                w, l,
             )
-            """,
-            w, l,
-        )
-        # Sum mention counts
-        await conn.execute(
-            """
-            UPDATE entities SET mention_count = mention_count + (
-                SELECT mention_count FROM entities WHERE id = $2
-            ) WHERE id = $1
-            """,
-            w, l,
-        )
-        # Delete loser (CASCADE removes remaining orphaned links)
-        await conn.execute("DELETE FROM entities WHERE id = $1", l)
+            # Transfer relations (target side)
+            await conn.execute(
+                """
+                UPDATE entity_relations SET target_entity_id = $1
+                WHERE target_entity_id = $2
+                AND NOT EXISTS (
+                    SELECT 1 FROM entity_relations er2
+                    WHERE er2.source_entity_id = entity_relations.source_entity_id
+                      AND er2.target_entity_id = $1
+                      AND er2.relationship_type = entity_relations.relationship_type
+                )
+                """,
+                w, l,
+            )
+            # Sum mention counts
+            await conn.execute(
+                """
+                UPDATE entities SET mention_count = mention_count + (
+                    SELECT mention_count FROM entities WHERE id = $2
+                ) WHERE id = $1
+                """,
+                w, l,
+            )
+            # Delete loser (CASCADE removes remaining orphaned links)
+            await conn.execute("DELETE FROM entities WHERE id = $1", l)
 
 
 async def mark_entity_merge_checked(id_a: str, id_b: str) -> None:

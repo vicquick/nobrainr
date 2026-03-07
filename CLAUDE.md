@@ -6,8 +6,9 @@ you can store learnings with `memory_store`, search past knowledge with `memory_
 and explore the knowledge graph with `entity_search` / `entity_graph`. Everything you
 store is available to every other agent instance connected to this server.
 
-Provides relevance-ranked semantic search, automatic entity extraction, on-write dedup,
-and a Vue 3 dashboard with interactive graph visualization.
+Provides relevance-ranked semantic + hybrid (RRF) search, context-enriched embeddings,
+automatic entity extraction, on-write dedup, and a Vue 3 dashboard with interactive
+graph visualization.
 
 The system learns autonomously: it summarizes, consolidates duplicates, synthesizes
 cross-entity insights, detects contradictions, validates its own extractions, discovers
@@ -80,6 +81,8 @@ dashboard/                  # Vue 3 frontend (separate build)
 - `/api/node/{id}` — Entity detail + connections + related memories
 - `/api/stats` — Statistics + feedback
 - `/api/scheduler` — Scheduler status + events + feedback
+- `/api/entities` — List entities (query: type, limit, offset)
+- `/api/recall` — Fast text-only search (PostgreSQL FTS, no embedding)
 - `/api/categories`, `/api/tags` — Filter values
 
 ## MCP Tools
@@ -94,6 +97,8 @@ dashboard/                  # Vue 3 frontend (separate build)
 | `memory_stats` | Database + knowledge graph statistics |
 | `entity_search` | Semantic search on knowledge graph entities |
 | `entity_graph` | Recursive graph traversal from a named entity |
+| `entity_list` | List entities with optional type filter |
+| `entity_memories` | Get all memories linked to a specific entity |
 | `memory_maintenance` | Recompute importance + decay stability |
 | `memory_extract` | Manually trigger entity extraction for a memory |
 | `memory_feedback` | Report whether search results were helpful |
@@ -130,8 +135,9 @@ dashboard/                  # Vue 3 frontend (separate build)
 
 ## Scheduler Jobs
 
-The scheduler runs 11 autonomous jobs (3 SQL + 8 LLM). LLM jobs use a semaphore(3)
-allowing up to 3 concurrent GPU jobs. Structured labeling jobs use `think=False` for ~10x speed.
+The scheduler runs 13 autonomous jobs (3 SQL + 10 LLM). LLM jobs use a semaphore(6)
+allowing up to 6 concurrent GPU jobs (leaves headroom for Ollama NUM_PARALLEL=8).
+Structured labeling jobs use `think=False` for ~10x speed.
 
 ### Knowledge Lifecycle
 | Job | Interval | Batch | Type | Purpose |

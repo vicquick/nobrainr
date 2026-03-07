@@ -83,7 +83,18 @@ async def memory_store(
         return {"error": f"Content too large ({len(content)} chars, max {settings.max_content_length})"}
 
     confidence = max(0.0, min(confidence, 1.0))
-    embedding = await embed_text(content)
+
+    # Context-enriched embedding: prepend category + tags for better retrieval
+    embed_parts = []
+    if category:
+        embed_parts.append(category)
+    if tags:
+        embed_parts.append(", ".join(tags))
+    if embed_parts:
+        embed_input = ". ".join(embed_parts) + ". " + content
+    else:
+        embed_input = content
+    embedding = await embed_text(embed_input)
 
     # Dedup check: see if this memory should merge with an existing one
     if settings.extraction_enabled:
@@ -149,8 +160,8 @@ async def memory_store(
 @mcp.tool()
 async def memory_search(
     query: str,
-    limit: int = 10,
-    threshold: float = 0.3,
+    limit: int = settings.default_search_limit,
+    threshold: float = settings.default_similarity_threshold,
     tags: list[str] | None = None,
     category: str | None = None,
     source_type: str | None = None,
@@ -268,7 +279,16 @@ async def memory_update(
         return {"error": "Invalid memory_id format"}
     embedding = None
     if content is not None:
-        embedding = await embed_text(content)
+        embed_parts = []
+        if category:
+            embed_parts.append(category)
+        if tags:
+            embed_parts.append(", ".join(tags))
+        if embed_parts:
+            embed_input = ". ".join(embed_parts) + ". " + content
+        else:
+            embed_input = content
+        embedding = await embed_text(embed_input)
 
     return await queries.update_memory(
         memory_id,
@@ -356,6 +376,48 @@ async def entity_graph(
     """
     depth = min(depth, 5)
     return await queries.get_entity_graph(entity_name, depth=depth)
+
+
+# ──────────────────────────────────────────────
+# Tool: entity_list
+# ──────────────────────────────────────────────
+@mcp.tool()
+async def entity_list(
+    entity_type: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict]:
+    """List entities in the knowledge graph, optionally filtered by type.
+
+    Args:
+        entity_type: Filter by type (person/project/technology/concept/service/database/etc).
+        limit: Max results (default 100).
+        offset: Pagination offset.
+    """
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+    return await queries.list_entities(
+        entity_type=entity_type,
+        limit=limit,
+        offset=offset,
+    )
+
+
+# ──────────────────────────────────────────────
+# Tool: entity_memories
+# ──────────────────────────────────────────────
+@mcp.tool()
+async def entity_memories(entity_id: str) -> list[dict]:
+    """Get all memories linked to a specific entity.
+
+    Args:
+        entity_id: The UUID of the entity.
+    """
+    try:
+        _validate_uuid(entity_id)
+    except ValueError:
+        return [{"error": "Invalid entity_id format"}]
+    return await queries.get_entity_memories(entity_id)
 
 
 # ──────────────────────────────────────────────
@@ -500,6 +562,12 @@ async def log_event(
         related_memory_ids: UUIDs of related memories.
         metadata: Additional structured data.
     """
+    if related_memory_ids:
+        try:
+            for mid in related_memory_ids:
+                _validate_uuid(mid)
+        except ValueError:
+            return {"error": "Invalid UUID in related_memory_ids"}
     result = await queries.log_agent_event(
         event_type=event_type,
         description=description,

@@ -296,6 +296,22 @@ async def api_events(request: Request) -> StreamingResponse:
     )
 
 
+async def api_entities(request: Request) -> JSONResponse:
+    """List entities with optional type filter."""
+    entity_type = request.query_params.get("type") or None
+    try:
+        limit = min(int(request.query_params.get("limit", "100")), 500)
+        offset = max(int(request.query_params.get("offset", "0")), 0)
+    except ValueError:
+        return JSONResponse({"error": "Invalid limit/offset"}, status_code=400)
+    entities = await queries.list_entities(
+        entity_type=entity_type,
+        limit=limit,
+        offset=offset,
+    )
+    return JSONResponse(entities)
+
+
 async def api_categories(request: Request) -> JSONResponse:
     """Unique categories for filter dropdowns."""
     categories = await queries.get_categories()
@@ -320,6 +336,7 @@ api_routes = [
     Route("/api/stats", api_stats),
     Route("/api/scheduler", api_scheduler),
     Route("/api/recall", api_recall),
+    Route("/api/entities", api_entities),
     Route("/api/categories", api_categories),
     Route("/api/tags", api_tags),
     Route("/api/events", api_events),

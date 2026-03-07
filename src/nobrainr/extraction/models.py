@@ -15,6 +15,11 @@ ENTITY_TYPES = Literal[
     "error",
     "location",
     "organization",
+    "service",
+    "database",
+    "command",
+    "port",
+    "container",
 ]
 
 RELATIONSHIP_TYPES = Literal[
@@ -26,6 +31,10 @@ RELATIONSHIP_TYPES = Literal[
     "created_by",
     "deployed_on",
     "configured_with",
+    "replaces",
+    "conflicts_with",
+    "runs_on",
+    "implements",
 ]
 
 
