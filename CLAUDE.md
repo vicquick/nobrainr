@@ -19,7 +19,6 @@ cross-machine patterns, and archives stale knowledge — all on scheduled LLM-po
 - **PostgreSQL 18 + pgvector** — storage, vector similarity, knowledge graph
 - **Ollama + nomic-embed-text** — local embeddings (768 dimensions)
 - **Ollama + qwen3:8b** — entity/relationship extraction, scheduler jobs (structured output)
-- **Ollama + gemma3:12b** — chatbot base model (support assistant + GAEB costing via LoRA adapters)
 
 ### Routing (when using a reverse proxy)
 | Path | Target |
