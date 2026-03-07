@@ -30,18 +30,20 @@ memory_search(query="postgres backup gotcha")
 
 ## How it connects
 
-Any MCP-compatible AI client (Claude Code, Claude Desktop, Cursor, Windsurf) connects via SSE:
+Any MCP-compatible AI client (Claude Code, Claude Desktop, Cursor, Windsurf) connects via Streamable HTTP:
 
 ```json
 {
   "mcpServers": {
     "nobrainr": {
-      "type": "sse",
-      "url": "http://your-server:8420/sse"
+      "type": "streamable-http",
+      "url": "http://your-server:8420/mcp"
     }
   }
 }
 ```
+
+SSE transport is also supported at `/sse` for legacy clients.
 
 ## Stack
 
@@ -49,8 +51,8 @@ Any MCP-compatible AI client (Claude Code, Claude Desktop, Cursor, Windsurf) con
 |-----------|---------|
 | PostgreSQL 18 + pgvector | Storage, vector similarity, knowledge graph |
 | Ollama + nomic-embed-text | Local embeddings (768d, free, no API keys) |
-| Ollama + qwen2.5:7b | Entity extraction + autonomous learning (optional) |
-| FastMCP (SSE) | MCP server transport |
+| Ollama + qwen3:8b | Entity extraction + autonomous learning (optional) |
+| FastMCP (Streamable HTTP + SSE) | MCP server transport |
 | Vue 3 + Vuetify | Dashboard with interactive graph visualization |
 
 Ready to get started? Head to [Getting Started](getting-started.md).

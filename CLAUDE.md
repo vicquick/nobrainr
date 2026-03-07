@@ -14,7 +14,7 @@ cross-entity insights, detects contradictions, validates its own extractions, di
 cross-machine patterns, and archives stale knowledge — all on scheduled LLM-powered jobs.
 
 ## Architecture
-- **Backend** — Python ASGI: FastMCP SSE + pure JSON API (Starlette)
+- **Backend** — Python ASGI: FastMCP (Streamable HTTP + SSE) + pure JSON API (Starlette)
 - **Frontend** — Vue 3 + Vuetify + Cytoscape.js (separate container, nginx)
 - **PostgreSQL 18 + pgvector** — storage, vector similarity, knowledge graph
 - **Ollama + nomic-embed-text** — local embeddings (768 dimensions)
@@ -23,7 +23,7 @@ cross-machine patterns, and archives stale knowledge — all on scheduled LLM-po
 ### Routing (when using a reverse proxy)
 | Path | Target |
 |------|--------|
-| `/api/*`, `/sse`, `/messages/*` | nobrainr backend (port 8420) |
+| `/mcp`, `/api/*`, `/sse`, `/messages/*` | nobrainr backend (port 8420) |
 | `/*` (catch-all) | dashboard (nginx, port 80) |
 
 ## Project Layout

@@ -1,6 +1,6 @@
 # Client Setup
 
-nobrainr connects to any MCP-compatible AI client via SSE transport.
+nobrainr supports two MCP transports: **Streamable HTTP** (recommended) and **SSE** (legacy).
 
 ## Claude Code
 
@@ -10,8 +10,8 @@ Add to `~/.claude/mcp.json`:
 {
   "mcpServers": {
     "nobrainr": {
-      "type": "sse",
-      "url": "http://your-server:8420/sse"
+      "type": "streamable-http",
+      "url": "http://your-server:8420/mcp"
     }
   }
 }
@@ -38,8 +38,8 @@ Open Settings > Developer > Edit Config, then add:
 {
   "mcpServers": {
     "nobrainr": {
-      "type": "sse",
-      "url": "http://your-server:8420/sse"
+      "type": "streamable-http",
+      "url": "http://your-server:8420/mcp"
     }
   }
 }
@@ -49,8 +49,8 @@ Open Settings > Developer > Edit Config, then add:
 
 Go to Settings > MCP > Add Server:
 
-- **Type:** SSE
-- **URL:** `http://your-server:8420/sse`
+- **Type:** Streamable HTTP
+- **URL:** `http://your-server:8420/mcp`
 
 ## Windsurf
 
@@ -60,8 +60,8 @@ Add to your MCP configuration:
 {
   "mcpServers": {
     "nobrainr": {
-      "type": "sse",
-      "url": "http://your-server:8420/sse"
+      "type": "streamable-http",
+      "url": "http://your-server:8420/mcp"
     }
   }
 }
@@ -69,7 +69,13 @@ Add to your MCP configuration:
 
 ## Any MCP client
 
-Any client that supports the MCP SSE transport can connect using the URL pattern:
+Any client that supports MCP Streamable HTTP can connect:
+
+```
+http://your-server:8420/mcp
+```
+
+For clients that only support SSE (legacy), use:
 
 ```
 http://your-server:8420/sse
