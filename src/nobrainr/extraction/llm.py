@@ -68,19 +68,33 @@ async def ollama_chat(
         "keep_alive": keep_alive,
     }
 
-    last_exc = None
+    retryable_status = {404, 503, 502, 429}
+    last_exc: Exception | None = None
     for attempt in range(5):
-        resp = await client.post("/api/chat", json=payload, timeout=timeout)
-        if resp.status_code == 404:
-            last_exc = httpx.HTTPStatusError(
-                f"404 on attempt {attempt + 1}", request=resp.request, response=resp,
-            )
+        try:
+            resp = await client.post("/api/chat", json=payload, timeout=timeout)
+            if resp.status_code in retryable_status:
+                last_exc = httpx.HTTPStatusError(
+                    f"HTTP {resp.status_code} on attempt {attempt + 1}",
+                    request=resp.request, response=resp,
+                )
+                wait = 2 ** attempt
+                logger.warning(
+                    "Ollama /api/chat returned %d (attempt %d/5), retrying in %ds",
+                    resp.status_code, attempt + 1, wait,
+                )
+                await asyncio.sleep(wait)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            return json.loads(data["message"]["content"])
+        except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as exc:
             wait = 2 ** attempt
-            logger.warning("Ollama /api/chat returned 404 (attempt %d/5), retrying in %ds", attempt + 1, wait)
+            logger.warning(
+                "Ollama /api/chat connection error: %s (attempt %d/5), retrying in %ds",
+                exc, attempt + 1, wait,
+            )
             await asyncio.sleep(wait)
-            continue
-        resp.raise_for_status()
-        data = resp.json()
-        return json.loads(data["message"]["content"])
+            last_exc = exc
 
-    raise last_exc
+    raise last_exc or RuntimeError("ollama_chat failed after retries")

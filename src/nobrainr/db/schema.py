@@ -39,7 +39,7 @@ ALTER TABLE memories ADD COLUMN IF NOT EXISTS extraction_status text;
 -- HNSW index for fast approximate nearest neighbor search
 CREATE INDEX IF NOT EXISTS idx_memories_embedding_hnsw
     ON memories USING hnsw (embedding vector_cosine_ops)
-    WITH (m = 24, ef_construction = 200);
+    WITH (m = 24, ef_construction = 128);
 
 -- GIN index for tag queries
 CREATE INDEX IF NOT EXISTS idx_memories_tags
@@ -64,6 +64,10 @@ CREATE INDEX IF NOT EXISTS idx_memories_extraction_status
 -- Full-text search on content
 CREATE INDEX IF NOT EXISTS idx_memories_content_fts
     ON memories USING gin (to_tsvector('english', content));
+
+-- Index for timeline / recency queries
+CREATE INDEX IF NOT EXISTS idx_memories_created_at
+    ON memories (created_at DESC);
 
 -- Raw conversation archives
 CREATE TABLE IF NOT EXISTS conversations_raw (
@@ -105,7 +109,7 @@ END $$;
 
 CREATE INDEX IF NOT EXISTS idx_entities_embedding_hnsw
     ON entities USING hnsw (embedding vector_cosine_ops)
-    WITH (m = 24, ef_construction = 200);
+    WITH (m = 24, ef_construction = 128);
 
 CREATE INDEX IF NOT EXISTS idx_entities_type
     ON entities (entity_type);
@@ -224,30 +228,38 @@ CREATE TRIGGER trg_entities_updated_at
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 -- Composite relevance scoring function
+-- Accepts current_ts so the function is IMMUTABLE (planner can optimize)
 CREATE OR REPLACE FUNCTION memory_relevance(
     query_embedding vector({settings.embedding_dimensions}),
     mem_embedding vector({settings.embedding_dimensions}),
     mem_created_at timestamptz,
     mem_importance real,
-    mem_stability real
+    mem_stability real,
+    mem_access_count integer DEFAULT 0,
+    current_ts timestamptz DEFAULT now()
 ) RETURNS real AS $$
 DECLARE
     cosine_sim real;
     recency_boost real;
+    access_boost real;
     age_days real;
 BEGIN
     -- Cosine similarity (0..1)
     cosine_sim := 1.0 - (query_embedding <=> mem_embedding);
 
-    -- Recency boost: exponential decay, half-life ~30 days
-    age_days := EXTRACT(EPOCH FROM (now() - mem_created_at)) / 86400.0;
-    recency_boost := EXP(-0.023 * age_days);  -- ln(2)/30 ≈ 0.023
+    -- Recency boost: exponential decay, half-life ~90 days (knowledge base, not chat)
+    age_days := EXTRACT(EPOCH FROM (current_ts - mem_created_at)) / 86400.0;
+    recency_boost := EXP(-0.0077 * age_days);  -- ln(2)/90 ≈ 0.0077
 
-    -- Weighted composite: 65% similarity + 15% recency + 15% importance + 5% stability
-    RETURN (0.65 * cosine_sim)
-         + (0.15 * recency_boost)
+    -- Access boost: log-scaled (0..1), saturates around 50 accesses
+    access_boost := LEAST(1.0, LN(COALESCE(mem_access_count, 0) + 1) / LN(50));
+
+    -- Weighted composite: 60% similarity + 10% recency + 15% importance + 5% stability + 10% access
+    RETURN (0.60 * cosine_sim)
+         + (0.10 * recency_boost)
          + (0.15 * COALESCE(mem_importance, 0.0))
-         + (0.05 * COALESCE(mem_stability, 1.0));
+         + (0.05 * COALESCE(mem_stability, 1.0))
+         + (0.10 * access_boost);
 END;
 $$ LANGUAGE plpgsql STABLE;
 """

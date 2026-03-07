@@ -11,7 +11,7 @@ from nobrainr.db.queries import (
     set_extraction_status,
     store_entity_relation,
 )
-from nobrainr.embeddings.ollama import embed_text
+from nobrainr.embeddings.ollama import embed_batch, embed_text
 from nobrainr.extraction.extractor import extract_entities
 
 logger = logging.getLogger("nobrainr")
@@ -38,19 +38,26 @@ async def process_memory(
         # Map entity names to their resolved IDs for relationship linking
         entity_id_map: dict[str, str] = {}
 
-        for entity in result.entities:
-            embedding = await embed_text(entity.name)
-            entity_id = await find_or_create_entity(
-                entity.name,
-                entity.entity_type,
-                description=entity.description,
-                embedding=embedding,
-            )
-            entity_id_map[entity.name] = entity_id
+        # Batch-embed all entities at once (context-enriched: "type: name - description")
+        if result.entities:
+            embed_texts = []
+            for entity in result.entities:
+                desc = entity.description or entity.name
+                embed_texts.append(f"{entity.entity_type}: {entity.name} - {desc}")
+            embeddings = await embed_batch(embed_texts)
 
-            await link_entity_to_memory(
-                memory_id, entity_id, role="mention", confidence=1.0,
-            )
+            for entity, embedding in zip(result.entities, embeddings):
+                entity_id = await find_or_create_entity(
+                    entity.name,
+                    entity.entity_type,
+                    description=entity.description,
+                    embedding=embedding,
+                )
+                entity_id_map[entity.name] = entity_id
+
+                await link_entity_to_memory(
+                    memory_id, entity_id, role="mention", confidence=1.0,
+                )
 
         for rel in result.relationships:
             source_id = entity_id_map.get(rel.source)
@@ -101,13 +108,17 @@ async def backfill(
     total = 0
     sem = asyncio.Semaphore(concurrency)
 
-    async def _process_one(memory: dict) -> None:
+    async def _process_one(memory: dict) -> bool:
         async with sem:
-            await process_memory(
-                memory_id=memory["id"],
-                content=memory["content"],
-                tags=memory.get("tags"),
-            )
+            try:
+                await process_memory(
+                    memory_id=memory["id"],
+                    content=memory["content"],
+                    tags=memory.get("tags"),
+                )
+                return True
+            except Exception:
+                return False
 
     while True:
         batch = await get_unextracted_memories(batch_size)
@@ -115,10 +126,11 @@ async def backfill(
             break
 
         tasks = [asyncio.create_task(_process_one(m)) for m in batch]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for memory in batch:
-            total += 1
+        for memory, result in zip(batch, results):
+            if result is True:
+                total += 1
             if on_progress:
                 on_progress(total, memory)
 

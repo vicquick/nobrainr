@@ -147,6 +147,12 @@ class Scheduler:
                 raise
             except Exception:
                 logger.exception("Scheduled job '%s' failed", name)
+                try:
+                    await queries.log_scheduler_event(name, {
+                        "error": "exception", "ran_at": datetime.now().isoformat(),
+                    })
+                except Exception:
+                    pass
             await asyncio.sleep(interval_seconds)
 
     async def _run_periodic_llm(
@@ -174,9 +180,10 @@ class Scheduler:
 
     @staticmethod
     async def _job_maintenance() -> dict:
-        """Recompute importance scores + decay stability for stale memories."""
+        """Recompute importance scores + decay stability + refresh planner stats."""
         importance_count = await queries.recompute_importance()
         decay_count = await queries.decay_stability()
+        await queries.analyze_tables()
         return {
             "importance_recomputed": importance_count,
             "stability_decayed": decay_count,

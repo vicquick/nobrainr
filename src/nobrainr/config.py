@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     default_similarity_threshold: float = 0.3
 
     # Security
-    cors_origins: list[str] = ["*"]
+    cors_origins: list[str] = ["https://mcp.example.com", "http://localhost:8420"]
     max_content_length: int = 50000  # 50KB max memory content
 
     # Extraction (knowledge graph)
@@ -57,8 +57,6 @@ class Settings(BaseSettings):
     chatgpt_distill_model: str = "qwen3:8b"
     # Memory decay
     decay_interval_hours: float = 24.0
-    # Entity pruning (remove noise: 1 memory, no relations)
-    entity_pruning_interval_hours: float = 6.0
     decay_batch_size: int = 50
     # Contradiction detection
     contradiction_interval_hours: float = 4.0
