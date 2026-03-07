@@ -17,6 +17,7 @@ LLM_JOB_DELAYS = {
     "auto_summarize": 2 * 60,
     "insight_extraction": 4 * 60,
     "entity_enrichment": 6 * 60,
+    "entity_merging": 7 * 60,
     "consolidation": 8 * 60,
     "synthesis": 10 * 60,
     "contradiction_detection": 12 * 60,
@@ -80,6 +81,8 @@ class Scheduler:
              settings.insight_extraction_interval_hours * 3600),
             ("entity_enrichment", scheduler_jobs.entity_enrichment,
              settings.entity_enrichment_interval_hours * 3600),
+            ("entity_merging", scheduler_jobs.entity_merging,
+             settings.entity_merging_interval_hours * 3600),
             ("consolidation", scheduler_jobs.consolidation,
              settings.consolidation_interval_hours * 3600),
             ("synthesis", scheduler_jobs.synthesis,
@@ -105,14 +108,16 @@ class Scheduler:
 
         logger.info(
             "Scheduler started: maintenance=%.1fh, feedback=%.1fh, decay=%.1fh, "
-            "summarize=%.1fh, insight=%.1fh, enrichment=%.1fh, consolidation=%.1fh, "
-            "synthesis=%.1fh, contradiction=%.1fh, cross_machine=%.1fh, quality=%.1fh",
+            "summarize=%.1fh, insight=%.1fh, enrichment=%.1fh, merging=%.1fh, "
+            "consolidation=%.1fh, synthesis=%.1fh, contradiction=%.1fh, "
+            "cross_machine=%.1fh, quality=%.1fh",
             settings.maintenance_interval_hours,
             settings.feedback_interval_hours,
             settings.decay_interval_hours,
             settings.summarize_interval_hours,
             settings.insight_extraction_interval_hours,
             settings.entity_enrichment_interval_hours,
+            settings.entity_merging_interval_hours,
             settings.consolidation_interval_hours,
             settings.synthesis_interval_hours,
             settings.contradiction_interval_hours,
