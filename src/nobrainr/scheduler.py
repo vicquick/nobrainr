@@ -19,6 +19,9 @@ LLM_JOB_DELAYS = {
     "consolidation": 35 * 60,
     "synthesis": 45 * 60,
     "chatgpt_distill": 2 * 60,
+    "contradiction_detection": 55 * 60,
+    "cross_machine_insights": 60 * 60,
+    "extraction_quality": 50 * 60,
 }
 
 # Per-job timeout for LLM operations
@@ -58,6 +61,13 @@ class Scheduler:
                     settings.feedback_interval_hours * 3600,
                 )
             ),
+            asyncio.create_task(
+                self._run_periodic(
+                    "memory_decay",
+                    self._job_memory_decay,
+                    settings.decay_interval_hours * 3600,
+                )
+            ),
         ]
 
         # LLM-powered jobs (import here to avoid circular imports at module level)
@@ -76,6 +86,12 @@ class Scheduler:
              settings.synthesis_interval_hours * 3600),
             ("chatgpt_distill", scheduler_jobs.chatgpt_distill,
              settings.chatgpt_distill_interval_hours * 3600),
+            ("contradiction_detection", scheduler_jobs.contradiction_detection,
+             settings.contradiction_interval_hours * 3600),
+            ("cross_machine_insights", scheduler_jobs.cross_machine_insights,
+             settings.cross_machine_interval_hours * 3600),
+            ("extraction_quality", scheduler_jobs.extraction_quality,
+             settings.quality_interval_hours * 3600),
         ]
 
         for name, job_func, interval in llm_jobs:
@@ -88,15 +104,20 @@ class Scheduler:
             )
 
         logger.info(
-            "Scheduler started: maintenance=%.1fh, feedback=%.1fh, "
-            "summarize=%.1fh, insight=%.1fh, enrichment=%.1fh, consolidation=%.1fh, synthesis=%.1fh",
+            "Scheduler started: maintenance=%.1fh, feedback=%.1fh, decay=%.1fh, "
+            "summarize=%.1fh, insight=%.1fh, enrichment=%.1fh, consolidation=%.1fh, "
+            "synthesis=%.1fh, contradiction=%.1fh, cross_machine=%.1fh, quality=%.1fh",
             settings.maintenance_interval_hours,
             settings.feedback_interval_hours,
+            settings.decay_interval_hours,
             settings.summarize_interval_hours,
             settings.insight_extraction_interval_hours,
             settings.entity_enrichment_interval_hours,
             settings.consolidation_interval_hours,
             settings.synthesis_interval_hours,
+            settings.contradiction_interval_hours,
+            settings.cross_machine_interval_hours,
+            settings.quality_interval_hours,
         )
 
     async def stop(self) -> None:
@@ -165,6 +186,12 @@ class Scheduler:
             "feedback_adjusted": updated,
             "ran_at": datetime.now().isoformat(),
         }
+
+    @staticmethod
+    async def _job_memory_decay() -> dict:
+        """Archive stale, low-value memories that are never accessed."""
+        from nobrainr import scheduler_jobs
+        return await scheduler_jobs.memory_decay()
 
 
 # Module-level singleton
