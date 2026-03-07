@@ -17,13 +17,7 @@ Add to `~/.claude/mcp.json`:
 }
 ```
 
-Or use the automated setup script:
-
-```bash
-NOBRAINR_HOST=your-server bash scripts/setup-client.sh
-```
-
-This also installs optional hooks and slash commands:
+Or follow the [Claude Code setup guide](claude-code-setup.md) which sets up everything via a single prompt. This installs hooks and slash commands:
 
 - **Auto-load on session start** — queries nobrainr for relevant memories
 - **Auto-save on session end** — stores session summaries
