@@ -240,6 +240,109 @@ async def synthesis() -> dict:
     return {"synthesized": count, "candidates": len(candidates), "ran_at": datetime.now().isoformat()}
 
 
+ENTITY_MERGE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "should_merge": {
+            "type": "boolean",
+            "description": "Whether these two entities refer to the same real-world thing",
+        },
+        "winner_name": {
+            "type": "string",
+            "description": "The best canonical name to keep (most specific and commonly used)",
+        },
+        "winner_type": {
+            "type": "string",
+            "description": "The correct entity type for the merged entity",
+            "enum": ["person", "project", "technology", "concept", "file", "config", "error", "location", "organization"],
+        },
+        "reason": {
+            "type": "string",
+            "description": "Brief reason for the decision",
+        },
+    },
+    "required": ["should_merge", "winner_name", "winner_type", "reason"],
+}
+
+
+async def entity_merging() -> dict:
+    """Find and merge duplicate entities (same name different type, or high embedding similarity)."""
+    model = settings.scheduler_llm_model
+    pairs = await queries.get_duplicate_entities(limit=settings.entity_merging_batch_size)
+    if not pairs:
+        return {"merged": 0, "checked": 0, "ran_at": datetime.now().isoformat()}
+
+    merged = 0
+    checked = 0
+    for pair in pairs:
+        try:
+            result = await ollama_chat(
+                system=(
+                    "You are a knowledge graph curator. Determine if two entities refer to "
+                    "the same real-world thing and should be merged. Consider: same software, "
+                    "same person, same concept just typed differently. If merging, pick the best "
+                    "name and most accurate type."
+                ),
+                user=(
+                    f"Entity A: \"{pair['name_a']}\" (type: {pair['type_a']}, "
+                    f"linked to {pair['mem_count_a']} memories, {pair['mentions_a']} mentions)\n"
+                    f"Entity B: \"{pair['name_b']}\" (type: {pair['type_b']}, "
+                    f"linked to {pair['mem_count_b']} memories, {pair['mentions_b']} mentions)\n"
+                    f"Embedding similarity: {pair.get('similarity', 0):.3f}\n\n"
+                    "Are these the same thing? If so, which name and type to keep?"
+                ),
+                schema=ENTITY_MERGE_SCHEMA,
+                model=model,
+                timeout=60.0,
+                think=False,
+            )
+
+            id_a = str(pair["id_a"])
+            id_b = str(pair["id_b"])
+
+            if result.get("should_merge"):
+                # Pick winner: the one with more memory links, or the one matching the LLM's preferred name
+                a_is_winner = pair["mem_count_a"] >= pair["mem_count_b"]
+                winner_id = id_a if a_is_winner else id_b
+                loser_id = id_b if a_is_winner else id_a
+
+                await queries.merge_entities(winner_id, loser_id)
+
+                # Update winner's type if LLM suggested a better one
+                winner_type = result.get("winner_type")
+                winner_name = result.get("winner_name")
+                if winner_type or winner_name:
+                    pool = await get_pool()
+                    async with pool.acquire() as conn:
+                        if winner_type:
+                            await conn.execute(
+                                "UPDATE entities SET entity_type = $1 WHERE id = $2",
+                                winner_type, UUID(winner_id),
+                            )
+                        if winner_name:
+                            await conn.execute(
+                                "UPDATE entities SET name = $1, canonical_name = $2 WHERE id = $3",
+                                winner_name, winner_name.lower().strip(), UUID(winner_id),
+                            )
+
+                merged += 1
+                logger.info(
+                    "Merged entity '%s' (%s) into '%s' (%s)",
+                    pair["name_b"] if a_is_winner else pair["name_a"],
+                    pair["type_b"] if a_is_winner else pair["type_a"],
+                    pair["name_a"] if a_is_winner else pair["name_b"],
+                    pair["type_a"] if a_is_winner else pair["type_b"],
+                )
+            else:
+                await queries.mark_entity_merge_checked(id_a, id_b)
+
+            checked += 1
+        except Exception:
+            logger.exception("entity_merging failed for pair %s/%s", pair["name_a"], pair["name_b"])
+
+    return {"merged": merged, "checked": checked, "ran_at": datetime.now().isoformat()}
+
+
 async def entity_enrichment() -> dict:
     """Generate descriptions for entities that lack them."""
     model = settings.scheduler_llm_model

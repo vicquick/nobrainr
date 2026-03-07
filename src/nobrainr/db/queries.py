@@ -1042,6 +1042,142 @@ async def get_all_entities_for_graph(*, min_connections: int = 0) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
+async def get_duplicate_entities(limit: int = 10) -> list[dict]:
+    """Find entity pairs that likely refer to the same thing.
+
+    Catches:
+    1. Same canonical_name but different entity_type (e.g. "docker" as technology AND concept)
+    2. High embedding similarity between different entities (e.g. "PostgreSQL" vs "postgres")
+
+    Returns pairs not yet checked (via agent_events).
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Strategy 1: Same name, different type
+        name_dupes = await conn.fetch(
+            """
+            SELECT a.id AS id_a, a.name AS name_a, a.entity_type AS type_a,
+                   a.mention_count AS mentions_a,
+                   (SELECT COUNT(*) FROM entity_memories em WHERE em.entity_id = a.id) AS mem_count_a,
+                   b.id AS id_b, b.name AS name_b, b.entity_type AS type_b,
+                   b.mention_count AS mentions_b,
+                   (SELECT COUNT(*) FROM entity_memories em WHERE em.entity_id = b.id) AS mem_count_b,
+                   1.0::float AS similarity
+            FROM entities a
+            JOIN entities b ON a.canonical_name = b.canonical_name AND a.id < b.id
+            WHERE NOT EXISTS (
+                SELECT 1 FROM agent_events
+                WHERE event_type = 'entity_merge_checked'
+                  AND metadata->>'id_a' = a.id::text
+                  AND metadata->>'id_b' = b.id::text
+            )
+            ORDER BY a.mention_count + b.mention_count DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+
+        # Strategy 2: High embedding similarity (different names)
+        remaining = limit - len(name_dupes)
+        embed_dupes = []
+        if remaining > 0:
+            embed_dupes = await conn.fetch(
+                """
+                SELECT a.id AS id_a, a.name AS name_a, a.entity_type AS type_a,
+                       a.mention_count AS mentions_a,
+                       (SELECT COUNT(*) FROM entity_memories em WHERE em.entity_id = a.id) AS mem_count_a,
+                       b.id AS id_b, b.name AS name_b, b.entity_type AS type_b,
+                       b.mention_count AS mentions_b,
+                       (SELECT COUNT(*) FROM entity_memories em WHERE em.entity_id = b.id) AS mem_count_b,
+                       1 - (a.embedding <=> b.embedding) AS similarity
+                FROM entities a
+                JOIN entities b ON a.id < b.id
+                WHERE a.embedding IS NOT NULL AND b.embedding IS NOT NULL
+                  AND a.canonical_name != b.canonical_name
+                  AND 1 - (a.embedding <=> b.embedding) > 0.85
+                  AND NOT EXISTS (
+                      SELECT 1 FROM agent_events
+                      WHERE event_type = 'entity_merge_checked'
+                        AND metadata->>'id_a' = a.id::text
+                        AND metadata->>'id_b' = b.id::text
+                  )
+                ORDER BY (a.embedding <=> b.embedding) ASC
+                LIMIT $1
+                """,
+                remaining,
+            )
+
+        return [_row_to_dict(r) for r in list(name_dupes) + list(embed_dupes)]
+
+
+async def merge_entities(winner_id: str, loser_id: str) -> None:
+    """Merge loser entity into winner: transfer all memory links and relations, then delete loser."""
+    pool = await get_pool()
+    w = UUID(winner_id)
+    l = UUID(loser_id)
+    async with pool.acquire() as conn:
+        # Transfer entity_memories (skip duplicates)
+        await conn.execute(
+            """
+            INSERT INTO entity_memories (entity_id, memory_id, role, confidence)
+            SELECT $1, memory_id, role, confidence
+            FROM entity_memories WHERE entity_id = $2
+            ON CONFLICT DO NOTHING
+            """,
+            w, l,
+        )
+        # Transfer relations (source side)
+        await conn.execute(
+            """
+            UPDATE entity_relations SET source_entity_id = $1
+            WHERE source_entity_id = $2
+            AND NOT EXISTS (
+                SELECT 1 FROM entity_relations er2
+                WHERE er2.source_entity_id = $1
+                  AND er2.target_entity_id = entity_relations.target_entity_id
+                  AND er2.relationship_type = entity_relations.relationship_type
+            )
+            """,
+            w, l,
+        )
+        # Transfer relations (target side)
+        await conn.execute(
+            """
+            UPDATE entity_relations SET target_entity_id = $1
+            WHERE target_entity_id = $2
+            AND NOT EXISTS (
+                SELECT 1 FROM entity_relations er2
+                WHERE er2.source_entity_id = entity_relations.source_entity_id
+                  AND er2.target_entity_id = $1
+                  AND er2.relationship_type = entity_relations.relationship_type
+            )
+            """,
+            w, l,
+        )
+        # Sum mention counts
+        await conn.execute(
+            """
+            UPDATE entities SET mention_count = mention_count + (
+                SELECT mention_count FROM entities WHERE id = $2
+            ) WHERE id = $1
+            """,
+            w, l,
+        )
+        # Delete loser (CASCADE removes remaining orphaned links)
+        await conn.execute("DELETE FROM entities WHERE id = $1", l)
+
+
+async def mark_entity_merge_checked(id_a: str, id_b: str) -> None:
+    """Mark an entity pair as checked so we don't re-evaluate it."""
+    await log_agent_event(
+        event_type="entity_merge_checked",
+        description=f"Checked entity pair {str(id_a)[:8]}../{str(id_b)[:8]}.. for merging",
+        agent_id="scheduler",
+        category="system",
+        metadata={"id_a": str(id_a), "id_b": str(id_b)},
+    )
+
+
 async def prune_noise_entities(*, min_age_hours: int = 24) -> dict:
     """Delete low-value entities: linked to only 1 memory, older than min_age_hours.
 

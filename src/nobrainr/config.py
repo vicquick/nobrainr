@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     synthesis_batch_size: int = 5
     entity_enrichment_interval_hours: float = 2.0
     entity_enrichment_batch_size: int = 20
+    entity_merging_interval_hours: float = 2.0
+    entity_merging_batch_size: int = 15
     insight_extraction_interval_hours: float = 1.0
     insight_extraction_batch_size: int = 30
     chatgpt_distill_interval_hours: float = 0.1
