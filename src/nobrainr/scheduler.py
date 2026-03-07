@@ -68,13 +68,6 @@ class Scheduler:
                     settings.decay_interval_hours * 3600,
                 )
             ),
-            asyncio.create_task(
-                self._run_periodic(
-                    "entity_pruning",
-                    self._job_entity_pruning,
-                    settings.entity_pruning_interval_hours * 3600,
-                )
-            ),
         ]
 
         # LLM-powered jobs (import here to avoid circular imports at module level)
@@ -200,11 +193,6 @@ class Scheduler:
         from nobrainr import scheduler_jobs
         return await scheduler_jobs.memory_decay()
 
-    @staticmethod
-    async def _job_entity_pruning() -> dict:
-        """Prune noise entities: 1 memory, no relations, older than 24h."""
-        from nobrainr import scheduler_jobs
-        return await scheduler_jobs.entity_pruning()
 
 
 # Module-level singleton
