@@ -50,6 +50,9 @@ async def ollama_chat(
         Exception on HTTP or parsing errors.
     """
     client = _get_client()
+    # Disable qwen3 thinking mode for structured output tasks (2x+ faster)
+    if "/nothink" not in system:
+        system = system + " /nothink"
     payload = {
         "model": model or settings.extraction_model,
         "messages": [
