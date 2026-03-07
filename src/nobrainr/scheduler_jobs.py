@@ -117,6 +117,7 @@ async def auto_summarize() -> dict:
                 schema=SUMMARIZE_SCHEMA,
                 model=model,
                 timeout=60.0,
+                think=False,
             )
             summary = result.get("summary", "").strip()
             if summary:
@@ -262,6 +263,7 @@ async def entity_enrichment() -> dict:
                 schema=ENTITY_DESC_SCHEMA,
                 model=model,
                 timeout=60.0,
+                think=False,
             )
 
             desc = result.get("description", "").strip()
@@ -317,6 +319,7 @@ async def insight_extraction() -> dict:
                 schema=INSIGHT_SCHEMA,
                 model=model,
                 timeout=60.0,
+                think=False,
             )
 
             if result.get("is_useful") and result.get("learning"):

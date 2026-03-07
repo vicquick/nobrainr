@@ -98,15 +98,22 @@ async def import_chatgpt_export(
             ).isoformat()
         metadata["model"] = _extract_model(convo)
         metadata["message_count"] = len(messages)
+        # Store ChatGPT conversation ID for future dedup
+        chatgpt_id = convo.get("conversation_id") or convo.get("id")
+        if chatgpt_id:
+            metadata["chatgpt_conversation_id"] = chatgpt_id
 
-        await queries.store_raw_conversation(
+        result_id = await queries.store_raw_conversation(
             source_type="chatgpt",
             title=title,
             messages=messages,
             source_file=str(path.name),
             metadata=metadata,
         )
-        imported += 1
+        if result_id is None:
+            skipped += 1  # duplicate
+        else:
+            imported += 1
 
     result = {
         "status": "complete",
@@ -196,6 +203,7 @@ async def distill_conversations(
                 model=llm_model,
                 timeout=300.0,
                 num_ctx=3072,
+                think=False,
             )
 
             learnings = result.get("learnings", []) if result.get("has_learnings") else []

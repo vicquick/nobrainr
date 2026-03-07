@@ -13,19 +13,19 @@ INITIAL_DELAY_SECONDS = 60
 
 # Staggered initial delays for LLM jobs (seconds)
 LLM_JOB_DELAYS = {
-    "auto_summarize": 5 * 60,
-    "insight_extraction": 15 * 60,
-    "entity_enrichment": 25 * 60,
-    "consolidation": 35 * 60,
-    "synthesis": 45 * 60,
-    "chatgpt_distill": 2 * 60,
-    "contradiction_detection": 55 * 60,
-    "cross_machine_insights": 60 * 60,
-    "extraction_quality": 50 * 60,
+    "chatgpt_distill": 30,         # highest priority — clear backlog first
+    "auto_summarize": 2 * 60,
+    "insight_extraction": 4 * 60,
+    "entity_enrichment": 6 * 60,
+    "consolidation": 8 * 60,
+    "synthesis": 10 * 60,
+    "contradiction_detection": 12 * 60,
+    "extraction_quality": 14 * 60,
+    "cross_machine_insights": 16 * 60,
 }
 
 # Per-job timeout for LLM operations
-LLM_JOB_TIMEOUT = 10 * 60  # 10 minutes (increased for distillation)
+LLM_JOB_TIMEOUT = 20 * 60  # 20 minutes for larger batch sizes
 
 
 class Scheduler:

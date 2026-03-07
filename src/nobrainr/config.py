@@ -40,31 +40,31 @@ class Settings(BaseSettings):
 
     # LLM scheduler jobs
     scheduler_llm_model: str = "qwen3:8b"
-    summarize_interval_hours: float = 4.0
-    summarize_batch_size: int = 10
-    consolidation_interval_hours: float = 8.0
-    consolidation_batch_size: int = 5
-    synthesis_interval_hours: float = 24.0
-    synthesis_batch_size: int = 3
-    entity_enrichment_interval_hours: float = 12.0
-    entity_enrichment_batch_size: int = 10
-    insight_extraction_interval_hours: float = 6.0
-    insight_extraction_batch_size: int = 20
-    chatgpt_distill_interval_hours: float = 0.5
-    chatgpt_distill_batch_size: int = 3
+    summarize_interval_hours: float = 1.0
+    summarize_batch_size: int = 20
+    consolidation_interval_hours: float = 2.0
+    consolidation_batch_size: int = 10
+    synthesis_interval_hours: float = 4.0
+    synthesis_batch_size: int = 5
+    entity_enrichment_interval_hours: float = 2.0
+    entity_enrichment_batch_size: int = 20
+    insight_extraction_interval_hours: float = 1.0
+    insight_extraction_batch_size: int = 30
+    chatgpt_distill_interval_hours: float = 0.1
+    chatgpt_distill_batch_size: int = 20
     chatgpt_distill_model: str = "qwen3:8b"
     # Memory decay
     decay_interval_hours: float = 24.0
     decay_batch_size: int = 50
     # Contradiction detection
-    contradiction_interval_hours: float = 12.0
-    contradiction_batch_size: int = 5
+    contradiction_interval_hours: float = 4.0
+    contradiction_batch_size: int = 10
     # Cross-machine insights
-    cross_machine_interval_hours: float = 24.0
-    cross_machine_batch_size: int = 3
+    cross_machine_interval_hours: float = 6.0
+    cross_machine_batch_size: int = 5
     # Extraction quality
-    quality_interval_hours: float = 12.0
-    quality_batch_size: int = 10
+    quality_interval_hours: float = 4.0
+    quality_batch_size: int = 20
 
 
 settings = Settings()
