@@ -404,6 +404,7 @@ Update `~/.claude/settings.json` — **merge** these into existing settings (don
 ```json
 {
   "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": ["nobrainr"],
   "hooks": {
     "SessionStart": [{"hooks": [{"type": "command", "command": "~/.claude/hooks/session-start.sh"}]}],
     "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "~/.claude/hooks/enhance-prompt.sh", "timeout": 5}]}],
