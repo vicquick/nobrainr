@@ -118,10 +118,7 @@ Add to `~/.claude/mcp.json`:
 }
 ```
 
-Or use the setup script:
-```bash
-NOBRAINR_HOST=<your-server> bash scripts/setup-client.sh
-```
+Or follow the [Claude Code setup guide](docs/claude-code-setup.md) for full integration with hooks and scripts.
 </details>
 
 <details>
@@ -246,7 +243,7 @@ The `scripts/` directory contains Claude Code integrations:
 
 **`/recall <query>`** — Slash command that searches memories.
 
-Run `scripts/setup-client.sh` on each machine to install these automatically.
+See the [Claude Code setup guide](docs/claude-code-setup.md) for full setup instructions.
 
 ## Stack
 

@@ -1,6 +1,6 @@
 # Claude Code Setup Prompt for nobrainr
 
-Copy everything below the line and paste it as a prompt to Claude Code on any machine you want to connect to your nobrainr server.
+Copy everything below the line and paste it as a prompt to Claude Code on any new machine you want to connect to your nobrainr server. The agent will set up hooks, scripts, and MCP config automatically.
 
 ---
 

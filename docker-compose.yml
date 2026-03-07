@@ -47,7 +47,7 @@ services:
     depends_on:
       ollama:
         condition: service_healthy
-    entrypoint: ["/bin/sh", "-c", "ollama pull nomic-embed-text && ollama pull qwen2.5:7b"]
+    entrypoint: ["/bin/sh", "-c", "ollama pull nomic-embed-text && ollama pull qwen3:8b"]
     environment:
       OLLAMA_HOST: http://ollama:11434
     restart: "no"
@@ -66,7 +66,7 @@ services:
       NOBRAINR_OLLAMA_URL: http://ollama:11434
       NOBRAINR_HOST: "0.0.0.0"
       NOBRAINR_PORT: "8420"
-      NOBRAINR_EXTRACTION_MODEL: ${NOBRAINR_EXTRACTION_MODEL:-qwen2.5:7b}
+      NOBRAINR_EXTRACTION_MODEL: ${NOBRAINR_EXTRACTION_MODEL:-qwen3:8b}
       NOBRAINR_EXTRACTION_ENABLED: ${NOBRAINR_EXTRACTION_ENABLED:-true}
     ports:
       - "127.0.0.1:8420:8420"
