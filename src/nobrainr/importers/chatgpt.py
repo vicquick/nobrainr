@@ -4,6 +4,7 @@ Phase 1: import_chatgpt_export() — store raw conversations (fast, no embedding
 Phase 2: distill_conversations() — LLM extracts learnings from raw conversations
 """
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -138,10 +139,12 @@ async def distill_conversations(
     batch_size: int = 20,
     source_machine: str | None = None,
     llm_model: str | None = None,
+    concurrency: int = 4,
 ) -> dict:
     """Distill raw conversations into memory learnings using LLM.
 
     Processes conversations that haven't been distilled yet (no 'distilled' in metadata).
+    Uses concurrent workers for faster throughput.
     """
     if llm_model is None:
         from nobrainr.config import settings
@@ -163,16 +166,18 @@ async def distill_conversations(
     if not rows:
         return {"processed": 0, "distilled": 0, "skipped": 0}
 
-    processed = 0
-    distilled = 0
-    skipped = 0
+    sem = asyncio.Semaphore(concurrency)
+    results = {"processed": 0, "distilled": 0, "skipped": 0}
+    lock = asyncio.Lock()
 
-    for row in rows:
+    async def _distill_one(row):
         convo_id = str(row["id"])
         title = row["title"] or "Untitled"
         messages = row["messages"] if isinstance(row["messages"], list) else json.loads(row["messages"])
         metadata = row["metadata"] if isinstance(row["metadata"], dict) else json.loads(row["metadata"] or "{}")
         machine = source_machine or metadata.get("source_machine")
+
+        local_distilled = 0
 
         try:
             # Pre-filter: skip trivial conversations without LLM call
@@ -181,33 +186,35 @@ async def distill_conversations(
 
             if len(relevant_msgs) < 3 or total_content < 200:
                 await _mark_distilled(convo_id, 0)
-                skipped += 1
-                processed += 1
-                continue
+                async with lock:
+                    results["skipped"] += 1
+                    results["processed"] += 1
+                return
 
             # Compress conversation to fit LLM context
             convo_text = _compress_for_llm(title, messages, max_chars=2000)
 
             if len(convo_text) < 100:
-                # Too short to be useful
                 await _mark_distilled(convo_id, 0)
-                skipped += 1
-                processed += 1
-                continue
+                async with lock:
+                    results["skipped"] += 1
+                    results["processed"] += 1
+                return
 
-            result = await ollama_chat(
-                system=(
-                    "Extract reusable technical learnings from this conversation. "
-                    "Focus on solutions, commands, configs, patterns. "
-                    "Return has_learnings=false if trivial or generic."
-                ),
-                user=convo_text,
-                schema=DISTILL_SCHEMA,
-                model=llm_model,
-                timeout=300.0,
-                num_ctx=3072,
-                think=False,
-            )
+            async with sem:
+                result = await ollama_chat(
+                    system=(
+                        "Extract reusable technical learnings from this conversation. "
+                        "Focus on solutions, commands, configs, patterns. "
+                        "Return has_learnings=false if trivial or generic."
+                    ),
+                    user=convo_text,
+                    schema=DISTILL_SCHEMA,
+                    model=llm_model,
+                    timeout=300.0,
+                    num_ctx=3072,
+                    think=False,
+                )
 
             learnings = result.get("learnings", []) if result.get("has_learnings") else []
 
@@ -216,7 +223,6 @@ async def distill_conversations(
                 if not content or len(content) < 20:
                     continue
 
-                # Truncate for embedding safety
                 embed_content = content[:MAX_EMBED_CHARS]
                 try:
                     embedding = await embed_text(embed_content)
@@ -236,17 +242,23 @@ async def distill_conversations(
                     confidence=0.7,
                     metadata={"conversation_id": convo_id},
                 )
-                distilled += 1
+                local_distilled += 1
 
             await _mark_distilled(convo_id, len(learnings))
-            processed += 1
+            async with lock:
+                results["distilled"] += local_distilled
+                results["processed"] += 1
 
         except Exception as e:
             logger.warning("Distillation failed for '%s': %s", title, e)
             await _mark_distilled(convo_id, 0, error=str(e))
-            processed += 1
+            async with lock:
+                results["processed"] += 1
 
-    return {"processed": processed, "distilled": distilled, "skipped": skipped}
+    tasks = [asyncio.create_task(_distill_one(row)) for row in rows]
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+    return results
 
 
 async def _mark_distilled(convo_id: str, learning_count: int, *, error: str | None = None) -> None:
