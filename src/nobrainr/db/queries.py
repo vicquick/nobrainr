@@ -964,29 +964,36 @@ async def get_memory_entities(memory_id: str) -> list[dict]:
 # Dashboard / API queries
 # ──────────────────────────────────────────────
 
-async def get_all_entities_for_graph(*, min_connections: int = 2) -> dict:
-    """Get entities and relations for the knowledge graph visualization.
+async def get_all_entities_for_graph(*, min_connections: int = 0) -> dict:
+    """Get all entities and relations for the full knowledge graph visualization.
 
-    Only includes entities linked to at least `min_connections` different
-    memories. Single-memory entities are noise — they were extracted once
-    and never reinforced. The graph shows knowledge that has been confirmed
-    across multiple contexts.
+    Optional min_connections filter (default 0 = show everything).
     """
     pool = await get_pool()
     async with pool.acquire() as conn:
-        entity_rows = await conn.fetch(
-            """
-            SELECT e.id, e.name, e.entity_type, e.canonical_name,
-                   e.description, e.mention_count, e.created_at
-            FROM entities e
-            WHERE (SELECT COUNT(*) FROM entity_memories em WHERE em.entity_id = e.id) >= $1
-            ORDER BY e.mention_count DESC
-            """,
-            min_connections,
-        )
-        # Only include relations where both endpoints pass the filter
+        if min_connections > 0:
+            entity_rows = await conn.fetch(
+                """
+                SELECT e.id, e.name, e.entity_type, e.canonical_name,
+                       e.description, e.mention_count, e.created_at
+                FROM entities e
+                WHERE (SELECT COUNT(*) FROM entity_memories em WHERE em.entity_id = e.id) >= $1
+                ORDER BY e.mention_count DESC
+                """,
+                min_connections,
+            )
+        else:
+            entity_rows = await conn.fetch(
+                """
+                SELECT id, name, entity_type, canonical_name, description,
+                       mention_count, created_at
+                FROM entities
+                ORDER BY mention_count DESC
+                """
+            )
+        # Only include relations where both endpoints are in the set
         entity_ids = [r["id"] for r in entity_rows]
-        if entity_ids:
+        if entity_ids and min_connections > 0:
             relation_rows = await conn.fetch(
                 """
                 SELECT id, source_entity_id, target_entity_id,
@@ -999,7 +1006,14 @@ async def get_all_entities_for_graph(*, min_connections: int = 2) -> dict:
                 entity_ids,
             )
         else:
-            relation_rows = []
+            relation_rows = await conn.fetch(
+                """
+                SELECT id, source_entity_id, target_entity_id,
+                       relationship_type, confidence
+                FROM entity_relations
+                WHERE valid = true
+                """
+            )
 
     nodes = []
     for r in entity_rows:

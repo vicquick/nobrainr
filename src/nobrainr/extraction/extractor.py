@@ -8,21 +8,18 @@ from nobrainr.extraction.models import ExtractionResult
 logger = logging.getLogger("nobrainr")
 
 SYSTEM_PROMPT = """\
-You are a selective entity and relationship extractor. Given a memory or knowledge entry, \
-extract only the MOST IMPORTANT entities and relationships — the ones someone would actually search for later.
+You are an entity and relationship extractor. Given a memory or knowledge entry, \
+extract all notable entities and the relationships between them.
 
 Entity types: person, project, technology, concept, file, config, error, location, organization.
 Relationship types: uses, depends_on, fixes, relates_to, part_of, created_by, deployed_on, configured_with.
 
 Rules:
-- Be SELECTIVE: extract at most 3-5 entities. Only extract specific, named things — not generic concepts.
-- SKIP generic terms like "server", "database", "API", "configuration", "error handling", "deployment".
-- SKIP vague concepts. "Docker" is good, "containerization" is too generic. "PostgreSQL" is good, "database management" is not.
+- Only extract entities that are clearly identifiable from the text.
 - Entity names should be concise (e.g. "PostgreSQL" not "the PostgreSQL database").
 - Each relationship source and target must match an extracted entity name exactly.
-- Only create relationships that represent specific, meaningful connections — not obvious/trivial ones.
 - Assign confidence scores (0-1) to relationships based on how explicitly stated they are.
-- If nothing specific or noteworthy is mentioned, return empty lists. Most memories should have 0-3 entities.\
+- If there are no entities or relationships, return empty lists.\
 """
 
 

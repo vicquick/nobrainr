@@ -20,11 +20,11 @@ def _valid_uuid(value: str) -> bool:
 
 
 async def api_graph(request: Request) -> JSONResponse:
-    """Knowledge graph data for Cytoscape.js. Filters out noise entities."""
+    """Full knowledge graph data for Cytoscape.js. Optional ?min_connections=N filter."""
     try:
-        min_conn = max(1, int(request.query_params.get("min_connections", "2")))
+        min_conn = max(0, int(request.query_params.get("min_connections", "0")))
     except ValueError:
-        min_conn = 2
+        min_conn = 0
     data = await queries.get_all_entities_for_graph(min_connections=min_conn)
     return JSONResponse(data)
 
