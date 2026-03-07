@@ -30,6 +30,7 @@ async def ollama_chat(
     num_ctx: int = 4096,
     timeout: float = 180.0,
     keep_alive: str = "24h",
+    think: bool = True,
 ) -> dict:
     """Send a structured-output chat request to Ollama.
 
@@ -42,6 +43,7 @@ async def ollama_chat(
         num_ctx: Context window size.
         timeout: HTTP timeout in seconds.
         keep_alive: How long to keep the model loaded.
+        think: Enable model thinking/reasoning (disable for simple structured tasks).
 
     Returns:
         Parsed JSON dict from the LLM response.
@@ -58,7 +60,7 @@ async def ollama_chat(
         ],
         "format": schema,
         "stream": False,
-        "think": False,
+        "think": think,
         "options": {
             "temperature": temperature,
             "num_ctx": num_ctx,
