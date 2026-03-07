@@ -14,7 +14,7 @@ and a Vue 3 dashboard with interactive graph visualization.
 - **Frontend** — Vue 3 + Vuetify + Cytoscape.js (separate container, nginx)
 - **PostgreSQL 18 + pgvector** — storage, vector similarity, knowledge graph
 - **Ollama + nomic-embed-text** — local embeddings (768 dimensions)
-- **Ollama + qwen2.5:7b** — entity/relationship extraction (structured output, optional)
+- **Ollama + qwen3:8b** — entity/relationship extraction (structured output, `think=false` for speed)
 
 ### Routing (when using a reverse proxy)
 | Path | Target |
@@ -109,6 +109,37 @@ dashboard/                  # Vue 3 frontend (separate build)
   }
 }
 ```
+
+## Deployment Notes
+
+### Ollama Models
+Only two models are needed — remove any others to free VRAM:
+- `nomic-embed-text` — embeddings (274 MB)
+- `qwen3:8b` — extraction + scheduler LLM jobs (5.2 GB)
+
+Both should run 100% on GPU with `OLLAMA_KEEP_ALIVE=24h`.
+
+### Extraction Performance
+- `ollama_chat()` uses `"think": false` for entity extraction (structured labeling doesn't need reasoning)
+- Scheduler jobs (consolidation, synthesis, dedup) keep `think=True` — they benefit from reasoning
+- Backfill: `nobrainr extract-backfill --batch-size 50` processes ~4-5 memories/min on GPU
+- Retry logic: 404s from Ollama (model loading contention) are retried 5× with exponential backoff
+
+### Network Aliases (Coolify)
+Coolify redeploys create new containers with random suffixes. Traefik routes to stable
+hostnames (`nobrainr`, `brain-dashboard`) via Docker network aliases on the `mcp` network.
+
+The `nobrainr-network.service` (systemd) watches `docker events` and auto-applies aliases
+when containers restart. No manual post-deploy needed.
+
+```
+# Manual fix if needed:
+docker network disconnect mcp <container> && docker network connect --alias nobrainr mcp <container>
+```
+
+### TLS Certificates
+Uses Traefik `letsencrypt-dns` resolver (Cloudflare DNS challenge) — works behind VPN
+where HTTP challenge can't reach port 80. Config: `/data/coolify/proxy/dynamic/nobrainr.yaml`.
 
 ## Development
 ```bash
