@@ -964,26 +964,42 @@ async def get_memory_entities(memory_id: str) -> list[dict]:
 # Dashboard / API queries
 # ──────────────────────────────────────────────
 
-async def get_all_entities_for_graph() -> dict:
-    """Get all entities and relations for the full knowledge graph visualization."""
+async def get_all_entities_for_graph(*, min_connections: int = 2) -> dict:
+    """Get entities and relations for the knowledge graph visualization.
+
+    Only includes entities linked to at least `min_connections` different
+    memories. Single-memory entities are noise — they were extracted once
+    and never reinforced. The graph shows knowledge that has been confirmed
+    across multiple contexts.
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
         entity_rows = await conn.fetch(
             """
-            SELECT id, name, entity_type, canonical_name, description,
-                   mention_count, created_at
-            FROM entities
-            ORDER BY mention_count DESC
-            """
+            SELECT e.id, e.name, e.entity_type, e.canonical_name,
+                   e.description, e.mention_count, e.created_at
+            FROM entities e
+            WHERE (SELECT COUNT(*) FROM entity_memories em WHERE em.entity_id = e.id) >= $1
+            ORDER BY e.mention_count DESC
+            """,
+            min_connections,
         )
-        relation_rows = await conn.fetch(
-            """
-            SELECT id, source_entity_id, target_entity_id,
-                   relationship_type, confidence
-            FROM entity_relations
-            WHERE valid = true
-            """
-        )
+        # Only include relations where both endpoints pass the filter
+        entity_ids = [r["id"] for r in entity_rows]
+        if entity_ids:
+            relation_rows = await conn.fetch(
+                """
+                SELECT id, source_entity_id, target_entity_id,
+                       relationship_type, confidence
+                FROM entity_relations
+                WHERE valid = true
+                  AND source_entity_id = ANY($1)
+                  AND target_entity_id = ANY($1)
+                """,
+                entity_ids,
+            )
+        else:
+            relation_rows = []
 
     nodes = []
     for r in entity_rows:
@@ -1010,6 +1026,44 @@ async def get_all_entities_for_graph() -> dict:
         })
 
     return {"nodes": nodes, "edges": edges}
+
+
+async def prune_noise_entities(*, min_age_hours: int = 24) -> dict:
+    """Delete low-value entities: linked to only 1 memory, older than min_age_hours.
+
+    Single-memory entities that survive long enough without being linked to more
+    memories are noise. Relations between noise entities are also noise — they were
+    created in the same extraction pass and don't represent independent knowledge.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Delete entities linked to <=1 memory and older than threshold.
+        # CASCADE on entity_relations will clean up associated relations.
+        result = await conn.execute(
+            """
+            DELETE FROM entities
+            WHERE id IN (
+                SELECT e.id
+                FROM entities e
+                WHERE e.created_at < NOW() - make_interval(hours => $1)
+                  AND (SELECT COUNT(*) FROM entity_memories em WHERE em.entity_id = e.id) <= 1
+            )
+            """,
+            min_age_hours,
+        )
+        pruned = int(result.split()[-1]) if result else 0
+
+        # Also delete orphaned relations (safety net)
+        orphan_result = await conn.execute(
+            """
+            DELETE FROM entity_relations
+            WHERE NOT EXISTS (SELECT 1 FROM entities WHERE id = source_entity_id)
+               OR NOT EXISTS (SELECT 1 FROM entities WHERE id = target_entity_id)
+            """
+        )
+        orphan_relations = int(orphan_result.split()[-1]) if orphan_result else 0
+
+    return {"entities_pruned": pruned, "orphan_relations_removed": orphan_relations}
 
 
 async def get_timeline_memories(

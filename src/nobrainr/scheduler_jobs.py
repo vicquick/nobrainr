@@ -584,6 +584,16 @@ async def extraction_quality() -> dict:
     return {"validated": validated, "invalid": invalid, "ran_at": datetime.now().isoformat()}
 
 
+async def entity_pruning() -> dict:
+    """Prune low-value noise entities (1 memory, no relations, older than 24h)."""
+    result = await queries.prune_noise_entities(min_age_hours=24)
+    return {
+        "entities_pruned": result["entities_pruned"],
+        "orphan_relations_removed": result["orphan_relations_removed"],
+        "ran_at": datetime.now().isoformat(),
+    }
+
+
 async def chatgpt_distill() -> dict:
     """Distill raw ChatGPT conversations into memory learnings."""
     from nobrainr.importers.chatgpt import distill_conversations
