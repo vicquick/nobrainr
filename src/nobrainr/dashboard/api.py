@@ -184,6 +184,11 @@ async def api_scheduler(request: Request) -> JSONResponse:
         {"name": "consolidation", "interval_hours": settings.consolidation_interval_hours, "type": "llm"},
         {"name": "synthesis", "interval_hours": settings.synthesis_interval_hours, "type": "llm"},
         {"name": "chatgpt_distill", "interval_hours": settings.chatgpt_distill_interval_hours, "type": "llm"},
+        {"name": "entity_merging", "interval_hours": settings.entity_merging_interval_hours, "type": "llm"},
+        {"name": "contradiction_detection", "interval_hours": settings.contradiction_interval_hours, "type": "llm"},
+        {"name": "cross_machine_insights", "interval_hours": settings.cross_machine_interval_hours, "type": "llm"},
+        {"name": "extraction_quality", "interval_hours": settings.quality_interval_hours, "type": "llm"},
+        {"name": "memory_decay", "interval_hours": settings.decay_interval_hours, "type": "sql"},
     ]
 
     # Enrich with last_run and run_count from events
