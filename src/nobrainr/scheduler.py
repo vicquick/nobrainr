@@ -34,7 +34,7 @@ class Scheduler:
     def __init__(self):
         self._tasks: list[asyncio.Task] = []
         self._running = False
-        self._llm_lock = asyncio.Lock()
+        self._llm_semaphore = asyncio.Semaphore(3)  # allow 3 concurrent LLM jobs
 
     @property
     def running(self) -> bool:
@@ -147,11 +147,11 @@ class Scheduler:
     async def _run_periodic_llm(
         self, name: str, job, interval_seconds: float, initial_delay: float,
     ) -> None:
-        """Run an LLM job periodically with lock, timeout, and staggered start."""
+        """Run an LLM job periodically with semaphore, timeout, and staggered start."""
         await asyncio.sleep(initial_delay)
         while self._running:
             try:
-                async with self._llm_lock:
+                async with self._llm_semaphore:
                     logger.info("Running LLM job: %s", name)
                     result = await asyncio.wait_for(job(), timeout=LLM_JOB_TIMEOUT)
                     await queries.log_scheduler_event(name, result)
