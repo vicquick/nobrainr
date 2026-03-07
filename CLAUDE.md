@@ -14,11 +14,12 @@ cross-entity insights, detects contradictions, validates its own extractions, di
 cross-machine patterns, and archives stale knowledge — all on scheduled LLM-powered jobs.
 
 ## Architecture
-- **Backend** — Python ASGI: FastMCP (Streamable HTTP + SSE) + pure JSON API (Starlette)
+- **Backend** — Python ASGI: FastMCP (HTTP + SSE) + pure JSON API (Starlette)
 - **Frontend** — Vue 3 + Vuetify + Cytoscape.js (separate container, nginx)
 - **PostgreSQL 18 + pgvector** — storage, vector similarity, knowledge graph
 - **Ollama + nomic-embed-text** — local embeddings (768 dimensions)
-- **Ollama + qwen3:8b** — entity/relationship extraction (structured output, `think=false` for speed)
+- **Ollama + qwen3:8b** — entity/relationship extraction, scheduler jobs (structured output)
+- **Ollama + gemma3:12b** — chatbot base model (support assistant + GAEB costing via LoRA adapters)
 
 ### Routing (when using a reverse proxy)
 | Path | Target |
@@ -104,13 +105,13 @@ dashboard/                  # Vue 3 frontend (separate build)
 
 ## Client Connection
 
-**Streamable HTTP (recommended — used by Claude Code):**
+**HTTP transport (recommended — used by Claude Code):**
 ```json
 {
   "mcpServers": {
     "nobrainr": {
-      "type": "streamable-http",
-      "url": "http://<your-server>:8420/mcp"
+      "type": "http",
+      "url": "https://<your-domain>/mcp"
     }
   }
 }

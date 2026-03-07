@@ -37,12 +37,13 @@ graph TB
         A3[Cursor / Windsurf<br/>Machine C]
     end
 
-    A1 & A2 & A3 -->|MCP Streamable HTTP| NB
+    A1 & A2 & A3 -->|MCP over HTTPS| NB
 
     subgraph nobrainr [nobrainr server :8420]
         NB[FastMCP + JSON API]
         NB --> EMB[Ollama<br/>nomic-embed-text]
         NB --> EXT[Ollama<br/>qwen3:8b<br/>Entity Extraction]
+        NB --> CHAT[Ollama<br/>gemma3:12b<br/>Chatbot + LoRA]
         NB --> PG[(PostgreSQL 18<br/>+ pgvector)]
     end
 
@@ -59,7 +60,7 @@ graph TB
     style Storage fill:#0d1117,stroke:#30363d,color:#e6e6e6
 ```
 
-Fully local. No API keys. No cloud. Your data stays on your hardware. Built on PostgreSQL + pgvector for storage, Ollama for free local embeddings, and MCP (Streamable HTTP) as the standard interface.
+Fully local. No API keys. No cloud. Your data stays on your hardware. Built on PostgreSQL + pgvector for storage, Ollama for free local embeddings, and MCP as the standard interface.
 
 ## Quick start
 
@@ -85,6 +86,8 @@ curl -sf http://localhost:8420/api/stats | jq .total_memories
 
 The extraction model (`qwen3:8b`, ~5.2GB) is also pulled on first start. If you don't need automatic entity extraction (knowledge graph), set `NOBRAINR_EXTRACTION_ENABLED=false` in `.env` to skip it.
 
+For chatbot features (support assistant, domain-specific LoRA adapters), `gemma3:12b` (~8-9GB) is recommended. Pull it manually: `docker exec ollama ollama pull gemma3:12b`.
+
 ### Local development
 
 ```bash
@@ -101,7 +104,7 @@ cd dashboard && npm install && npm run dev
 
 ## Connect your AI client
 
-Replace `<your-server>` with your nobrainr host IP or domain.
+Replace `<your-server>` with your nobrainr host IP or domain. For remote access, use a reverse proxy with TLS (see [Deployment — Security](docs/deployment.md#security)).
 
 <details>
 <summary><b>Claude Code</b></summary>
@@ -111,8 +114,19 @@ Add to `~/.claude/mcp.json`:
 {
   "mcpServers": {
     "nobrainr": {
-      "type": "streamable-http",
-      "url": "http://<your-server>:8420/mcp"
+      "type": "http",
+      "url": "https://<your-domain>/mcp"
+    }
+  }
+}
+```
+
+For local-only access (same machine):
+```json
+{
+  "mcpServers": {
+    "nobrainr": {
+      "url": "http://localhost:8420/mcp"
     }
   }
 }
@@ -129,8 +143,8 @@ Add to `claude_desktop_config.json` (Settings > Developer > Edit Config):
 {
   "mcpServers": {
     "nobrainr": {
-      "type": "streamable-http",
-      "url": "http://<your-server>:8420/mcp"
+      "type": "http",
+      "url": "https://<your-domain>/mcp"
     }
   }
 }
@@ -141,20 +155,20 @@ Add to `claude_desktop_config.json` (Settings > Developer > Edit Config):
 <summary><b>Cursor</b></summary>
 
 Settings > MCP > Add Server:
-- **Type:** Streamable HTTP
-- **URL:** `http://<your-server>:8420/mcp`
+- **Type:** HTTP
+- **URL:** `https://<your-domain>/mcp`
 </details>
 
 <details>
 <summary><b>Windsurf / Cline / any MCP client</b></summary>
 
-Streamable HTTP (recommended):
+HTTP (recommended):
 ```json
 {
   "mcpServers": {
     "nobrainr": {
-      "type": "streamable-http",
-      "url": "http://<your-server>:8420/mcp"
+      "type": "http",
+      "url": "https://<your-domain>/mcp"
     }
   }
 }
@@ -166,12 +180,14 @@ SSE (legacy, still supported):
   "mcpServers": {
     "nobrainr": {
       "type": "sse",
-      "url": "http://<your-server>:8420/sse"
+      "url": "https://<your-domain>/sse"
     }
   }
 }
 ```
 </details>
+
+> **Security note:** Never expose nobrainr directly to the internet without TLS and access control. Use a reverse proxy with HTTPS, and restrict access via VPN, IP allowlist, or authentication.
 
 ## MCP Tools
 
@@ -253,7 +269,8 @@ See the [Claude Code setup guide](docs/claude-code-setup.md) for full setup inst
 | pgvector | HNSW index | Similarity search |
 | Ollama | nomic-embed-text | Local embeddings (768d, free, no API costs) |
 | Ollama | qwen3:8b | Entity extraction + autonomous learning (optional) |
-| FastMCP | Streamable HTTP + SSE | MCP server |
+| Ollama | gemma3:12b | Chatbot base model — support + domain LoRA adapters (optional) |
+| FastMCP | HTTP + SSE | MCP server |
 | Python | 3.12+ | Runtime |
 | Vue 3 | Vuetify + Cytoscape.js | Dashboard (optional, separate container) |
 
@@ -326,46 +343,18 @@ docker build -t nobrainr-dashboard .
 docker run -d -p 3000:80 nobrainr-dashboard
 ```
 
-### Behind a reverse proxy
+### Behind a reverse proxy (recommended for multi-machine)
 
-nobrainr serves MCP (Streamable HTTP + SSE) and a JSON API on the same port (default 8420). If you put it behind a reverse proxy (nginx, Traefik, Caddy):
+For accessing nobrainr from multiple machines, put it behind a reverse proxy with TLS. Never expose port 8420 directly — MCP traffic includes memory content in plaintext.
 
-- Route `/mcp` to the backend (Streamable HTTP transport — recommended)
+nobrainr serves MCP (HTTP + SSE) and a JSON API on port 8420:
+
+- Route `/mcp` to the backend (HTTP transport — recommended)
 - Route `/sse` and `/messages/*` to the backend (SSE transport — legacy, don't buffer)
-- Route `/api/*` to the backend (regular HTTP)
-- Route everything else to the dashboard (static files)
+- Route `/api/*` to the backend
+- Route everything else to the dashboard
 
-Example nginx snippet:
-
-```nginx
-location /mcp {
-    proxy_pass http://localhost:8420;
-    proxy_http_version 1.1;
-    proxy_set_header Connection '';
-    proxy_buffering off;
-    proxy_cache off;
-}
-
-location /sse {
-    proxy_pass http://localhost:8420;
-    proxy_http_version 1.1;
-    proxy_set_header Connection '';
-    proxy_buffering off;
-    proxy_cache off;
-}
-
-location /api/ {
-    proxy_pass http://localhost:8420;
-}
-
-location /messages/ {
-    proxy_pass http://localhost:8420;
-}
-
-location / {
-    proxy_pass http://localhost:3000;  # dashboard
-}
-```
+Restrict access via VPN subnet, IP allowlist, or authentication at the proxy layer. See [Deployment — Security](docs/deployment.md#security) for Traefik and nginx examples with TLS.
 
 ### With Coolify
 
