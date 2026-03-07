@@ -9,6 +9,10 @@ store is available to every other agent instance connected to this server.
 Provides relevance-ranked semantic search, automatic entity extraction, on-write dedup,
 and a Vue 3 dashboard with interactive graph visualization.
 
+The system learns autonomously: it summarizes, consolidates duplicates, synthesizes
+cross-entity insights, detects contradictions, validates its own extractions, discovers
+cross-machine patterns, and archives stale knowledge — all on scheduled LLM-powered jobs.
+
 ## Architecture
 - **Backend** — Python ASGI: FastMCP SSE + pure JSON API (Starlette)
 - **Frontend** — Vue 3 + Vuetify + Cytoscape.js (separate container, nginx)
@@ -44,8 +48,8 @@ src/nobrainr/              # Python backend
 │   └── api.py             # Pure JSON API endpoints
 ├── mcp/
 │   └── server.py          # FastMCP server with all MCP tools
-├── scheduler.py           # APScheduler background job runner
-├── scheduler_jobs.py      # Autonomous learning jobs (summarize, consolidate, synthesize, etc.)
+├── scheduler.py           # Asyncio periodic task runner (LLM lock, staggered starts)
+├── scheduler_jobs.py      # 9 autonomous learning jobs (see Scheduler Jobs section)
 └── importers/
     ├── chatgpt.py         # ChatGPT conversations.json parser
     └── claude.py          # Claude .claude/ directory scanner
@@ -109,6 +113,35 @@ dashboard/                  # Vue 3 frontend (separate build)
   }
 }
 ```
+
+## Scheduler Jobs
+
+The scheduler runs 11 autonomous jobs (3 SQL + 8 LLM). LLM jobs share a lock to avoid
+GPU contention and have staggered initial delays.
+
+### Knowledge Lifecycle
+| Job | Interval | Type | Purpose |
+|-----|----------|------|---------|
+| `chatgpt_distill` | 30m | LLM | Convert raw ChatGPT conversations → structured memories |
+| `auto_summarize` | 4h | LLM | Generate 1-line summaries for unsummarized memories |
+| `insight_extraction` | 6h | LLM | Extract reusable learnings from agent events |
+| `consolidation` | 8h | LLM | Find near-duplicates (>88% similar) and merge via LLM |
+| `entity_enrichment` | 12h | LLM | Generate descriptions for underdescribed entities |
+| `synthesis` | 24h | LLM | Cross-entity insight generation from memory clusters |
+
+### Quality & Integrity
+| Job | Interval | Type | Purpose |
+|-----|----------|------|---------|
+| `extraction_quality` | 12h | LLM | Validate entity extractions, update confidence, prune bad links |
+| `contradiction_detection` | 12h | LLM | Find semantically similar memories that contradict each other |
+| `cross_machine_insights` | 24h | LLM | Discover patterns across different machines/agents |
+
+### Maintenance
+| Job | Interval | Type | Purpose |
+|-----|----------|------|---------|
+| `maintenance` | 6h | SQL | Recompute importance scores, decay stability |
+| `feedback_integration` | 12h | SQL | Adjust importance based on feedback |
+| `memory_decay` | 24h | SQL | Archive low-value, never-accessed memories >30 days old |
 
 ## Deployment Notes
 
