@@ -94,8 +94,18 @@ async def lifespan(app):
         from nobrainr.scheduler import scheduler
         scheduler.start()
 
+    # Start the streamable-http session manager (needs its own task group)
+    from nobrainr.mcp.server import mcp as _mcp_server
+    if _mcp_server._session_manager is not None:
+        streamable_cm = _mcp_server._session_manager.run()
+        await streamable_cm.__aenter__()
+    else:
+        streamable_cm = None
+
     yield
 
+    if streamable_cm is not None:
+        await streamable_cm.__aexit__(None, None, None)
     if settings.scheduler_enabled:
         from nobrainr.scheduler import scheduler
         await scheduler.stop()
@@ -112,12 +122,12 @@ def create_app():
     sse_app = mcp.sse_app()
     streamable_app = mcp.streamable_http_app()
 
-    # Build all routes: API + streamable-http + SSE catch-all
-    # Note: streamable_http_app() already creates its own /mcp route internally,
-    # so we mount it at "/" to avoid doubling the path to /mcp/mcp.
+    # streamable_http_app() creates its own /mcp route internally and needs
+    # its session_manager.run() called in the parent lifespan (done above).
+    # Mount at "/" so the internal /mcp path isn't doubled to /mcp/mcp.
     routes = [
         *api_routes,
-        # Streamable HTTP transport (preferred by Claude Code) — serves /mcp
+        # Streamable HTTP transport (serves /mcp)
         Mount("/", app=streamable_app),
         # SSE transport (backward compat, handles /sse and /messages/)
         Mount("/", app=sse_app),
