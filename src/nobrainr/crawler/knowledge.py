@@ -85,6 +85,9 @@ async def _crawl_url(url: str, *, extract_links: bool = False) -> dict | None:
                     "urls": [url],
                     "cache_mode": "bypass",
                     "word_count_threshold": 50,
+                    "excluded_tags": ["nav", "footer", "header", "aside"],
+                    "exclude_external_links": True,
+                    "text_mode": True,
                 },
                 headers=headers,
             )
@@ -102,7 +105,7 @@ async def _crawl_url(url: str, *, extract_links: bool = False) -> dict | None:
         return None
 
     md = result.get("markdown", {})
-    markdown = md.get("raw_markdown", "") if isinstance(md, dict) else str(md)
+    markdown = md.get("fit_markdown") or md.get("raw_markdown", "") if isinstance(md, dict) else str(md)
     title = result.get("metadata", {}).get("title", url)
     status = result.get("status_code", 0)
 

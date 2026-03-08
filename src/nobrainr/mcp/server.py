@@ -567,6 +567,8 @@ async def crawl_page(
         "urls": [url],
         "cache_mode": "bypass",
         "word_count_threshold": 20,
+        "excluded_tags": ["nav", "footer", "header", "aside"],
+        "exclude_external_links": True,
     }
     if wait_for_selector:
         payload["wait_for"] = f"css:{wait_for_selector}"
@@ -599,7 +601,7 @@ async def crawl_page(
 
     if extract_markdown:
         md = result.get("markdown", {})
-        output["markdown"] = md.get("raw_markdown", "") if isinstance(md, dict) else str(md)
+        output["markdown"] = md.get("fit_markdown") or md.get("raw_markdown", "") if isinstance(md, dict) else str(md)
 
     if extract_links:
         links = result.get("links", {})
