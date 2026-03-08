@@ -173,8 +173,8 @@ function initSigma() {
       try {
         graph.addEdge(edge.data.source, edge.data.target, {
           label: edge.data.label,
-          size: 0.4,
-          color: 'rgba(255, 255, 255, 0.06)',
+          size: 0.3,
+          color: 'rgba(255, 255, 255, 0.012)',
         })
       } catch {
         // duplicate edge
@@ -195,7 +195,7 @@ function initSigma() {
     labelGridCellSize: 80,
     labelRenderedSizeThreshold: 6,
     defaultNodeColor: '#6b7280',
-    defaultEdgeColor: 'rgba(255, 255, 255, 0.06)',
+    defaultEdgeColor: 'rgba(255, 255, 255, 0.012)',
     stagePadding: 40,
     zIndex: true,
 
@@ -247,8 +247,8 @@ function initSigma() {
 
       if (focusedNode) {
         if (graph!.extremities(edge).includes(focusedNode)) {
-          res.color = 'rgba(255, 255, 255, 0.25)'
-          res.size = 1
+          res.color = 'rgba(255, 255, 255, 0.12)'
+          res.size = 0.5
           res.zIndex = 1
         } else {
           res.hidden = true
@@ -260,7 +260,7 @@ function initSigma() {
         if (!searchMatches.has(src) && !searchMatches.has(tgt)) {
           res.hidden = true
         } else {
-          res.color = 'rgba(255, 255, 255, 0.15)'
+          res.color = 'rgba(255, 255, 255, 0.06)'
         }
       }
 
