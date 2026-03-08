@@ -2,24 +2,29 @@
 
 Crawls curated documentation URLs, stores as memories with entity extraction.
 Designed to be polite: long delays, dedup, one domain at a time.
+
+Phases:
+  - Crawl seed URLs + queued URLs from crawl_queue table
+  - Discover links from crawled pages and queue interesting ones (link discovery)
+  - Re-crawl stale pages that have changed (freshness)
 """
 
 import asyncio
 import logging
 from datetime import datetime
+from urllib.parse import urlparse
 
 import httpx
 
 from nobrainr.config import settings
 from nobrainr.db import queries
 from nobrainr.db.pool import get_pool
-from nobrainr.embeddings.ollama import embed_text
+from nobrainr.services.memory import store_memory_with_extraction
 
 logger = logging.getLogger("nobrainr")
 
 # Curated seed URLs — safe public documentation.
 # Each entry: (url, tags, category)
-# Add more over time via the crawl_queue MCP tool or by editing this list.
 SEED_URLS = [
     # Python ecosystem
     ("https://docs.python.org/3/whatsnew/3.13.html", ["python", "changelog"], "documentation"),
@@ -52,9 +57,22 @@ SEED_URLS = [
 
 MAX_CONTENT_CHARS = 8000  # Don't store huge pages
 
+# Domains we trust for automatic link discovery (avoid crawling the entire web)
+TRUSTED_DOMAINS = {
+    "docs.python.org", "docs.astral.sh", "docs.pydantic.dev", "fastapi.tiangolo.com",
+    "www.postgresql.org", "vuejs.org", "vuetifyjs.com", "vite.dev",
+    "docs.docker.com", "doc.traefik.io", "coolify.io",
+    "docs.anthropic.com", "modelcontextprotocol.io",
+    "technical.buildingsmart.org", "www.buildingsmart.org",
+    "github.com", "developer.mozilla.org",
+}
 
-async def _crawl_url(url: str) -> dict | None:
-    """Fetch a URL via Crawl4AI and return markdown content."""
+# Path patterns that indicate documentation (for link scoring)
+DOC_PATH_PATTERNS = ("/docs/", "/guide/", "/tutorial/", "/api/", "/reference/", "/manual/", "/learn/")
+
+
+async def _crawl_url(url: str, *, extract_links: bool = False) -> dict | None:
+    """Fetch a URL via Crawl4AI and return markdown content + optional links."""
     headers = {"Content-Type": "application/json"}
     if settings.crawl4ai_api_token:
         headers["Authorization"] = f"Bearer {settings.crawl4ai_api_token}"
@@ -92,7 +110,15 @@ async def _crawl_url(url: str) -> dict | None:
         logger.warning("Knowledge crawl got HTTP %d for %s", status, url)
         return None
 
-    return {"markdown": markdown, "title": title, "status_code": status}
+    output = {"markdown": markdown, "title": title, "status_code": status}
+
+    if extract_links:
+        links_data = result.get("links", {})
+        internal = [l.get("href") for l in links_data.get("internal", []) if l.get("href")]
+        external = [l.get("href") for l in links_data.get("external", []) if l.get("href")]
+        output["links"] = internal + external
+
+    return output
 
 
 async def _is_already_crawled(url: str) -> bool:
@@ -106,13 +132,117 @@ async def _is_already_crawled(url: str) -> bool:
         return row is not None
 
 
+async def _is_queued_or_crawled(url: str) -> bool:
+    """Check if URL is already in crawl_queue or stored as memory."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        in_queue = await conn.fetchval(
+            "SELECT 1 FROM crawl_queue WHERE url = $1 LIMIT 1", url,
+        )
+        if in_queue:
+            return True
+        return await _is_already_crawled(url)
+
+
+def _score_link(url: str, parent_tags: list[str]) -> float:
+    """Score a discovered link for crawl priority (0.0 to 1.0)."""
+    parsed = urlparse(url)
+    domain = parsed.netloc.lower()
+    path = parsed.path.lower()
+    score = 0.0
+
+    # Trusted domain bonus
+    if domain in TRUSTED_DOMAINS:
+        score += 0.4
+    else:
+        return 0.0  # Only queue links from trusted domains
+
+    # Documentation path patterns
+    if any(p in path for p in DOC_PATH_PATTERNS):
+        score += 0.3
+
+    # Avoid non-content paths
+    skip_patterns = ("/search", "/login", "/signup", "/pricing", "/blog/", "/news/", "#")
+    if any(p in path for p in skip_patterns):
+        return 0.0
+
+    # Avoid file downloads
+    if path.endswith((".pdf", ".zip", ".tar.gz", ".png", ".jpg", ".svg")):
+        return 0.0
+
+    # Depth penalty (deeper paths = less likely to be overview docs)
+    depth = len([p for p in path.split("/") if p])
+    if depth <= 3:
+        score += 0.2
+    elif depth <= 5:
+        score += 0.1
+
+    # Same domain as seed URLs gets a small bonus
+    seed_domains = {urlparse(u).netloc for u, _, _ in SEED_URLS}
+    if domain in seed_domains:
+        score += 0.1
+
+    return min(score, 1.0)
+
+
+async def _queue_discovered_links(
+    links: list[str],
+    parent_url: str,
+    parent_tags: list[str],
+    parent_category: str,
+) -> int:
+    """Score and queue interesting links discovered during crawling."""
+    if not settings.link_discovery_enabled:
+        return 0
+
+    scored = []
+    for link in links:
+        # Normalize: strip fragments
+        link = link.split("#")[0].rstrip("/")
+        if not link or not link.startswith("http"):
+            continue
+        score = _score_link(link, parent_tags)
+        if score >= settings.link_discovery_min_score:
+            scored.append((link, score))
+
+    # Sort by score, take top N
+    scored.sort(key=lambda x: x[1], reverse=True)
+    top_links = scored[: settings.link_discovery_max_per_page]
+
+    queued = 0
+    pool = await get_pool()
+    for link, score in top_links:
+        if await _is_queued_or_crawled(link):
+            continue
+        try:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO crawl_queue (url, tags, category, metadata)
+                    VALUES ($1, $2, $3, $4::jsonb)
+                    ON CONFLICT (url) DO NOTHING
+                    """,
+                    link,
+                    parent_tags,
+                    parent_category,
+                    f'{{"parent_url": "{parent_url}", "score": {score:.2f}}}',
+                )
+            queued += 1
+            logger.info("Queued discovered link (score=%.2f): %s", score, link)
+        except Exception:
+            logger.warning("Failed to queue link: %s", link)
+
+    return queued
+
+
 async def knowledge_crawl() -> dict:
     """Crawl a batch of documentation URLs and store as memories.
 
     Picks uncrawled URLs from the seed list + any queued URLs,
     respects rate limits, and stores results with entity extraction.
+    Now also discovers links from crawled pages and queues them.
     """
-    # Get queued URLs from DB (added via crawl_queue tool)
+    # Get queued URLs from DB (added via crawl_queue tool or link discovery)
     pool = await get_pool()
     async with pool.acquire() as conn:
         queued_rows = await conn.fetch(
@@ -139,10 +269,11 @@ async def knowledge_crawl() -> dict:
     to_crawl = queued + seed_candidates
 
     if not to_crawl:
-        return {"crawled": 0, "stored": 0, "message": "nothing to crawl", "ran_at": datetime.now().isoformat()}
+        return {"crawled": 0, "stored": 0, "links_queued": 0, "message": "nothing to crawl", "ran_at": datetime.now().isoformat()}
 
     crawled = 0
     stored = 0
+    links_queued = 0
 
     for url, tags, category in to_crawl:
         # Skip if already stored (race condition protection)
@@ -150,7 +281,8 @@ async def knowledge_crawl() -> dict:
             await _mark_queued_crawled(url)
             continue
 
-        result = await _crawl_url(url)
+        # Crawl with link extraction enabled
+        result = await _crawl_url(url, extract_links=settings.link_discovery_enabled)
         if not result:
             crawled += 1
             await _mark_queued_crawled(url, error="crawl_failed")
@@ -164,13 +296,11 @@ async def knowledge_crawl() -> dict:
             await asyncio.sleep(settings.knowledge_crawl_delay)
             continue
 
-        # Store as memory
+        # Store via shared service (handles embedding + dedup + entity extraction)
         try:
             all_tags = list(tags) + ["crawled", "knowledge-base"]
-            embedding = await embed_text(markdown[:6000])
-            await queries.store_memory(
+            store_result = await store_memory_with_extraction(
                 content=markdown,
-                embedding=embedding,
                 summary=f"Crawled: {result['title']}"[:200],
                 source_type="crawl",
                 source_machine=settings.source_machine or "bimavo",
@@ -179,20 +309,109 @@ async def knowledge_crawl() -> dict:
                 category=category,
                 confidence=0.8,
             )
-            stored += 1
+            if store_result.get("status") in ("stored", "merged"):
+                stored += 1
             logger.info("Knowledge crawl stored: %s (%d chars)", result["title"], len(markdown))
         except Exception:
             logger.exception("Knowledge crawl store failed for %s", url)
 
+        # Queue discovered links
+        if result.get("links"):
+            lq = await _queue_discovered_links(result["links"], url, tags, category)
+            links_queued += lq
+
         crawled += 1
         await _mark_queued_crawled(url)
-
-        # Be polite — wait between requests
         await asyncio.sleep(settings.knowledge_crawl_delay)
 
     return {
         "crawled": crawled,
         "stored": stored,
+        "links_queued": links_queued,
+        "ran_at": datetime.now().isoformat(),
+    }
+
+
+async def get_stale_crawled_memories(limit: int = 5) -> list[dict]:
+    """Find crawled memories that are old enough to re-crawl."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT m.id, m.source_ref, m.content, m.tags, m.category, m.created_at,
+                   m.access_count, m.importance
+            FROM memories m
+            WHERE m.source_type = 'crawl'
+              AND m.source_ref IS NOT NULL
+              AND m.category <> '_archived'
+              AND m.created_at < NOW() - INTERVAL '1 day' * $1
+            ORDER BY m.access_count DESC, m.importance DESC
+            LIMIT $2
+            """,
+            settings.freshness_max_age_days,
+            limit,
+        )
+        return [dict(r) for r in rows]
+
+
+async def freshness_recrawl() -> dict:
+    """Re-crawl stale memories and update if content changed significantly."""
+    stale = await get_stale_crawled_memories(settings.freshness_batch_size)
+    if not stale:
+        return {"recrawled": 0, "updated": 0, "gone": 0, "ran_at": datetime.now().isoformat()}
+
+    recrawled = 0
+    updated = 0
+    gone = 0
+
+    for mem in stale:
+        url = mem["source_ref"]
+        result = await _crawl_url(url)
+        recrawled += 1
+
+        if not result:
+            # Page might be gone or temporarily down — mark it
+            logger.warning("Freshness: page may be gone: %s", url)
+            gone += 1
+            await asyncio.sleep(settings.knowledge_crawl_delay)
+            continue
+
+        new_markdown = result["markdown"][:MAX_CONTENT_CHARS]
+        old_content = mem["content"]
+
+        # Simple diff check: significant change = >20% length difference or <80% overlap
+        len_ratio = len(new_markdown) / max(len(old_content), 1)
+        if 0.8 <= len_ratio <= 1.2 and new_markdown[:500] == old_content[:500]:
+            # Content hasn't changed meaningfully
+            await asyncio.sleep(settings.knowledge_crawl_delay)
+            continue
+
+        # Content changed — update the memory
+        try:
+            from nobrainr.embeddings.ollama import embed_text
+
+            embedding = await embed_text(new_markdown)
+            await queries.update_memory(
+                str(mem["id"]),
+                content=new_markdown,
+                embedding=embedding,
+                summary=f"Crawled: {result['title']} (refreshed)"[:200],
+            )
+            # Re-trigger entity extraction
+            from nobrainr.extraction.pipeline import process_memory
+
+            asyncio.create_task(process_memory(str(mem["id"]), new_markdown, mem.get("tags")))
+            updated += 1
+            logger.info("Freshness: updated %s (%s)", url, result["title"])
+        except Exception:
+            logger.exception("Freshness: failed to update %s", url)
+
+        await asyncio.sleep(settings.knowledge_crawl_delay)
+
+    return {
+        "recrawled": recrawled,
+        "updated": updated,
+        "gone": gone,
         "ran_at": datetime.now().isoformat(),
     }
 
@@ -211,7 +430,7 @@ async def _mark_queued_crawled(url: str, *, error: str | None = None) -> None:
 
 
 async def ensure_crawl_queue_table() -> None:
-    """Create the crawl_queue table if it doesn't exist."""
+    """Create the crawl_queue table if it doesn't exist (with metadata column)."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("""
@@ -220,9 +439,17 @@ async def ensure_crawl_queue_table() -> None:
                 url TEXT NOT NULL,
                 tags TEXT[] DEFAULT '{}',
                 category TEXT DEFAULT 'documentation',
+                metadata JSONB DEFAULT '{}',
                 queued_at TIMESTAMPTZ DEFAULT NOW(),
                 crawled_at TIMESTAMPTZ,
                 error TEXT,
                 UNIQUE(url)
             )
+        """)
+        # Add metadata column if missing (existing tables from before)
+        await conn.execute("""
+            DO $$ BEGIN
+                ALTER TABLE crawl_queue ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}';
+            EXCEPTION WHEN others THEN NULL;
+            END $$;
         """)

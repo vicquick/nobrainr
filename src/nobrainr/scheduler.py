@@ -25,6 +25,9 @@ LLM_JOB_DELAYS = {
     "cross_machine_insights": 16 * 60,
     "knowledge_crawl": 18 * 60,
     "quality_scoring": 1 * 60,  # start fast — lots of unscored memories
+    "entity_web_research": 20 * 60,
+    "freshness_recrawl": 22 * 60,
+    "interest_expansion": 25 * 60,
 }
 
 # Per-job timeout for LLM operations
@@ -101,6 +104,12 @@ class Scheduler:
              settings.knowledge_crawl_interval_hours * 3600),
             ("quality_scoring", scheduler_jobs.quality_scoring,
              settings.quality_scoring_interval_hours * 3600),
+            ("entity_web_research", scheduler_jobs.entity_web_research,
+             settings.entity_research_interval_hours * 3600),
+            ("freshness_recrawl", scheduler_jobs.freshness_recrawl,
+             settings.freshness_interval_hours * 3600),
+            ("interest_expansion", scheduler_jobs.interest_expansion,
+             settings.interest_expansion_interval_hours * 3600),
         ]
 
         for name, job_func, interval in llm_jobs:
@@ -113,24 +122,13 @@ class Scheduler:
             )
 
         logger.info(
-            "Scheduler started: maintenance=%.1fh, feedback=%.1fh, decay=%.1fh, "
-            "summarize=%.1fh, insight=%.1fh, enrichment=%.1fh, merging=%.1fh, "
-            "consolidation=%.1fh, synthesis=%.1fh, contradiction=%.1fh, "
-            "cross_machine=%.1fh, quality=%.1fh, knowledge_crawl=%.1fh, quality_scoring=%.1fh",
-            settings.maintenance_interval_hours,
-            settings.feedback_interval_hours,
-            settings.decay_interval_hours,
-            settings.summarize_interval_hours,
-            settings.insight_extraction_interval_hours,
-            settings.entity_enrichment_interval_hours,
-            settings.entity_merging_interval_hours,
-            settings.consolidation_interval_hours,
-            settings.synthesis_interval_hours,
-            settings.contradiction_interval_hours,
-            settings.cross_machine_interval_hours,
-            settings.quality_interval_hours,
+            "Scheduler started with %d LLM jobs + 3 SQL jobs. "
+            "knowledge_crawl=%.1fh, entity_research=%.1fh, freshness=%.1fh, interest=%.1fh",
+            len(llm_jobs),
             settings.knowledge_crawl_interval_hours,
-            settings.quality_scoring_interval_hours,
+            settings.entity_research_interval_hours,
+            settings.freshness_interval_hours,
+            settings.interest_expansion_interval_hours,
         )
 
     async def stop(self) -> None:
