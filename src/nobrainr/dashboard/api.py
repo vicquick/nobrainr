@@ -271,6 +271,28 @@ async def api_recall(request: Request) -> JSONResponse:
         return JSONResponse(results)
 
 
+async def api_smart_recall(request: Request) -> JSONResponse:
+    """Semantic memory search via embedding — richer than /api/recall but needs Ollama.
+
+    Used by hooks to brief agents with contextually relevant memories.
+    Falls back to /api/recall on embedding failure.
+    """
+    q = request.query_params.get("q", "").strip()
+    if not q:
+        return JSONResponse([])
+    limit = min(int(request.query_params.get("limit", "5")), 20)
+    try:
+        embedding = await embed_text(q)
+    except Exception:
+        # Fallback to FTS if embedding fails
+        return await api_recall(request)
+    results = await queries.search_memories(
+        embedding=embedding, limit=limit, threshold=0.25,
+        text_query=q,  # hybrid mode: vector + FTS
+    )
+    return JSONResponse(results)
+
+
 async def api_memory_feedback(request: Request) -> JSONResponse:
     """Record feedback on a memory (was it useful?)."""
     memory_id = request.path_params["memory_id"]
@@ -344,6 +366,7 @@ api_routes = [
     Route("/api/stats", api_stats),
     Route("/api/scheduler", api_scheduler),
     Route("/api/recall", api_recall),
+    Route("/api/smart-recall", api_smart_recall),
     Route("/api/entities", api_entities),
     Route("/api/categories", api_categories),
     Route("/api/tags", api_tags),

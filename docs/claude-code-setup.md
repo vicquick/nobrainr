@@ -232,7 +232,7 @@ LIMIT="${2:-3}"
 [[ -z "$QUERY" ]] && exit 0
 NOBRAINR_URL="NOBRAINR_URL"
 ENCODED=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote_plus(sys.argv[1]))" "$QUERY" 2>/dev/null || echo "$QUERY")
-RESPONSE=$(curl -sf --max-time 2 "${NOBRAINR_URL}/api/recall?q=${ENCODED}&limit=${LIMIT}" 2>/dev/null) || exit 0
+RESPONSE=$(curl -sf --max-time 4 "${NOBRAINR_URL}/api/smart-recall?q=${ENCODED}&limit=${LIMIT}" 2>/dev/null) || exit 0
 echo "$RESPONSE" | python3 -c "
 import json, sys
 try:
@@ -274,7 +274,7 @@ fi
 
 NOBRAINR_CONTEXT=""
 if [[ -n "$PROJECT_TAG" ]]; then
-  PROJECT_MEMORIES=$(curl -sf --max-time 3 "${NOBRAINR_API}/api/recall?q=${PROJECT_TAG}&limit=7" 2>/dev/null || true)
+  PROJECT_MEMORIES=$(curl -sf --max-time 3 "${NOBRAINR_API}/api/smart-recall?q=${PROJECT_TAG}&limit=7" 2>/dev/null || true)
   if [[ -n "$PROJECT_MEMORIES" ]] && [[ "$PROJECT_MEMORIES" != "[]" ]]; then
     NOBRAINR_CONTEXT=$(echo "$PROJECT_MEMORIES" | python3 -c "
 import json, sys
