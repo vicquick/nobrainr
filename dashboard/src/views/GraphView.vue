@@ -1,8 +1,7 @@
 <template>
   <v-container fluid class="fill-height pa-0 d-flex flex-column">
-    <!-- Toolbar -->
-    <div class="d-flex align-center ga-2 px-4 py-2 toolbar">
-      <!-- Type filter chips -->
+    <!-- Compact toolbar -->
+    <div class="d-flex align-center ga-2 px-3 py-1 toolbar">
       <div class="d-flex ga-1 flex-wrap">
         <button
           v-for="type in entityTypes"
@@ -16,20 +15,16 @@
           {{ type }}
         </button>
       </div>
-
       <v-spacer />
-
-      <!-- Search -->
       <v-text-field
         v-model="searchQuery"
         prepend-inner-icon="mdi-magnify"
-        placeholder="Search nodes..."
+        placeholder="Search..."
         clearable
-        style="max-width: 200px;"
+        style="max-width: 180px;"
+        density="compact"
       />
-
-      <!-- Controls -->
-      <div class="d-flex align-center ga-1">
+      <div class="d-flex align-center ga-0">
         <v-btn icon="mdi-minus" variant="text" size="x-small" @click="zoomOut" />
         <v-btn icon="mdi-plus" variant="text" size="x-small" @click="zoomIn" />
         <v-btn icon="mdi-fit-to-screen-outline" variant="text" size="x-small" @click="resetCamera" />
@@ -37,17 +32,17 @@
       </div>
     </div>
 
-    <!-- Status bar -->
-    <div class="d-flex align-center ga-3 px-4 py-1 status-bar">
-      <span class="text-caption text-medium-emphasis" style="font-variant-numeric: tabular-nums;">
-        {{ nodeCount.toLocaleString() }} nodes &middot; {{ edgeCount.toLocaleString() }} edges
+    <!-- Minimal status -->
+    <div class="d-flex align-center ga-3 px-3 py-0 status-bar">
+      <span class="text-caption text-medium-emphasis" style="font-variant-numeric: tabular-nums; font-size: 10px;">
+        {{ nodeCount.toLocaleString() }} nodes · {{ edgeCount.toLocaleString() }} edges
       </span>
       <span v-if="layoutRunning" class="layout-indicator">
         <span class="layout-dot" />
         converging
       </span>
       <v-spacer />
-      <span v-if="focusedLabel" class="text-caption">
+      <span v-if="focusedLabel" class="text-caption" style="font-size: 10px;">
         <span class="text-medium-emphasis">focused:</span>
         <span class="ml-1 font-weight-medium">{{ focusedLabel }}</span>
       </span>
@@ -78,7 +73,6 @@ import { useGraph } from '@/composables/useGraph'
 import { useSSE } from '@/composables/useSSE'
 import GraphSidePanel from '@/components/GraphSidePanel.vue'
 
-// Muted, Obsidian-inspired palette
 const TYPE_COLORS: Record<string, string> = {
   person: '#7f8cff',
   project: '#6bcb77',
@@ -108,16 +102,18 @@ let renderer: Sigma | null = null
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let fa2Layout: any = null
 let focusedNode: string | null = null
+let hoveredNode: string | null = null
 const focusedNeighbors = new Set<string>()
 const searchMatches = new Set<string>()
 let cameraRatio = 1
 const visibleNodes = new Set<string>()
 
+const DEGREE_FACTOR = 50
+
 function recomputeVisibility() {
   visibleNodes.clear()
   if (!graph) return
-  const minDeg = Math.max(1, Math.round(cameraRatio * 50))
-  // Hubs: nodes with degree >= threshold
+  const minDeg = Math.max(1, Math.round(cameraRatio * DEGREE_FACTOR))
   const hubs = new Set<string>()
   graph.forEachNode((node) => {
     if (graph!.degree(node) >= minDeg) {
@@ -125,7 +121,6 @@ function recomputeVisibility() {
       visibleNodes.add(node)
     }
   })
-  // Neighbors of hubs are also visible (they have at least one visible edge)
   for (const hub of hubs) {
     graph.forEachNeighbor(hub, (neighbor) => visibleNodes.add(neighbor))
   }
@@ -137,13 +132,44 @@ function isTypeActive(type: string) {
 
 function toggleType(type: string) {
   const next = new Set(activeTypes.value)
-  if (next.has(type)) {
-    next.delete(type)
-  } else {
-    next.add(type)
-  }
+  if (next.has(type)) next.delete(type)
+  else next.add(type)
   activeTypes.value = next
   renderer?.refresh()
+}
+
+// Zoom camera to fit a set of nodes with padding
+function zoomToNodes(nodeIds: Set<string> | string[]) {
+  if (!graph || !renderer) return
+  const ids = nodeIds instanceof Set ? [...nodeIds] : nodeIds
+  if (ids.length === 0) return
+
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
+  for (const id of ids) {
+    if (!graph.hasNode(id)) continue
+    const x = graph.getNodeAttribute(id, 'x')
+    const y = graph.getNodeAttribute(id, 'y')
+    if (x < minX) minX = x
+    if (x > maxX) maxX = x
+    if (y < minY) minY = y
+    if (y > maxY) maxY = y
+  }
+
+  const cx = (minX + maxX) / 2
+  const cy = (minY + maxY) / 2
+  const dx = maxX - minX || 1
+  const dy = maxY - minY || 1
+
+  // Compute ratio to fit bounding box — Sigma graph coords → viewport
+  const camera = renderer.getCamera()
+  const { width, height } = renderer.getDimensions()
+  const graphExtent = Math.max(dx, dy)
+  // Convert graph extent to ratio: larger extent = more zoomed out
+  const padding = 1.4 // 40% padding
+  const ratio = (graphExtent * padding) / Math.min(width, height) * (renderer.getCamera().ratio / 1)
+
+  // Use animatedReset-style approach: animate to center with computed ratio
+  camera.animate({ x: cx, y: cy, ratio: Math.max(0.02, Math.min(ratio * 40, 2)) }, { duration: 400 })
 }
 
 function focusNode(nodeId: string) {
@@ -152,6 +178,10 @@ function focusNode(nodeId: string) {
   graph!.forEachNeighbor(nodeId, (n) => focusedNeighbors.add(n))
   focusedLabel.value = graph!.getNodeAttribute(nodeId, 'label') || ''
   renderer?.refresh()
+
+  // Auto-zoom to fit focused node + neighbors
+  const allVisible = new Set([nodeId, ...focusedNeighbors])
+  zoomToNodes(allVisible)
 }
 
 function unfocusNode() {
@@ -159,6 +189,8 @@ function unfocusNode() {
   focusedNeighbors.clear()
   focusedLabel.value = ''
   renderer?.refresh()
+  // Zoom back to overview
+  renderer?.getCamera().animate({ x: 0.5, y: 0.5, ratio: 1 }, { duration: 400 })
 }
 
 function initSigma() {
@@ -210,13 +242,14 @@ function initSigma() {
     labelColor: { attribute: 'labelColor', defaultValue: 'rgba(255, 255, 255, 0.7)' },
     labelSize: 11,
     labelFont: '"Inter", system-ui, sans-serif',
-    labelWeight: '400',
-    labelDensity: 0.06,
+    labelWeight: '500',
+    labelDensity: 0.07,
     labelGridCellSize: 80,
-    labelRenderedSizeThreshold: 6,
+    // Very high threshold = no labels by default
+    labelRenderedSizeThreshold: 999,
     defaultNodeColor: '#6b7280',
     defaultEdgeColor: 'rgba(255, 255, 255, 0.04)',
-    stagePadding: 40,
+    stagePadding: 20,
     zIndex: true,
     enableNodeHoverHighlighting: false,
 
@@ -230,28 +263,31 @@ function initSigma() {
         return res
       }
 
-      // Search highlighting
+      // Search: show only matches with labels
       if (searchMatches.size > 0) {
         if (searchMatches.has(node)) {
           res.zIndex = 1
           res.color = lighten(res.color as string, 0.3)
-          res.labelColor = '#000000'
+          res.forceLabel = true
+          res.labelColor = 'rgba(255, 255, 255, 0.9)'
         } else {
           res.hidden = true
         }
         return res
       }
 
-      // Click-focus: show focused + neighbors, hide everything else
+      // Click-focus: show focused + neighbors with labels, hide rest
       if (focusedNode) {
         if (node === focusedNode) {
           res.zIndex = 2
           res.color = lighten(res.color as string, 0.4)
           res.size = (res.size as number) * 1.4
+          res.forceLabel = true
           res.labelColor = '#000000'
         } else if (focusedNeighbors.has(node)) {
           res.zIndex = 1
           res.color = lighten(res.color as string, 0.1)
+          res.forceLabel = true
           res.labelColor = 'rgba(255, 255, 255, 0.85)'
         } else {
           res.hidden = true
@@ -259,7 +295,13 @@ function initSigma() {
         return res
       }
 
-      // Zoom-based node visibility: hide nodes with no visible edges
+      // Hover: show label for hovered node only
+      if (hoveredNode === node) {
+        res.forceLabel = true
+        res.labelColor = 'rgba(255, 255, 255, 0.9)'
+      }
+
+      // Zoom-based visibility
       if (visibleNodes.size > 0 && !visibleNodes.has(node)) {
         res.hidden = true
       }
@@ -270,9 +312,10 @@ function initSigma() {
     edgeReducer(edge, data) {
       const res = { ...data }
 
+      // Click-focus: show only edges to focused node
       if (focusedNode) {
         if (graph!.extremities(edge).includes(focusedNode)) {
-          res.color = 'rgba(255, 255, 255, 0.10)'
+          res.color = 'rgba(255, 255, 255, 0.12)'
           res.size = 0.4
           res.zIndex = 1
         } else {
@@ -281,6 +324,7 @@ function initSigma() {
         return res
       }
 
+      // Search
       if (searchMatches.size > 0) {
         const [src, tgt] = graph!.extremities(edge)
         if (!searchMatches.has(src) && !searchMatches.has(tgt)) {
@@ -291,14 +335,10 @@ function initSigma() {
         return res
       }
 
-      // Dynamic edge filtering: zoomed out = only hub edges, zoomed in = all
-      // cameraRatio: >1 = zoomed out, 1 = default, <1 = zoomed in
+      // Dynamic edge filtering by degree + zoom
       const [src, tgt] = graph!.extremities(edge)
       const maxDeg = Math.max(graph!.degree(src), graph!.degree(tgt))
-      // At ratio 1.0 (default) → need degree ≥ 50 (only top hubs)
-      // At ratio 0.5 → need degree ≥ 25
-      // At ratio 0.1 or less → show all
-      const minDeg = Math.max(1, Math.round(cameraRatio * 50))
+      const minDeg = Math.max(1, Math.round(cameraRatio * DEGREE_FACTOR))
       if (maxDeg < minDeg) {
         res.hidden = true
       }
@@ -307,7 +347,7 @@ function initSigma() {
     },
   })
 
-  // Recompute visibility on zoom changes (debounced)
+  // Recompute visibility on zoom (debounced)
   recomputeVisibility()
   let zoomRefreshTimer: ReturnType<typeof setTimeout>
   renderer.getCamera().on('updated', (state: { ratio: number }) => {
@@ -321,12 +361,16 @@ function initSigma() {
     }
   })
 
-  // Pointer cursor on node hover (no visual change)
-  renderer.on('enterNode', () => {
+  // Hover: show label + pointer cursor
+  renderer.on('enterNode', ({ node }) => {
+    hoveredNode = node
     sigmaContainer.value!.style.cursor = 'pointer'
+    renderer?.refresh()
   })
   renderer.on('leaveNode', () => {
+    hoveredNode = null
     sigmaContainer.value!.style.cursor = 'default'
+    renderer?.refresh()
   })
 
   // Click to focus + open side panel
@@ -367,9 +411,8 @@ function initSigma() {
   }, 8000)
 }
 
-// Lighten a hex color
 function lighten(hex: string, amount: number): string {
-  if (hex.startsWith('rgba')) return hex
+  if (hex.startsWith('rgba') || hex.startsWith('rgb(')) return hex
   const h = hex.replace('#', '')
   const r = Math.min(255, parseInt(h.substring(0, 2), 16) + Math.round(255 * amount))
   const g = Math.min(255, parseInt(h.substring(2, 4), 16) + Math.round(255 * amount))
@@ -377,7 +420,6 @@ function lighten(hex: string, amount: number): string {
   return `rgb(${r}, ${g}, ${b})`
 }
 
-// Debounced search
 let searchTimeout: ReturnType<typeof setTimeout>
 watch(searchQuery, (q) => {
   clearTimeout(searchTimeout)
@@ -458,16 +500,16 @@ onUnmounted(() => {
 .status-bar {
   border-bottom: 1px solid rgba(255, 255, 255, 0.03);
   background: rgba(16, 16, 22, 0.4);
+  min-height: 20px;
 }
 .type-pill {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 3px 10px;
+  padding: 2px 8px;
   border-radius: 12px;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 500;
-  letter-spacing: 0;
   border: 1px solid rgba(255, 255, 255, 0.06);
   background: transparent;
   color: rgba(255, 255, 255, 0.4);
@@ -484,8 +526,8 @@ onUnmounted(() => {
   border-color: rgba(255, 255, 255, 0.12);
 }
 .type-dot {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
   background: var(--pill-color);
   opacity: 0.3;
@@ -498,12 +540,12 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: 10px;
   color: rgba(255, 255, 255, 0.35);
 }
 .layout-dot {
-  width: 5px;
-  height: 5px;
+  width: 4px;
+  height: 4px;
   border-radius: 50%;
   background: #d4a056;
   animation: pulse 1.5s ease-in-out infinite;
