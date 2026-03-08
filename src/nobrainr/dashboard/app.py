@@ -74,7 +74,18 @@ async def _auto_backfill():
 async def lifespan(app):
     """Shared lifespan: init DB, check models, start backfill, yield, cleanup."""
     logger.info("nobrainr starting up...")
-    pool = await get_pool()
+    # Retry DB connection (network may not be ready immediately after deploy)
+    pool = None
+    for attempt in range(1, 6):
+        try:
+            pool = await get_pool()
+            break
+        except Exception as exc:
+            logger.warning("DB connection attempt %d/5 failed: %s", attempt, exc)
+            if attempt < 5:
+                await asyncio.sleep(3 * attempt)
+            else:
+                raise
     await init_schema(pool)
 
     model_ok = await check_model()
