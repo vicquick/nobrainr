@@ -1,4 +1,4 @@
-import { ref, computed } from 'vue'
+import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import type { ChatMessage, ChatSources } from '@/types'
 
@@ -13,17 +13,6 @@ export const useChatStore = defineStore('chat', () => {
   function toggle() { isOpen.value = !isOpen.value }
   function open() { isOpen.value = true }
   function close() { isOpen.value = false }
-
-  // All entity IDs accumulated across the entire conversation
-  const conversationEntityIds = computed(() => {
-    const ids = new Set<string>()
-    for (const msg of messages.value) {
-      if (msg.sources?.entities) {
-        for (const e of msg.sources.entities) ids.add(e.id)
-      }
-    }
-    return ids
-  })
 
   function clearSources() { currentSources.value = null }
   function focusEntity(id: string) { focusEntityId.value = id }
@@ -118,7 +107,6 @@ export const useChatStore = defineStore('chat', () => {
 
   return {
     isOpen, messages, isStreaming, isThinking, currentSources, focusEntityId,
-    conversationEntityIds,
     toggle, open, close, clearSources, focusEntity, clearFocus,
     sendMessage, clearHistory,
   }
