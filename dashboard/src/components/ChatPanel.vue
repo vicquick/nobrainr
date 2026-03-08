@@ -277,7 +277,7 @@ watch(
 }
 .source-memory {
   font-size: 0.7rem;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(255, 255, 255, 0.55);
   padding: 2px 4px;
   overflow: hidden;
   text-overflow: ellipsis;

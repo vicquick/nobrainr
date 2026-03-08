@@ -169,7 +169,8 @@ let hoveredNode: string | null = null
 const focusedNeighbors = new Set<string>()
 const searchMatches = new Set<string>()
 const hubNodes = new Set<string>()
-const chatHighlightedNodes = new Set<string>()
+const chatFocusedNodes = new Set<string>()
+const chatFocusedNeighbors = new Set<string>()
 let chatHighlightPaused = false  // paused by click-void, resumed on next message
 
 function isTypeActive(type: string) {
@@ -221,7 +222,8 @@ function zoomToNodes(nodeIds: Set<string> | string[]) {
 function focusNode(nodeId: string) {
   focusedNode = nodeId
   focusedNeighbors.clear()
-  chatHighlightedNodes.clear()
+  chatFocusedNodes.clear()
+  chatFocusedNeighbors.clear()
   graph!.forEachNeighbor(nodeId, (n) => focusedNeighbors.add(n))
   focusedLabel.value = graph!.getNodeAttribute(nodeId, 'label') || ''
   renderer?.refresh()
@@ -332,7 +334,7 @@ function initSigma() {
           res.zIndex = 2
           res.size = (res.size as number) * 1.4
           res.forceLabel = true
-          res.labelColor = '#000000'
+          res.labelColor = '#ffffff'
         } else if (focusedNeighbors.has(node)) {
           res.zIndex = 1
           res.forceLabel = true
@@ -345,14 +347,17 @@ function initSigma() {
         return res
       }
 
-      // Chat highlight: entities from chatbot response
-      if (chatHighlightedNodes.size > 0) {
-        if (chatHighlightedNodes.has(node)) {
-          res.zIndex = 1
-          res.color = lighten(res.color as string, 0.25)
-          res.size = (res.size as number) * 1.2
+      // Chat focus: entities from chatbot response — same visual treatment as click-focus
+      if (chatFocusedNodes.size > 0) {
+        if (chatFocusedNodes.has(node)) {
+          res.zIndex = 2
+          res.size = (res.size as number) * 1.4
           res.forceLabel = true
-          res.labelColor = 'rgba(255, 255, 255, 0.9)'
+          res.labelColor = '#ffffff'
+        } else if (chatFocusedNeighbors.has(node)) {
+          res.zIndex = 1
+          res.forceLabel = true
+          res.labelColor = 'rgba(255, 255, 255, 0.85)'
         } else {
           res.color = 'rgba(60, 60, 70, 0.15)'
           res.size = 1.5
@@ -379,7 +384,7 @@ function initSigma() {
       // Hover: show label
       if (hoveredNode === node) {
         res.forceLabel = true
-        res.labelColor = '#000000'
+        res.labelColor = '#ffffff'
       }
 
       return res
@@ -400,12 +405,13 @@ function initSigma() {
         return res
       }
 
-      // Chat highlight: show edges between highlighted nodes
-      if (chatHighlightedNodes.size > 0) {
+      // Chat focus: show edges where at least one extremity is chat-focused
+      if (chatFocusedNodes.size > 0) {
         const [src, tgt] = graph!.extremities(edge)
-        if (chatHighlightedNodes.has(src) && chatHighlightedNodes.has(tgt)) {
-          res.color = 'rgba(255, 255, 255, 0.12)'
+        if (chatFocusedNodes.has(src) || chatFocusedNodes.has(tgt)) {
+          res.color = 'rgba(255, 255, 255, 0.15)'
           res.size = 1.5
+          res.zIndex = 1
         } else {
           res.hidden = true
         }
@@ -455,7 +461,8 @@ function initSigma() {
   renderer.on('clickStage', () => {
     unfocusNode()
     clearSelection()
-    chatHighlightedNodes.clear()
+    chatFocusedNodes.clear()
+    chatFocusedNeighbors.clear()
     chatHighlightPaused = true
     renderer?.refresh()
   })
@@ -495,34 +502,52 @@ watch(() => chatStore.focusEntityId, async (entityId) => {
   chatStore.clearFocus()
 })
 
-// Watch chat sources — accumulate all conversation entities on graph
-watch(() => chatStore.currentSources, (sources) => {
+// Watch chat sources — populate chatFocusedNodes with full click-focus treatment
+watch(() => chatStore.currentSources, async (sources) => {
   if (!sources || !graph) return
 
   // New sources arrived — resume highlight if paused, accumulate entities
   chatHighlightPaused = false
+
+  // Clear single click-focus to avoid conflicts
+  focusedNode = null
+  focusedNeighbors.clear()
+  focusedLabel.value = ''
+  clearSelection()
+
   let added = false
+  let firstEntityId: string | null = null
   for (const entity of sources.entities) {
-    if (graph.hasNode(entity.id) && !chatHighlightedNodes.has(entity.id)) {
-      chatHighlightedNodes.add(entity.id)
+    if (graph.hasNode(entity.id) && !chatFocusedNodes.has(entity.id)) {
+      chatFocusedNodes.add(entity.id)
+      if (!firstEntityId) firstEntityId = entity.id
       added = true
     }
   }
-  if (chatHighlightedNodes.size > 0 && !focusedNode) {
-    // Clear click-focus so conversation highlight shows
-    focusedNode = null
-    focusedNeighbors.clear()
-    focusedLabel.value = ''
-    clearSelection()
+
+  // Compute neighbors: union of all neighbors of all chat-focused nodes
+  chatFocusedNeighbors.clear()
+  for (const nodeId of chatFocusedNodes) {
+    graph.forEachNeighbor(nodeId, (n) => {
+      if (!chatFocusedNodes.has(n)) chatFocusedNeighbors.add(n)
+    })
+  }
+
+  if (chatFocusedNodes.size > 0) {
     renderer?.refresh()
-    if (added) zoomToNodes(chatHighlightedNodes)
+    if (added) zoomToNodes(chatFocusedNodes)
+    // Open side panel for the first entity
+    if (firstEntityId) {
+      await fetchNodeDetail(firstEntityId)
+    }
   }
 })
 
 // Clear conversation highlights when chat history is cleared
 watch(() => chatStore.messages.length, (len) => {
   if (len === 0) {
-    chatHighlightedNodes.clear()
+    chatFocusedNodes.clear()
+    chatFocusedNeighbors.clear()
     chatHighlightPaused = false
     renderer?.refresh()
   }
@@ -548,7 +573,8 @@ function handleClosePanel() {
 async function refreshGraph() {
   searchQuery.value = ''
   searchMatches.clear()
-  chatHighlightedNodes.clear()
+  chatFocusedNodes.clear()
+  chatFocusedNeighbors.clear()
   activeTypes.value = new Set(entityTypes)
   unfocusNode()
   clearSelection()
