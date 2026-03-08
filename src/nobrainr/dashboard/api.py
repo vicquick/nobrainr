@@ -286,6 +286,7 @@ async def api_recall(request: Request) -> JSONResponse:
             """
             SELECT id, content, summary, source_type, source_machine, tags, category,
                    confidence, metadata, created_at, updated_at, importance, stability,
+                   quality_score,
                    ts_rank(to_tsvector('english', content), websearch_to_tsquery('english', $1)) AS rank
             FROM memories
             WHERE to_tsvector('english', content) @@ websearch_to_tsquery('english', $1)
