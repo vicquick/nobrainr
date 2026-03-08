@@ -116,7 +116,7 @@ const visibleNodes = new Set<string>()
 function recomputeVisibility() {
   visibleNodes.clear()
   if (!graph) return
-  const minDeg = Math.max(1, Math.round(cameraRatio * 20))
+  const minDeg = Math.max(1, Math.round(cameraRatio * 50))
   // Hubs: nodes with degree >= threshold
   const hubs = new Set<string>()
   graph.forEachNode((node) => {
@@ -207,7 +207,7 @@ function initSigma() {
 
   renderer = new Sigma(graph, sigmaContainer.value, {
     renderLabels: true,
-    labelColor: { color: 'rgba(255, 255, 255, 0.7)' },
+    labelColor: { attribute: 'labelColor', defaultValue: 'rgba(255, 255, 255, 0.7)' },
     labelSize: 11,
     labelFont: '"Inter", system-ui, sans-serif',
     labelWeight: '400',
@@ -218,7 +218,6 @@ function initSigma() {
     defaultEdgeColor: 'rgba(255, 255, 255, 0.04)',
     stagePadding: 40,
     zIndex: true,
-
     enableNodeHoverHighlighting: false,
 
     nodeReducer(node, data) {
@@ -236,25 +235,26 @@ function initSigma() {
         if (searchMatches.has(node)) {
           res.zIndex = 1
           res.color = lighten(res.color as string, 0.3)
+          res.labelColor = '#000000'
         } else {
-          res.color = 'rgba(255, 255, 255, 0.03)'
-          res.label = ''
+          res.hidden = true
         }
         return res
       }
 
-      // Click-focus highlighting
+      // Click-focus: show focused + neighbors, hide everything else
       if (focusedNode) {
         if (node === focusedNode) {
           res.zIndex = 2
           res.color = lighten(res.color as string, 0.4)
-          res.size = (res.size as number) * 1.3
+          res.size = (res.size as number) * 1.4
+          res.labelColor = '#000000'
         } else if (focusedNeighbors.has(node)) {
           res.zIndex = 1
-          res.color = lighten(res.color as string, 0.15)
+          res.color = lighten(res.color as string, 0.1)
+          res.labelColor = 'rgba(255, 255, 255, 0.85)'
         } else {
-          res.color = 'rgba(255, 255, 255, 0.03)'
-          res.label = ''
+          res.hidden = true
         }
         return res
       }
@@ -295,10 +295,10 @@ function initSigma() {
       // cameraRatio: >1 = zoomed out, 1 = default, <1 = zoomed in
       const [src, tgt] = graph!.extremities(edge)
       const maxDeg = Math.max(graph!.degree(src), graph!.degree(tgt))
-      // At ratio 1.0 (default) → need degree ≥ 20 (only major hubs)
-      // At ratio 0.5 → need degree ≥ 10
-      // At ratio 0.25 or less → show all
-      const minDeg = Math.max(1, Math.round(cameraRatio * 20))
+      // At ratio 1.0 (default) → need degree ≥ 50 (only top hubs)
+      // At ratio 0.5 → need degree ≥ 25
+      // At ratio 0.1 or less → show all
+      const minDeg = Math.max(1, Math.round(cameraRatio * 50))
       if (maxDeg < minDeg) {
         res.hidden = true
       }

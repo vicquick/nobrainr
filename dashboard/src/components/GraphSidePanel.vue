@@ -11,16 +11,16 @@
     <template v-if="node">
       <div class="d-flex flex-column fill-height">
         <!-- Header -->
-        <div class="pa-4" style="border-bottom: 1px solid rgba(255,255,255,0.06);">
+        <div class="pa-4" style="border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.02);">
           <div class="d-flex align-center mb-2">
             <EntityBadge :type="node.entity.entity_type" />
             <v-spacer />
             <v-btn icon="mdi-close" variant="text" size="x-small" @click="$emit('close')" />
           </div>
-          <div class="text-h6 font-weight-bold" style="line-height: 1.3;">
+          <div class="text-h6 font-weight-bold" style="line-height: 1.3; color: rgba(255,255,255,0.95);">
             {{ node.entity.canonical_name }}
           </div>
-          <div v-if="node.entity.description" class="text-body-2 text-medium-emphasis mt-1">
+          <div v-if="node.entity.description" class="text-body-2 mt-1" style="color: rgba(255,255,255,0.6);">
             {{ node.entity.description }}
           </div>
           <div class="d-flex ga-3 mt-3">
@@ -122,19 +122,34 @@ defineEmits<{
 
 <style scoped>
 .side-panel {
-  background: rgb(var(--v-theme-surface)) !important;
+  background: #12121a !important;
+  border-left: 1px solid rgba(255, 255, 255, 0.06) !important;
+}
+.side-panel :deep(.v-navigation-drawer__content) {
+  color: rgba(255, 255, 255, 0.9);
 }
 .connection-item {
   transition: background 100ms ease;
+  border: 1px solid transparent;
 }
 .connection-item:hover {
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.06);
 }
 .memory-item {
-  border-color: rgba(255, 255, 255, 0.04) !important;
-  transition: border-color 100ms ease;
+  background: rgba(255, 255, 255, 0.02) !important;
+  border-color: rgba(255, 255, 255, 0.06) !important;
+  transition: border-color 100ms ease, background 100ms ease;
 }
 .memory-item:hover {
-  border-color: rgba(255, 255, 255, 0.1) !important;
+  background: rgba(255, 255, 255, 0.04) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+.memory-item :deep(.v-card-text) {
+  color: rgba(255, 255, 255, 0.85);
+}
+.connections-list {
+  max-height: 300px;
+  overflow-y: auto;
 }
 </style>
