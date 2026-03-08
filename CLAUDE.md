@@ -141,9 +141,11 @@ dashboard/                  # Vue 3 frontend (separate build)
 
 ## Scheduler Jobs
 
-The scheduler runs 13 autonomous jobs (3 SQL + 10 LLM). LLM jobs use a semaphore(6)
-allowing up to 6 concurrent GPU jobs (leaves headroom for Ollama NUM_PARALLEL=8).
-Structured labeling jobs use `think=False` for ~10x speed.
+The scheduler runs 13 autonomous jobs (3 SQL + 10 LLM). LLM jobs use a configurable
+semaphore (`NOBRAINR_SCHEDULER_LLM_CONCURRENCY`, default 3) with 1s inter-request delay
+between batch LLM calls for live request coexistence. LLM retry: 5 attempts with
+exponential backoff on empty/malformed JSON responses. Structured labeling jobs use
+`think=False` for ~10x speed.
 
 ### Knowledge Lifecycle
 | Job | Interval | Batch | Type | Purpose |
@@ -173,21 +175,30 @@ Structured labeling jobs use `think=False` for ~10x speed.
 
 ### Ollama Configuration
 Two models are required:
-- `nomic-embed-text` — embeddings (~0.3 GB VRAM)
-- A structured-output-capable model (default: `gemma3:12b`, ~8 GB VRAM) — entity extraction + scheduler
+- `nomic-embed-text` — embeddings (~0.6 GB VRAM, always loaded)
+- `gemma3:12b` — entity extraction + scheduler (~11.4 GB VRAM, keep_alive=5m)
+
+Additionally, `qwen3.5-nothink:9b` is available for external consumers (Affine copilot).
 
 Recommended Ollama env vars for production:
 - `OLLAMA_FLASH_ATTENTION=1` — reduces VRAM, speeds inference
 - `OLLAMA_KV_CACHE_TYPE=q8_0` — halves KV cache memory per slot
-- `OLLAMA_NUM_PARALLEL=8` — concurrent inference slots
-- `OLLAMA_KEEP_ALIVE=24h` — keep models hot in VRAM
-- `OLLAMA_MAX_LOADED_MODELS=2` — embedding + LLM
+- `OLLAMA_NUM_PARALLEL=6` — concurrent inference slots
+- `OLLAMA_KEEP_ALIVE=5m` — unload idle models after 5 minutes
+- `OLLAMA_MAX_LOADED_MODELS=2` — embedding + one LLM at a time
+- `OLLAMA_NUM_CTX=4096` — context window per slot
+- `OLLAMA_NUM_GPU=999` — offload all layers to GPU
+
+`MAX_LOADED_MODELS=2` ensures only one LLM is loaded at a time alongside nomic-embed-text,
+preventing VRAM exhaustion when multiple apps share the GPU (nobrainr + Affine + Speaches).
 
 ### Extraction Performance
 - `ollama_chat()` uses `"think": false` for entity extraction (structured labeling doesn't need reasoning)
 - Scheduler jobs (consolidation, synthesis, dedup) keep `think=True` — they benefit from reasoning
+- gemma3:12b is ~2x faster than qwen3.5 for structured output and more reliable at producing valid JSON
 - Backfill: `nobrainr extract-backfill --batch-size 50`
-- Retry logic: 404s from Ollama (model loading contention) are retried 5× with exponential backoff
+- Retry logic: 404s from Ollama (model loading contention) are retried 5x with exponential backoff
+- LLM retry: 5 attempts with exponential backoff on empty/malformed JSON responses
 
 ### Network Aliases (Coolify)
 Coolify redeploys create new containers with random suffixes. Traefik routes to stable
