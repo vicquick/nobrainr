@@ -42,7 +42,7 @@ graph TB
     subgraph nobrainr [nobrainr server :8420]
         NB[FastMCP + JSON API]
         NB --> EMB[Ollama<br/>nomic-embed-text]
-        NB --> EXT[Ollama<br/>qwen3:8b<br/>Entity Extraction]
+        NB --> EXT[Ollama<br/>qwen3.5:9b<br/>Entity Extraction]
         NB --> PG[(PostgreSQL 18<br/>+ pgvector)]
     end
 
@@ -83,7 +83,7 @@ docker compose logs -f ollama-init
 curl -sf http://localhost:8420/api/stats | jq .total_memories
 ```
 
-The extraction model (`qwen3:8b`, ~5.2GB) is also pulled on first start. If you don't need automatic entity extraction (knowledge graph), set `NOBRAINR_EXTRACTION_ENABLED=false` in `.env` to skip it.
+The extraction model (`qwen3.5:9b`, ~6.6GB) is also pulled on first start. If you don't need automatic entity extraction (knowledge graph), set `NOBRAINR_EXTRACTION_ENABLED=false` in `.env` to skip it.
 
 ### Local development
 
@@ -265,7 +265,7 @@ See the [Claude Code setup guide](docs/claude-code-setup.md) for full setup inst
 | PostgreSQL | 18 | Storage (UUIDv7 native) |
 | pgvector | HNSW index | Similarity search |
 | Ollama | nomic-embed-text | Local embeddings (768d, free, no API costs) |
-| Ollama | qwen3:8b | Entity extraction + autonomous learning (optional) |
+| Ollama | qwen3.5:9b | Entity extraction + autonomous learning (optional) |
 | FastMCP | HTTP + SSE | MCP server |
 | Python | 3.12+ | Runtime |
 | Vue 3 | Vuetify + Cytoscape.js | Dashboard (optional, separate container) |
@@ -282,7 +282,7 @@ All via environment variables with `NOBRAINR_` prefix:
 | `NOBRAINR_HOST` | `0.0.0.0` | Server bind address |
 | `NOBRAINR_PORT` | `8420` | Server port |
 | `NOBRAINR_EXTRACTION_ENABLED` | `true` | Enable entity extraction (knowledge graph) |
-| `NOBRAINR_EXTRACTION_MODEL` | `qwen3:8b` | Ollama model for extraction |
+| `NOBRAINR_EXTRACTION_MODEL` | `qwen3.5:9b` | Ollama model for extraction |
 | `NOBRAINR_SOURCE_MACHINE` | `<hostname>` | Machine name for scheduler-created memories |
 | `NOBRAINR_SCHEDULER_ENABLED` | `true` | Enable background scheduler jobs |
 

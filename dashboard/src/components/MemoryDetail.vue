@@ -1,108 +1,89 @@
 <template>
-  <v-card variant="outlined" class="fill-height">
-    <v-card-title class="d-flex align-center pa-4">
-      <span class="text-h6">{{ editing ? 'Edit Memory' : (memory.summary || 'Memory Detail') }}</span>
-      <v-spacer />
+  <v-card variant="flat" class="fill-height detail-card">
+    <div class="d-flex align-center pa-4" style="border-bottom: 1px solid rgba(255,255,255,0.06);">
+      <div class="flex-grow-1">
+        <div class="text-h6 font-weight-bold" style="line-height: 1.3;">
+          {{ editing ? 'Edit Memory' : (memory.summary || 'Memory Detail') }}
+        </div>
+        <div class="text-caption text-medium-emphasis mt-1">
+          {{ memory.source_type || 'unknown' }} &middot; {{ memory.source_machine || 'unknown' }}
+        </div>
+      </div>
       <v-btn
-        :icon="editing ? 'mdi-close' : 'mdi-pencil'"
+        :icon="editing ? 'mdi-close' : 'mdi-pencil-outline'"
         variant="text"
         size="small"
         @click="editing = !editing"
       />
-      <v-btn icon="mdi-delete" variant="text" size="small" color="error" @click="showDeleteDialog = true" />
-    </v-card-title>
+      <v-btn icon="mdi-delete-outline" variant="text" size="small" color="error" @click="showDeleteDialog = true" />
+    </div>
 
-    <v-divider />
-
-    <v-card-text class="pa-4" style="overflow-y: auto;">
+    <div class="pa-4" style="overflow-y: auto;">
       <!-- Edit Mode -->
       <template v-if="editing">
-        <v-text-field
-          v-model="editForm.summary"
-          label="Summary"
-          variant="outlined"
-          density="compact"
-          class="mb-3"
-        />
-        <v-textarea
-          v-model="editForm.content"
-          label="Content"
-          variant="outlined"
-          density="compact"
-          rows="6"
-          class="mb-3"
-        />
-        <v-text-field
-          v-model="editForm.category"
-          label="Category"
-          variant="outlined"
-          density="compact"
-          class="mb-3"
-        />
-        <v-text-field
-          v-model="editForm.tagsStr"
-          label="Tags (comma-separated)"
-          variant="outlined"
-          density="compact"
-          class="mb-3"
-        />
-        <v-btn color="primary" variant="flat" @click="handleSave" :loading="saving">
-          Save
-        </v-btn>
+        <div class="d-flex flex-column ga-3">
+          <v-text-field v-model="editForm.summary" label="Summary" />
+          <v-textarea v-model="editForm.content" label="Content" rows="6" />
+          <v-text-field v-model="editForm.category" label="Category" />
+          <v-text-field v-model="editForm.tagsStr" label="Tags (comma-separated)" />
+          <v-btn color="primary" variant="flat" @click="handleSave" :loading="saving" class="align-self-start">
+            Save Changes
+          </v-btn>
+        </div>
       </template>
 
       <!-- View Mode -->
       <template v-else>
-        <!-- Metadata Grid -->
-        <v-row dense class="mb-4">
-          <v-col cols="6" sm="4">
-            <div class="text-caption text-medium-emphasis">Category</div>
-            <v-chip v-if="memory.category" size="small" variant="tonal" color="primary">
-              {{ memory.category }}
-            </v-chip>
-            <span v-else class="text-body-2 text-medium-emphasis">--</span>
-          </v-col>
-          <v-col cols="6" sm="4">
-            <div class="text-caption text-medium-emphasis">Source</div>
-            <div class="text-body-2">{{ memory.source_type || '--' }}</div>
-          </v-col>
-          <v-col cols="6" sm="4">
-            <div class="text-caption text-medium-emphasis">Machine</div>
-            <div class="text-body-2">{{ memory.source_machine || '--' }}</div>
-          </v-col>
-          <v-col cols="6" sm="4">
-            <div class="text-caption text-medium-emphasis">Importance</div>
-            <v-progress-linear
-              :model-value="memory.importance * 100"
-              color="warning"
-              height="6"
-              rounded
-            />
-            <span class="text-caption">{{ (memory.importance * 100).toFixed(0) }}%</span>
-          </v-col>
-          <v-col cols="6" sm="4">
-            <div class="text-caption text-medium-emphasis">Stability</div>
-            <v-progress-linear
-              :model-value="memory.stability * 100"
-              color="success"
-              height="6"
-              rounded
-            />
-            <span class="text-caption">{{ (memory.stability * 100).toFixed(0) }}%</span>
-          </v-col>
-          <v-col cols="6" sm="4">
-            <div class="text-caption text-medium-emphasis">Access Count</div>
-            <div class="text-body-2">{{ memory.access_count }}</div>
-          </v-col>
-        </v-row>
+        <!-- Stats row -->
+        <div class="d-flex ga-4 mb-5">
+          <div class="stat-block">
+            <div class="text-caption text-medium-emphasis mb-1">Importance</div>
+            <div class="d-flex align-center ga-2">
+              <v-progress-linear
+                :model-value="memory.importance * 100"
+                color="warning"
+                height="6"
+                rounded
+                style="width: 80px;"
+              />
+              <span class="text-caption font-weight-medium">{{ (memory.importance * 100).toFixed(0) }}%</span>
+            </div>
+          </div>
+          <div class="stat-block">
+            <div class="text-caption text-medium-emphasis mb-1">Stability</div>
+            <div class="d-flex align-center ga-2">
+              <v-progress-linear
+                :model-value="memory.stability * 100"
+                color="success"
+                height="6"
+                rounded
+                style="width: 80px;"
+              />
+              <span class="text-caption font-weight-medium">{{ (memory.stability * 100).toFixed(0) }}%</span>
+            </div>
+          </div>
+          <div class="stat-block">
+            <div class="text-caption text-medium-emphasis mb-1">Accessed</div>
+            <div class="text-body-2 font-weight-medium">{{ memory.access_count }}&times;</div>
+          </div>
+        </div>
+
+        <!-- Category -->
+        <div v-if="memory.category" class="mb-4">
+          <v-chip size="small" variant="tonal" color="primary" class="font-weight-medium">
+            {{ memory.category }}
+          </v-chip>
+        </div>
 
         <!-- Content -->
-        <div class="text-caption text-medium-emphasis mb-1">Content</div>
-        <pre class="content-block pa-3 mb-4 rounded">{{ memory.content }}</pre>
+        <div class="mb-5">
+          <div class="text-caption text-medium-emphasis mb-2 text-uppercase" style="letter-spacing: 0.5px;">Content</div>
+          <pre class="content-block">{{ memory.content }}</pre>
+        </div>
 
         <!-- Tags -->
-        <div v-if="memory.tags.length" class="mb-4">
-          <div class="text-caption text-medium-emphasis mb-1">Tags</div>
+        <div v-if="memory.tags.length" class="mb-5">
+          <div class="text-caption text-medium-emphasis mb-2 text-uppercase" style="letter-spacing: 0.5px;">Tags</div>
           <div class="d-flex ga-1 flex-wrap">
             <v-chip v-for="tag in memory.tags" :key="tag" size="small" variant="outlined">
               {{ tag }}
@@ -111,8 +92,8 @@
         </div>
 
         <!-- Entities -->
-        <div v-if="entities && entities.length" class="mb-4">
-          <div class="text-caption text-medium-emphasis mb-1">Entities</div>
+        <div v-if="entities && entities.length" class="mb-5">
+          <div class="text-caption text-medium-emphasis mb-2 text-uppercase" style="letter-spacing: 0.5px;">Entities</div>
           <div class="d-flex ga-1 flex-wrap">
             <EntityBadge
               v-for="e in entities"
@@ -124,20 +105,26 @@
         </div>
 
         <!-- Timestamps -->
-        <v-divider class="mb-3" />
-        <div class="d-flex ga-4 text-caption text-medium-emphasis">
-          <span>Created: {{ formatDate(memory.created_at) }}</span>
-          <span>Updated: {{ formatDate(memory.updated_at) }}</span>
+        <div style="border-top: 1px solid rgba(255,255,255,0.06);" class="pt-3">
+          <div class="d-flex ga-4 text-caption text-medium-emphasis">
+            <span>Created {{ formatDate(memory.created_at) }}</span>
+            <span>Updated {{ formatDate(memory.updated_at) }}</span>
+          </div>
         </div>
       </template>
-    </v-card-text>
+    </div>
 
     <!-- Delete Dialog -->
-    <v-dialog v-model="showDeleteDialog" max-width="400">
-      <v-card>
-        <v-card-title>Delete Memory?</v-card-title>
-        <v-card-text>This action cannot be undone.</v-card-text>
-        <v-card-actions>
+    <v-dialog v-model="showDeleteDialog" max-width="380">
+      <v-card rounded="xl">
+        <v-card-text class="pa-5">
+          <div class="d-flex align-center mb-3">
+            <v-icon icon="mdi-alert-circle-outline" color="error" size="24" class="mr-2" />
+            <span class="text-h6 font-weight-bold">Delete Memory?</span>
+          </div>
+          <p class="text-body-2 text-medium-emphasis">This action cannot be undone.</p>
+        </v-card-text>
+        <v-card-actions class="pa-4 pt-0">
           <v-spacer />
           <v-btn variant="text" @click="showDeleteDialog = false">Cancel</v-btn>
           <v-btn color="error" variant="flat" @click="handleDelete">Delete</v-btn>
@@ -211,13 +198,24 @@ function handleDelete() {
 </script>
 
 <style scoped>
+.detail-card {
+  border: 1px solid rgba(255, 255, 255, 0.04);
+}
 .content-block {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 12px;
+  padding: 16px;
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: monospace;
-  font-size: 0.85rem;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.82rem;
+  line-height: 1.6;
   max-height: 400px;
   overflow-y: auto;
+  color: rgba(var(--v-theme-on-surface), var(--v-high-emphasis-opacity));
+}
+.stat-block {
+  min-width: 100px;
 }
 </style>

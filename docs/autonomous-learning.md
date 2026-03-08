@@ -22,7 +22,7 @@ nobrainr runs background scheduler jobs that continuously improve the knowledge 
 ## How it works
 
 1. **SQL jobs** (maintenance, feedback, decay) are lightweight and run on any hardware
-2. **LLM jobs** require Ollama with a model that supports structured output (e.g., `qwen3:8b`)
+2. **LLM jobs** require Ollama with a model that supports structured output (e.g., `qwen3.5:9b`)
 3. LLM jobs run with a concurrency limit (3 concurrent) and per-job timeout (30 min)
 4. Jobs are staggered on startup to avoid overwhelming the LLM server
 5. Each job logs its activity as a scheduler event, visible in the dashboard scheduler view

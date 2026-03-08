@@ -20,7 +20,7 @@ docker compose logs -f ollama-init
 curl -sf http://localhost:8420/api/stats
 ```
 
-The extraction model (`qwen3:8b`, ~5.2GB) is also pulled on first start. If you don't need automatic entity extraction, set `NOBRAINR_EXTRACTION_ENABLED=false` in `.env`.
+The extraction model (`qwen3.5:9b`, ~6.6GB) is also pulled on first start. If you don't need automatic entity extraction, set `NOBRAINR_EXTRACTION_ENABLED=false` in `.env`.
 
 ## pip install
 

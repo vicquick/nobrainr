@@ -51,7 +51,7 @@ For local-only use, `http://localhost:8420/mcp` works without TLS. For remote ac
 |-----------|---------|
 | PostgreSQL 18 + pgvector | Storage, vector similarity, knowledge graph |
 | Ollama + nomic-embed-text | Local embeddings (768d, free, no API keys) |
-| Ollama + qwen3:8b | Entity extraction + autonomous learning (optional) |
+| Ollama + qwen3.5:9b | Entity extraction + autonomous learning (optional) |
 | FastMCP (HTTP + SSE) | MCP server transport |
 | Vue 3 + Vuetify | Dashboard with interactive graph visualization |
 
