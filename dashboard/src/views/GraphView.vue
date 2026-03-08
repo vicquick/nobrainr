@@ -171,7 +171,6 @@ const searchMatches = new Set<string>()
 const hubNodes = new Set<string>()
 const chatHighlightedNodes = new Set<string>()
 let chatHighlightPaused = false  // paused by click-void, resumed on next message
-let lastConversationSize = 0     // track when new entities arrive
 
 function isTypeActive(type: string) {
   return activeTypes.value.has(type)
@@ -496,37 +495,38 @@ watch(() => chatStore.focusEntityId, async (entityId) => {
   chatStore.clearFocus()
 })
 
-// Watch accumulated conversation entities — highlight all discussed entities on graph
-watch(() => chatStore.conversationEntityIds, (entityIds) => {
-  if (!entityIds || entityIds.size === 0 || !graph) {
-    chatHighlightedNodes.clear()
-    lastConversationSize = 0
-    renderer?.refresh()
-    return
-  }
+// Watch chat sources — accumulate all conversation entities on graph
+watch(() => chatStore.currentSources, (sources) => {
+  if (!sources || !graph) return
 
-  const newEntitiesArrived = entityIds.size > lastConversationSize
-  lastConversationSize = entityIds.size
-
-  // Resume highlight when new entities arrive from a new message
-  if (newEntitiesArrived) chatHighlightPaused = false
-
-  if (chatHighlightPaused) return
-
-  chatHighlightedNodes.clear()
-  for (const id of entityIds) {
-    if (graph.hasNode(id)) {
-      chatHighlightedNodes.add(id)
+  // New sources arrived — resume highlight if paused, accumulate entities
+  chatHighlightPaused = false
+  let added = false
+  for (const entity of sources.entities) {
+    if (graph.hasNode(entity.id) && !chatHighlightedNodes.has(entity.id)) {
+      chatHighlightedNodes.add(entity.id)
+      added = true
     }
   }
   if (chatHighlightedNodes.size > 0 && !focusedNode) {
+    // Clear click-focus so conversation highlight shows
+    focusedNode = null
+    focusedNeighbors.clear()
+    focusedLabel.value = ''
+    clearSelection()
     renderer?.refresh()
-    // Zoom to new entities when they first arrive
-    if (newEntitiesArrived) {
-      zoomToNodes(chatHighlightedNodes)
-    }
+    if (added) zoomToNodes(chatHighlightedNodes)
   }
-}, { deep: true })
+})
+
+// Clear conversation highlights when chat history is cleared
+watch(() => chatStore.messages.length, (len) => {
+  if (len === 0) {
+    chatHighlightedNodes.clear()
+    chatHighlightPaused = false
+    renderer?.refresh()
+  }
+})
 
 function zoomIn() {
   renderer?.getCamera().animatedZoom({ duration: 300 })
