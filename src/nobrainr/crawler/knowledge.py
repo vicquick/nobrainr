@@ -117,8 +117,8 @@ async def _crawl_url(url: str, *, extract_links: bool = False) -> dict | None:
 
     if extract_links:
         links_data = result.get("links", {})
-        internal = [l.get("href") for l in links_data.get("internal", []) if l.get("href")]
-        external = [l.get("href") for l in links_data.get("external", []) if l.get("href")]
+        internal = [link.get("href") for link in links_data.get("internal", []) if link.get("href")]
+        external = [link.get("href") for link in links_data.get("external", []) if link.get("href")]
         output["links"] = internal + external
 
     return output

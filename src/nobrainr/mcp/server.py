@@ -28,6 +28,7 @@ mcp = FastMCP(
     "nobrainr",
     host=settings.host,
     port=settings.port,
+    stateless_http=True,
     instructions=(
         "nobrainr is a self-improving collective memory service for AI agents with a knowledge graph.\n\n"
         "## Core workflow\n"
@@ -606,8 +607,8 @@ async def crawl_page(
     if extract_links:
         links = result.get("links", {})
         output["links"] = {
-            "internal": [l.get("href") for l in links.get("internal", [])[:50]],
-            "external": [l.get("href") for l in links.get("external", [])[:50]],
+            "internal": [link.get("href") for link in links.get("internal", [])[:50]],
+            "external": [link.get("href") for link in links.get("external", [])[:50]],
         }
 
     return output

@@ -11,7 +11,7 @@ from nobrainr.db.queries import (
     set_extraction_status,
     store_entity_relation,
 )
-from nobrainr.embeddings.ollama import embed_batch, embed_text
+from nobrainr.embeddings.ollama import embed_batch
 from nobrainr.extraction.extractor import extract_entities
 
 logger = logging.getLogger("nobrainr")

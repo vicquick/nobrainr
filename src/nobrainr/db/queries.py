@@ -1331,7 +1331,7 @@ async def merge_entities(winner_id: str, loser_id: str) -> None:
     """Merge loser entity into winner: transfer all memory links and relations, then delete loser."""
     pool = await get_pool()
     w = UUID(winner_id)
-    l = UUID(loser_id)
+    loser = UUID(loser_id)
     async with pool.acquire() as conn:
         async with conn.transaction():
             # Transfer entity_memories (skip duplicates)
@@ -1342,7 +1342,7 @@ async def merge_entities(winner_id: str, loser_id: str) -> None:
                 FROM entity_memories WHERE entity_id = $2
                 ON CONFLICT DO NOTHING
                 """,
-                w, l,
+                w, loser,
             )
             # Transfer relations (source side)
             await conn.execute(
@@ -1356,7 +1356,7 @@ async def merge_entities(winner_id: str, loser_id: str) -> None:
                       AND er2.relationship_type = entity_relations.relationship_type
                 )
                 """,
-                w, l,
+                w, loser,
             )
             # Transfer relations (target side)
             await conn.execute(
@@ -1370,7 +1370,7 @@ async def merge_entities(winner_id: str, loser_id: str) -> None:
                       AND er2.relationship_type = entity_relations.relationship_type
                 )
                 """,
-                w, l,
+                w, loser,
             )
             # Sum mention counts
             await conn.execute(
@@ -1379,10 +1379,10 @@ async def merge_entities(winner_id: str, loser_id: str) -> None:
                     SELECT mention_count FROM entities WHERE id = $2
                 ) WHERE id = $1
                 """,
-                w, l,
+                w, loser,
             )
             # Delete loser (CASCADE removes remaining orphaned links)
-            await conn.execute("DELETE FROM entities WHERE id = $1", l)
+            await conn.execute("DELETE FROM entities WHERE id = $1", loser)
 
 
 async def mark_entity_merge_checked(id_a: str, id_b: str) -> None:
