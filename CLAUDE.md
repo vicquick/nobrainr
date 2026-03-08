@@ -25,7 +25,7 @@ cross-machine patterns, and archives stale knowledge — all on scheduled LLM-po
 - **Frontend** — Vue 3 + Vuetify + Cytoscape.js (separate container, nginx)
 - **PostgreSQL 18 + pgvector** — storage, vector similarity, knowledge graph
 - **Ollama + nomic-embed-text** — local embeddings (768 dimensions)
-- **Ollama + qwen3.5:9b** — entity/relationship extraction, scheduler jobs (structured output)
+- **Ollama + gemma3:12b** — entity/relationship extraction, scheduler jobs (structured output)
 
 ### Routing (when using a reverse proxy)
 | Path | Target |
@@ -174,7 +174,7 @@ Structured labeling jobs use `think=False` for ~10x speed.
 ### Ollama Configuration
 Two models are required:
 - `nomic-embed-text` — embeddings (~0.3 GB VRAM)
-- A structured-output-capable model (default: `qwen3.5:9b`, ~6.6 GB VRAM) — entity extraction + scheduler
+- A structured-output-capable model (default: `gemma3:12b`, ~8 GB VRAM) — entity extraction + scheduler
 
 Recommended Ollama env vars for production:
 - `OLLAMA_FLASH_ATTENTION=1` — reduces VRAM, speeds inference
