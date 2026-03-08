@@ -273,7 +273,7 @@ function initSigma() {
           res.zIndex = 2
           res.size = (res.size as number) * 1.4
           res.forceLabel = true
-          res.labelColor = 'rgba(255, 255, 255, 0.95)'
+          res.labelColor = '#000000'
         } else if (focusedNeighbors.has(node)) {
           res.zIndex = 1
           res.forceLabel = true
