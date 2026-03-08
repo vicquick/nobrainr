@@ -589,6 +589,131 @@ async def log_event(
 
 
 # ──────────────────────────────────────────────
+# Tool: crawl_page
+# ──────────────────────────────────────────────
+@mcp.tool()
+async def crawl_page(
+    url: str,
+    extract_markdown: bool = True,
+    extract_links: bool = False,
+    wait_for_selector: str | None = None,
+) -> dict:
+    """Crawl a web page and return its content as clean markdown.
+
+    Uses a local Crawl4AI instance with headless Chromium for JS-rendered pages.
+
+    Args:
+        url: The URL to crawl.
+        extract_markdown: Return cleaned markdown content (default True).
+        extract_links: Include extracted links in response.
+        wait_for_selector: CSS selector to wait for before extracting (for JS-heavy pages).
+    """
+    import httpx
+
+    payload: dict = {
+        "urls": [url],
+        "cache_mode": "bypass",
+        "word_count_threshold": 20,
+    }
+    if wait_for_selector:
+        payload["wait_for"] = f"css:{wait_for_selector}"
+
+    headers = {"Content-Type": "application/json"}
+    if settings.crawl4ai_api_token:
+        headers["Authorization"] = f"Bearer {settings.crawl4ai_api_token}"
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(
+                f"{settings.crawl4ai_url}/crawl",
+                json=payload,
+                headers=headers,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        return {"error": f"Crawl failed: {e}", "url": url}
+
+    if not data.get("success") or not data.get("results"):
+        return {"error": "Crawl returned no results", "url": url, "raw": str(data)[:500]}
+
+    result = data["results"][0]
+    output: dict = {
+        "url": result.get("url", url),
+        "status_code": result.get("status_code"),
+        "title": result.get("metadata", {}).get("title"),
+    }
+
+    if extract_markdown:
+        md = result.get("markdown", {})
+        output["markdown"] = md.get("raw_markdown", "") if isinstance(md, dict) else str(md)
+
+    if extract_links:
+        links = result.get("links", {})
+        output["links"] = {
+            "internal": [l.get("href") for l in links.get("internal", [])[:50]],
+            "external": [l.get("href") for l in links.get("external", [])[:50]],
+        }
+
+    return output
+
+
+# ──────────────────────────────────────────────
+# Tool: crawl_and_store
+# ──────────────────────────────────────────────
+@mcp.tool()
+async def crawl_and_store(
+    url: str,
+    tags: list[str] | None = None,
+    category: str = "documentation",
+    source_machine: str | None = None,
+    max_content_chars: int = 10000,
+) -> dict:
+    """Crawl a web page and store its content as a memory in nobrainr.
+
+    Fetches the page via Crawl4AI, extracts clean markdown, and stores it
+    with embedding + entity extraction for the knowledge graph.
+
+    Args:
+        url: The URL to crawl and store.
+        tags: Tags for the stored memory.
+        category: Memory category (default "documentation").
+        source_machine: Which machine initiated this crawl.
+        max_content_chars: Max chars to store (default 10000, avoids huge pages).
+    """
+    # First crawl
+    crawl_result = await crawl_page(url)
+    if "error" in crawl_result:
+        return crawl_result
+
+    markdown = crawl_result.get("markdown", "")
+    if not markdown or len(markdown.strip()) < 50:
+        return {"error": "Page returned too little content", "url": url}
+
+    title = crawl_result.get("title", url)
+    content = markdown[:max_content_chars]
+
+    # Store as memory
+    all_tags = list(tags or []) + ["crawled"]
+    store_result = await memory_store(
+        content=content,
+        summary=f"Crawled: {title}"[:200],
+        tags=all_tags,
+        category=normalize_category(category),
+        source_type="crawl",
+        source_machine=source_machine,
+        source_ref=url,
+    )
+
+    return {
+        "url": url,
+        "title": title,
+        "chars_stored": len(content),
+        "memory": store_result,
+    }
+
+
+# ──────────────────────────────────────────────
 # Import tools (kept for backwards compat)
 # ──────────────────────────────────────────────
 @mcp.tool()
