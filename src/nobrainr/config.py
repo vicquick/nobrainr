@@ -81,6 +81,11 @@ class Settings(BaseSettings):
     # Extraction quality
     quality_interval_hours: float = 4.0
     quality_batch_size: int = 20
+    # Knowledge crawl
+    knowledge_crawl_enabled: bool = True
+    knowledge_crawl_interval_hours: float = 6.0
+    knowledge_crawl_batch_size: int = 3  # pages per cycle
+    knowledge_crawl_delay: float = 10.0  # seconds between requests (be polite)
 
 
 settings = Settings()
