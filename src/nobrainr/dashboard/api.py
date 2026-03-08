@@ -77,6 +77,14 @@ async def api_memories(request: Request) -> JSONResponse:
     except ValueError:
         return JSONResponse({"error": "Invalid limit/offset"}, status_code=400)
 
+    min_quality_param = request.query_params.get("min_quality", "").strip()
+    min_quality: float | None = None
+    if min_quality_param:
+        try:
+            min_quality = max(0.0, min(1.0, float(min_quality_param)))
+        except ValueError:
+            pass
+
     if q:
         embedding = await embed_text(q)
         memories = await queries.search_memories(
@@ -87,11 +95,14 @@ async def api_memories(request: Request) -> JSONResponse:
             category=category,
             source_machine=source_machine,
         )
+        if min_quality is not None:
+            memories = [m for m in memories if (m.get("quality_score") or 0) >= min_quality]
     else:
         memories = await queries.query_memories(
             tags=tags,
             category=category,
             source_machine=source_machine,
+            min_quality=min_quality,
             limit=limit,
             offset=offset,
         )

@@ -27,6 +27,24 @@
               class="flex-grow-1"
             />
           </div>
+          <div class="d-flex align-center ga-2 mt-1">
+            <v-slider
+              v-model="qualityFilter"
+              :min="0"
+              :max="1"
+              :step="0.1"
+              :color="qualityFilter > 0 ? 'amber' : 'grey'"
+              hide-details
+              density="compact"
+              class="flex-grow-1"
+            >
+              <template #prepend>
+                <span class="text-caption text-medium-emphasis" style="white-space: nowrap; min-width: 54px;">
+                  Quality{{ qualityFilter > 0 ? ` ${(qualityFilter * 100).toFixed(0)}%+` : '' }}
+                </span>
+              </template>
+            </v-slider>
+          </div>
         </div>
 
         <v-divider style="opacity: 0.3;" />
@@ -95,6 +113,7 @@ const {
   searchQuery,
   categoryFilter,
   machineFilter,
+  qualityFilter,
   categories,
   machines,
   fetchMemories,
@@ -110,6 +129,7 @@ function buildParams() {
   if (searchQuery.value) params.q = searchQuery.value
   if (categoryFilter.value) params.category = categoryFilter.value
   if (machineFilter.value) params.source_machine = machineFilter.value
+  if (qualityFilter.value > 0) params.min_quality = qualityFilter.value
   return params
 }
 
@@ -135,7 +155,7 @@ watch(searchQuery, () => {
   searchTimeout = setTimeout(() => fetchMemories(buildParams()), 300)
 })
 
-watch([categoryFilter, machineFilter], () => {
+watch([categoryFilter, machineFilter, qualityFilter], () => {
   fetchMemories(buildParams())
 })
 

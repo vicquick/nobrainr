@@ -406,6 +406,7 @@ async def query_memories(
     source_type: str | None = None,
     source_machine: str | None = None,
     text_query: str | None = None,
+    min_quality: float | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[dict]:
@@ -437,6 +438,11 @@ async def query_memories(
     if text_query:
         conditions.append(f"to_tsvector('english', content) @@ plainto_tsquery('english', ${idx})")
         params.append(text_query)
+        idx += 1
+
+    if min_quality is not None:
+        conditions.append(f"quality_score >= ${idx}")
+        params.append(min_quality)
         idx += 1
 
     params.extend([limit, offset])
@@ -1780,6 +1786,8 @@ def _row_to_dict(row) -> dict:
         d["stability"] = round(float(d["stability"]), 4)
     if "confidence" in d and d["confidence"] is not None:
         d["confidence"] = round(float(d["confidence"]), 4)
+    if "quality_score" in d and d["quality_score"] is not None:
+        d["quality_score"] = round(float(d["quality_score"]), 4)
     return d
 
 

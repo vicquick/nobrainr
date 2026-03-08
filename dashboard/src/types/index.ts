@@ -14,6 +14,10 @@ export interface Memory {
   updated_at: string
   similarity?: number
   relevance_score?: number
+  quality_score?: number | null
+  quality_specificity?: number | null
+  quality_actionability?: number | null
+  quality_self_containment?: number | null
 }
 
 export interface Entity {
