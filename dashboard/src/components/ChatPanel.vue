@@ -3,8 +3,8 @@
     v-model="chatStore.isOpen"
     location="right"
     :width="mobile ? undefined : 420"
-    :temporary="mobile"
-    :scrim="mobile ? 'rgba(0,0,0,0.5)' : false"
+    temporary
+    scrim="rgba(0,0,0,0.3)"
     class="chat-panel"
     :class="{ 'chat-panel-mobile': mobile }"
   >
