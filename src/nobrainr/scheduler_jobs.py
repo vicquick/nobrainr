@@ -184,7 +184,7 @@ async def consolidation() -> dict:
             checked += 1
         except Exception:
             logger.exception("consolidation failed for pair %s/%s", str(pair["id_a"])[:8], str(pair["id_b"])[:8])
-                await _yield_to_live_requests()
+        await _yield_to_live_requests()
 
     return {"merged": merged, "checked": checked, "ran_at": datetime.now().isoformat()}
 
