@@ -44,17 +44,16 @@
       </span>
     </div>
 
-    <!-- Loading -->
-    <div v-if="loading" class="d-flex align-center justify-center flex-grow-1 sigma-canvas">
-      <div class="text-center">
-        <v-progress-circular indeterminate color="primary" size="40" width="2" class="mb-3" />
-        <div class="text-caption text-medium-emphasis">Loading graph...</div>
-      </div>
-    </div>
-
     <!-- Canvas + Entity Side Panel -->
-    <div v-show="!loading" class="graph-area" :style="panelOpen ? { paddingRight: '420px' } : {}">
+    <div class="graph-area" :style="panelOpen ? { paddingRight: '420px' } : {}">
       <div ref="sigmaContainer" class="sigma-canvas" />
+      <!-- Loading overlay (on top of canvas so container always has dimensions) -->
+      <div v-if="loading" class="loading-overlay">
+        <div class="text-center">
+          <v-progress-circular indeterminate color="primary" size="40" width="2" class="mb-3" />
+          <div class="text-caption text-medium-emphasis">Loading graph...</div>
+        </div>
+      </div>
       <div v-if="panelOpen" class="entity-panel">
         <GraphSidePanel :node="selectedNode" @close="handleClosePanel" />
       </div>
@@ -604,6 +603,15 @@ onUnmounted(() => {
   width: 100%;
   height: 100%;
   background: #101016;
+}
+.loading-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #101016;
+  z-index: 10;
 }
 .entity-panel {
   position: absolute;
