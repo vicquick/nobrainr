@@ -87,7 +87,26 @@ async def ollama_chat(
                 continue
             resp.raise_for_status()
             data = resp.json()
-            return json.loads(data["message"]["content"])
+            content = data["message"]["content"]
+            if not content or not content.strip():
+                wait = 2 ** attempt
+                logger.warning(
+                    "Ollama returned empty content (attempt %d/5), retrying in %ds",
+                    attempt + 1, wait,
+                )
+                last_exc = ValueError("Empty LLM response")
+                await asyncio.sleep(wait)
+                continue
+            return json.loads(content)
+        except json.JSONDecodeError as exc:
+            wait = 2 ** attempt
+            logger.warning(
+                "Ollama returned malformed JSON (attempt %d/5), retrying in %ds: %.80s",
+                attempt + 1, wait, str(exc),
+            )
+            last_exc = exc
+            await asyncio.sleep(wait)
+            continue
         except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as exc:
             wait = 2 ** attempt
             logger.warning(
