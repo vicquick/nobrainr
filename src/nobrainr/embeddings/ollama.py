@@ -58,7 +58,7 @@ async def _embed_with_retry(payload: dict) -> dict:
 async def embed_text(text: str) -> list[float]:
     """Generate embedding for a single text string."""
     data = await _embed_with_retry(
-        {"model": settings.embedding_model, "input": text},
+        {"model": settings.embedding_model, "input": text, "keep_alive": "24h"},
     )
     return data["embeddings"][0]
 
@@ -69,7 +69,7 @@ async def embed_batch(texts: list[str], batch_size: int = 32) -> list[list[float
     for i in range(0, len(texts), batch_size):
         batch = texts[i : i + batch_size]
         data = await _embed_with_retry(
-            {"model": settings.embedding_model, "input": batch},
+            {"model": settings.embedding_model, "input": batch, "keep_alive": "24h"},
         )
         all_embeddings.extend(data["embeddings"])
     return all_embeddings
