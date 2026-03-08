@@ -57,8 +57,8 @@
                   class="mr-2 flex-shrink-0"
                 />
                 <div class="flex-grow-1" style="min-width: 0;">
-                  <span class="conn-relation">{{ conn.relation_type }}</span>
-                  <span class="conn-target">{{ conn.target_name }}</span>
+                  <span class="conn-relation">{{ conn.relationship_type }}</span>
+                  <span class="conn-target">{{ conn.connected_name }}</span>
                 </div>
                 <span class="conn-confidence">
                   {{ (conn.confidence * 100).toFixed(0) }}%

@@ -28,10 +28,10 @@ export interface Entity {
 
 export interface EntityConnection {
   direction: string
-  relation_type: string
-  target_name: string
-  target_type: string
-  target_id: string
+  relationship_type: string
+  connected_name: string
+  connected_type: string
+  connected_id: string
   confidence: number
 }
 
