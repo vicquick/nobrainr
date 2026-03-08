@@ -732,3 +732,81 @@ async def knowledge_crawl() -> dict:
     """Crawl documentation URLs and store as memories."""
     from nobrainr.crawler.knowledge import knowledge_crawl as _crawl
     return await _crawl()
+
+
+QUALITY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "specificity": {
+            "type": "integer",
+            "description": "1-5: Does this contain concrete details (commands, paths, versions, error messages)?",
+        },
+        "actionability": {
+            "type": "integer",
+            "description": "1-5: Can an AI agent use this to make a decision or take an action?",
+        },
+        "self_containment": {
+            "type": "integer",
+            "description": "1-5: Is this understandable without the original conversation context?",
+        },
+    },
+    "required": ["specificity", "actionability", "self_containment"],
+}
+
+
+async def quality_scoring() -> dict:
+    """LLM-assess quality of unscored memories (specificity, actionability, self-containment)."""
+    model = settings.scheduler_llm_model
+    batch = await queries.get_unscored_memories(settings.quality_scoring_batch_size)
+    if not batch:
+        return {"scored": 0, "ran_at": datetime.now().isoformat()}
+
+    scored = 0
+    for mem in batch:
+        try:
+            content = mem.get("summary") or mem["content"][:800]
+            source = mem.get("source_type", "unknown")
+            category = mem.get("category", "uncategorized")
+
+            result = await ollama_chat(
+                system=(
+                    "You assess the quality of knowledge base entries for AI coding agents. "
+                    "Rate each dimension 1-5:\n"
+                    "- specificity: 1=vague/generic ('Python is useful'), 5=concrete details "
+                    "(commands, file paths, error messages, version numbers)\n"
+                    "- actionability: 1=trivia/opinion/personal, 5=an agent can directly use "
+                    "this to solve a problem or make a technical decision\n"
+                    "- self_containment: 1=needs original conversation context to understand, "
+                    "5=fully self-contained and clear\n"
+                    "Be strict. Generic programming tips are 1-2. Specific bug fixes with "
+                    "root cause are 4-5. Personal/non-technical content is 1."
+                ),
+                user=f"Source: {source} | Category: {category}\n\n{content}",
+                schema=QUALITY_SCHEMA,
+                model=model,
+                timeout=60.0,
+                think=False,
+            )
+
+            spec = max(1, min(5, result.get("specificity", 3)))
+            act = max(1, min(5, result.get("actionability", 3)))
+            self_c = max(1, min(5, result.get("self_containment", 3)))
+            quality = (spec + act + self_c) / 15.0
+
+            await queries.update_quality_score(
+                mem["id"],
+                quality_score=quality,
+                specificity=spec,
+                actionability=act,
+                self_containment=self_c,
+            )
+            scored += 1
+        except Exception:
+            logger.exception("quality_scoring failed for memory %s", mem["id"][:8])
+        await _yield_to_live_requests()
+
+    return {
+        "scored": scored,
+        "batch_size": len(batch),
+        "ran_at": datetime.now().isoformat(),
+    }
