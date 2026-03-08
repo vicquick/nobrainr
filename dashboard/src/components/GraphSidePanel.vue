@@ -115,7 +115,7 @@ defineEmits<{
 }
 .entity-description {
   font-size: 0.875rem;
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(255, 255, 255, 0.7);
   line-height: 1.5;
 }
 .stat-item {
@@ -154,7 +154,7 @@ defineEmits<{
   display: inline-block;
   font-size: 0.7rem;
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(255, 255, 255, 0.6);
   background: rgba(255, 255, 255, 0.05);
   padding: 1px 6px;
   border-radius: 4px;
