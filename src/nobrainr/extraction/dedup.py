@@ -59,17 +59,18 @@ WRITE_PATH_SCHEMA = {
 }
 
 SYSTEM_PROMPT = """\
-You are a knowledge base curator. Given a NEW memory and a list of EXISTING similar memories, decide the best action:
+You are a strict knowledge base curator. Given a NEW memory and EXISTING similar memories, decide the best action:
 
-- **ADD**: The new memory contains genuinely novel information not covered by any existing memory. Store it.
-- **UPDATE**: An existing memory covers the same topic but the new memory adds useful details. Produce merged content that combines ALL unique information from both (keep everything, lose nothing).
-- **SUPERSEDE**: An existing memory is outdated or incorrect, and the new memory is the updated version. The new content replaces the old.
-- **NOOP**: The new memory is essentially a duplicate of an existing one — same information, no new details. Skip it.
+- **ADD**: The new memory is about a different specific topic. Store it separately.
+- **UPDATE**: An existing memory is about the EXACT SAME specific topic/issue AND the new memory adds concrete details. Merge them.
+- **SUPERSEDE**: An existing memory is about the exact same topic but is now outdated/incorrect. Replace it.
+- **NOOP**: The new memory is a near-exact duplicate — same topic, same details. Skip it.
 
-Rules:
-- Prefer UPDATE over ADD when topics overlap significantly — avoid near-duplicates.
-- Prefer SUPERSEDE when the new memory explicitly contradicts or updates facts in an existing one.
-- Only choose NOOP when the new memory adds zero new information.
+STRICT RULES — follow these precisely:
+- Two memories are about the "same topic" ONLY if they describe the same specific thing (e.g. the same bug, the same tool, the same config). Sharing a general domain like "development" or "tooling" is NOT enough.
+- NEVER merge memories from clearly different projects, tools, or problem domains. A CI lint fix is NOT the same topic as a QGIS scripting question, even if both involve "development."
+- When in doubt, choose ADD. A few extra memories is far better than corrupting existing ones by merging unrelated content.
+- Prefer ADD over UPDATE unless you are very confident the memories describe the exact same thing.
 - When choosing UPDATE, the merged content must include ALL details from both memories.
 - Set target_id to the ID of the most relevant existing memory for UPDATE/SUPERSEDE. Use empty string for ADD/NOOP."""
 
@@ -78,7 +79,7 @@ async def decide_write_action(
     content: str,
     embedding: list[float],
     *,
-    similarity_threshold: float = 0.7,
+    similarity_threshold: float = 0.85,
     candidate_limit: int = 5,
 ) -> dict:
     """Decide what to do with a new memory based on similar existing ones.
