@@ -485,6 +485,14 @@ watch(searchQuery, (q) => {
   }, 200)
 })
 
+// Watch single entity focus from chat — click-focus on graph + open side panel
+watch(() => chatStore.focusEntityId, async (entityId) => {
+  if (!entityId || !graph || !graph.hasNode(entityId)) return
+  focusNode(entityId)
+  await fetchNodeDetail(entityId)
+  chatStore.clearFocus()
+})
+
 // Watch chat sources — highlight entities on graph
 watch(() => chatStore.currentSources, (sources) => {
   chatHighlightedNodes.clear()

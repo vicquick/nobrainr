@@ -39,7 +39,11 @@
           class="message-bubble"
           :class="msg.role"
         >
-          <div class="message-content">{{ msg.content }}<span v-if="chatStore.isStreaming && msg === lastAssistantMsg && !msg.content" class="typing-dot" /></div>
+          <div v-if="chatStore.isThinking && msg === lastAssistantMsg && !msg.content" class="thinking-state">
+            <v-progress-circular indeterminate size="14" width="1.5" color="primary" class="mr-2" />
+            <span class="text-caption text-medium-emphasis">Searching knowledge base...</span>
+          </div>
+          <div v-else class="message-content">{{ msg.content }}<span v-if="chatStore.isStreaming && msg === lastAssistantMsg && !msg.content" class="typing-dot" /></div>
 
           <!-- Sources -->
           <div v-if="msg.sources && (msg.sources.entities.length || msg.sources.memories.length)" class="sources-section mt-2">
@@ -60,7 +64,7 @@
                 v-for="entity in msg.sources.entities"
                 :key="entity.id"
                 class="source-entity"
-                @click="highlightEntity(msg.sources!)"
+                @click="focusSingleEntity(entity.id)"
               >
                 <span class="entity-type-dot" :style="{ background: typeColor(entity.entity_type) }" />
                 {{ entity.name }}
@@ -149,6 +153,10 @@ function highlightEntity(sources: ChatSources) {
   chatStore.currentSources = sources
 }
 
+function focusSingleEntity(entityId: string) {
+  chatStore.focusEntity(entityId)
+}
+
 function send() {
   if (!input.value.trim() || chatStore.isStreaming) return
   chatStore.sendMessage(input.value)
@@ -216,6 +224,11 @@ watch(
 }
 .message-content {
   white-space: pre-wrap;
+}
+.thinking-state {
+  display: flex;
+  align-items: center;
+  padding: 2px 0;
 }
 .typing-dot::after {
   content: '...';
