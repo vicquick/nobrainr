@@ -8,11 +8,13 @@
         </transition>
       </router-view>
     </v-main>
+    <ChatPanel />
   </v-app>
 </template>
 
 <script setup lang="ts">
 import AppBar from '@/components/AppBar.vue'
+import ChatPanel from '@/components/ChatPanel.vue'
 </script>
 
 <style>

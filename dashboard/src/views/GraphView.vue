@@ -2,7 +2,7 @@
   <v-container fluid class="fill-height pa-0 d-flex flex-column">
     <!-- Compact toolbar -->
     <div class="d-flex align-center ga-2 px-3 py-1 toolbar">
-      <div class="d-flex ga-1 flex-wrap">
+      <div class="pills-scroll">
         <button
           v-for="type in entityTypes"
           :key="type"
@@ -52,22 +52,33 @@
       </div>
     </div>
 
-    <!-- Sigma Canvas -->
-    <div v-show="!loading" ref="sigmaContainer" class="flex-grow-1 sigma-canvas" />
+    <!-- Canvas + Entity Side Panel (flex row) -->
+    <div v-show="!loading" class="graph-row">
+      <div ref="sigmaContainer" class="sigma-canvas" />
+      <div class="entity-panel" :class="{ open: !!selectedNode && !mobile }">
+        <GraphSidePanel :node="selectedNode" @close="handleClosePanel" />
+      </div>
+    </div>
 
-    <!-- Side Panel -->
-    <GraphSidePanel :node="selectedNode" @close="handleClosePanel" />
+    <!-- Mobile overlay for entity panel -->
+    <v-dialog v-if="mobile" v-model="showMobilePanel" fullscreen transition="dialog-right-transition">
+      <v-card color="#12121a">
+        <GraphSidePanel :node="selectedNode" @close="handleClosePanel" />
+      </v-card>
+    </v-dialog>
   </v-container>
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { useDisplay } from 'vuetify'
 import Sigma from 'sigma'
 import Graph from 'graphology'
 import { EdgeLineProgram } from 'sigma/rendering'
 import { createNodeBorderProgram } from '@sigma/node-border'
 import { useGraph } from '@/composables/useGraph'
 import { useSSE } from '@/composables/useSSE'
+import { useChatStore } from '@/stores/chat'
 import GraphSidePanel from '@/components/GraphSidePanel.vue'
 
 const TYPE_COLORS: Record<string, string> = {
@@ -83,6 +94,8 @@ const TYPE_COLORS: Record<string, string> = {
 }
 
 const entityTypes = Object.keys(TYPE_COLORS)
+const { mobile } = useDisplay()
+const chatStore = useChatStore()
 
 const { graphData, selectedNode, loading, fetchGraph, fetchNodeDetail, clearSelection } = useGraph()
 
@@ -94,8 +107,14 @@ const edgeCount = ref(0)
 const communityCount = ref(0)
 const focusedLabel = ref('')
 
+const showMobilePanel = computed({
+  get: () => mobile.value && !!selectedNode.value,
+  set: (v) => { if (!v) handleClosePanel() },
+})
+
 let graph: Graph | null = null
 let renderer: Sigma | null = null
+let resizeObserver: ResizeObserver | null = null
 
 // Custom label renderer with dark background plate
 function drawLabelWithBg(
@@ -132,7 +151,6 @@ function drawLabelWithBg(
   context.closePath()
   context.fill()
 
-  // Text
   context.fillStyle = color
   context.fillText(data.label, x, y)
 }
@@ -145,11 +163,13 @@ const BorderedNodeProgram = createNodeBorderProgram({
   ],
   drawLabel: drawLabelWithBg,
 })
+
 let focusedNode: string | null = null
 let hoveredNode: string | null = null
 const focusedNeighbors = new Set<string>()
 const searchMatches = new Set<string>()
 const hubNodes = new Set<string>()
+const chatHighlightedNodes = new Set<string>()
 
 function isTypeActive(type: string) {
   return activeTypes.value.has(type)
@@ -200,6 +220,7 @@ function zoomToNodes(nodeIds: Set<string> | string[]) {
 function focusNode(nodeId: string) {
   focusedNode = nodeId
   focusedNeighbors.clear()
+  chatHighlightedNodes.clear()
   graph!.forEachNeighbor(nodeId, (n) => focusedNeighbors.add(n))
   focusedLabel.value = graph!.getNodeAttribute(nodeId, 'label') || ''
   renderer?.refresh()
@@ -324,6 +345,22 @@ function initSigma() {
         return res
       }
 
+      // Chat highlight: entities from chatbot response
+      if (chatHighlightedNodes.size > 0) {
+        if (chatHighlightedNodes.has(node)) {
+          res.zIndex = 1
+          res.color = lighten(res.color as string, 0.25)
+          res.size = (res.size as number) * 1.2
+          res.forceLabel = true
+          res.labelColor = 'rgba(255, 255, 255, 0.9)'
+        } else {
+          res.color = 'rgba(60, 60, 70, 0.15)'
+          res.size = 1.5
+          res.label = ''
+        }
+        return res
+      }
+
       // Search: highlight matches, dim others
       if (searchMatches.size > 0) {
         if (searchMatches.has(node)) {
@@ -363,6 +400,18 @@ function initSigma() {
         return res
       }
 
+      // Chat highlight: show edges between highlighted nodes
+      if (chatHighlightedNodes.size > 0) {
+        const [src, tgt] = graph!.extremities(edge)
+        if (chatHighlightedNodes.has(src) && chatHighlightedNodes.has(tgt)) {
+          res.color = 'rgba(255, 255, 255, 0.12)'
+          res.size = 1.5
+        } else {
+          res.hidden = true
+        }
+        return res
+      }
+
       // Search: show only edges between matches
       if (searchMatches.size > 0) {
         const [src, tgt] = graph!.extremities(edge)
@@ -374,7 +423,7 @@ function initSigma() {
         return res
       }
 
-      // Default overview: only show edges between hub nodes (degree >= 5)
+      // Default overview: only show edges between hub nodes
       const [src, tgt] = graph!.extremities(edge)
       if (!hubNodes.has(src) || !hubNodes.has(tgt)) {
         res.hidden = true
@@ -406,6 +455,8 @@ function initSigma() {
   renderer.on('clickStage', () => {
     unfocusNode()
     clearSelection()
+    chatHighlightedNodes.clear()
+    chatStore.clearSources()
   })
 }
 
@@ -435,6 +486,29 @@ watch(searchQuery, (q) => {
   }, 200)
 })
 
+// Watch chat sources — highlight entities on graph
+watch(() => chatStore.currentSources, (sources) => {
+  chatHighlightedNodes.clear()
+  if (!sources || !graph) {
+    renderer?.refresh()
+    return
+  }
+  for (const entity of sources.entities) {
+    if (graph.hasNode(entity.id)) {
+      chatHighlightedNodes.add(entity.id)
+    }
+  }
+  if (chatHighlightedNodes.size > 0) {
+    // Clear click-focus so chat highlight shows
+    focusedNode = null
+    focusedNeighbors.clear()
+    focusedLabel.value = ''
+    clearSelection()
+    renderer?.refresh()
+    zoomToNodes(chatHighlightedNodes)
+  }
+})
+
 function zoomIn() {
   renderer?.getCamera().animatedZoom({ duration: 300 })
 }
@@ -455,6 +529,7 @@ function handleClosePanel() {
 async function refreshGraph() {
   searchQuery.value = ''
   searchMatches.clear()
+  chatHighlightedNodes.clear()
   activeTypes.value = new Set(entityTypes)
   unfocusNode()
   clearSelection()
@@ -475,21 +550,67 @@ onMounted(async () => {
   await fetchGraph()
   await nextTick()
   initSigma()
+
+  // ResizeObserver: auto-resize Sigma when container changes (panel open/close, window resize)
+  if (sigmaContainer.value) {
+    resizeObserver = new ResizeObserver(() => {
+      renderer?.resize()
+      renderer?.refresh()
+    })
+    resizeObserver.observe(sigmaContainer.value)
+  }
 })
 
 onUnmounted(() => {
   renderer?.kill()
+  resizeObserver?.disconnect()
 })
 </script>
 
 <style scoped>
+.graph-row {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
 .sigma-canvas {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   background: #101016;
+}
+.entity-panel {
+  width: 0;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: #12121a;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  transition: width 250ms ease;
+}
+.entity-panel.open {
+  width: 420px;
+}
+@media (max-width: 960px) {
+  .entity-panel.open {
+    width: 320px;
+  }
 }
 .toolbar {
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
   background: rgba(16, 16, 22, 0.6);
+}
+.pills-scroll {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  flex-shrink: 1;
+  min-width: 0;
+}
+.pills-scroll::-webkit-scrollbar {
+  display: none;
 }
 .status-bar {
   border-bottom: 1px solid rgba(255, 255, 255, 0.03);
@@ -511,6 +632,7 @@ onUnmounted(() => {
   cursor: pointer;
   transition: all 150ms ease;
   font-family: inherit;
+  flex-shrink: 0;
 }
 .type-pill.active {
   color: color-mix(in srgb, var(--pill-color) 85%, white);

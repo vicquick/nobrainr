@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     extraction_model: str = "gemma3:12b"
     extraction_enabled: bool = True
 
+    # Chat (RAG)
+    chat_model: str = ""  # defaults to extraction_model
+    chat_max_context_memories: int = 8
+    chat_max_message_length: int = 2000
+    chat_max_history_length: int = 20
+    chat_enabled: bool = True
+
     # Scheduler
     scheduler_enabled: bool = True
     maintenance_interval_hours: float = 6.0

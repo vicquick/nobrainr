@@ -9,26 +9,27 @@
       </div>
     </template>
 
-    <div class="d-flex align-center ml-6">
+    <div class="d-flex align-center ml-3 ml-sm-6">
       <v-btn
         v-for="link in navLinks"
         :key="link.to"
         :to="link.to"
-        :prepend-icon="link.icon"
+        :prepend-icon="mobile ? undefined : link.icon"
+        :icon="mobile ? link.icon : undefined"
         :variant="route.path === link.to ? 'tonal' : 'text'"
         :color="route.path === link.to ? 'primary' : undefined"
         rounded="lg"
         size="small"
-        class="mx-1 text-none"
+        class="mx-0 mx-sm-1 text-none"
         style="letter-spacing: 0;"
       >
-        {{ link.label }}
+        <template v-if="!mobile">{{ link.label }}</template>
       </v-btn>
     </div>
 
     <v-spacer />
 
-    <div class="d-flex align-center ga-2 mr-4" v-if="statsStore.stats">
+    <div class="d-flex align-center ga-2 mr-2" v-if="statsStore.stats && !mobile">
       <v-chip size="small" variant="tonal" color="primary" class="stat-chip">
         <v-icon icon="mdi-brain" size="12" class="mr-1" />
         {{ statsStore.stats.total_memories.toLocaleString() }}
@@ -42,15 +43,28 @@
         {{ statsStore.stats.total_relations.toLocaleString() }}
       </v-chip>
     </div>
+
+    <v-btn
+      icon="mdi-chat-outline"
+      variant="text"
+      size="small"
+      class="mr-2"
+      :color="chatStore.isOpen ? 'primary' : undefined"
+      @click="chatStore.toggle()"
+    />
   </v-app-bar>
 </template>
 
 <script setup lang="ts">
 import { useRoute } from 'vue-router'
+import { useDisplay } from 'vuetify'
 import { useStatsStore } from '@/stores/stats'
+import { useChatStore } from '@/stores/chat'
 
 const route = useRoute()
+const { mobile } = useDisplay()
 const statsStore = useStatsStore()
+const chatStore = useChatStore()
 
 const navLinks = [
   { to: '/graph', label: 'Graph', icon: 'mdi-graph-outline' },
