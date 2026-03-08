@@ -32,7 +32,8 @@ class Settings(BaseSettings):
 
     # Chat (RAG)
     chat_model: str = ""  # defaults to extraction_model
-    chat_max_context_memories: int = 8
+    chat_max_context_memories: int = 15
+    chat_max_source_memories: int = 50
     chat_max_message_length: int = 2000
     chat_max_history_length: int = 20
     chat_enabled: bool = True

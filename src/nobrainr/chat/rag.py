@@ -71,17 +71,18 @@ async def stream_chat_response(
         yield _sse("error", {"message": "Search temporarily unavailable. Please try again."})
         return
 
-    # 4. Hybrid memory search
-    memories = await queries.search_memories(
+    # 4. Hybrid memory search — fetch more for sources, top-N for LLM context
+    all_memories = await queries.search_memories(
         embedding=embedding,
-        limit=settings.chat_max_context_memories,
+        limit=settings.chat_max_source_memories,
         threshold=0.25,
         text_query=clean,
     )
+    context_memories = all_memories[: settings.chat_max_context_memories]
 
-    # 5. Collect linked entities
+    # 5. Collect linked entities from all retrieved memories
     entity_map: dict[str, dict] = {}
-    for mem in memories:
+    for mem in all_memories:
         try:
             ents = await queries.get_memory_entities(mem["id"])
             for e in ents:
@@ -89,8 +90,8 @@ async def stream_chat_response(
         except Exception:
             pass  # non-critical
 
-    # 6. Build context and messages
-    context = _build_context(memories, list(entity_map.values()))
+    # 6. Build context (only top-N memories fed to LLM)
+    context = _build_context(context_memories, list(entity_map.values()))
     llm_messages = [
         {"role": "system", "content": SYSTEM_PROMPT.format(context=context)},
     ]
@@ -142,10 +143,10 @@ async def stream_chat_response(
         yield _sse("error", {"message": "Generation error. Please try again."})
         return
 
-    # 8. Emit sources
+    # 8. Emit sources (all retrieved, not just LLM context)
     source_memories = [
         {"id": m["id"], "summary": m.get("summary"), "content": m["content"][:200]}
-        for m in memories
+        for m in all_memories
     ]
     source_entities = [
         {"id": e["id"], "name": e["canonical_name"], "entity_type": e["entity_type"]}
