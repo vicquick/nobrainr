@@ -85,7 +85,7 @@ def compute_graph_layout(nodes: list[dict], edges: list[dict]) -> dict:
                 meta_G.add_edge(c_src, c_tgt, weight=1)
 
     num_comm = len(merged)
-    base_scale = max(5000, 2500 * math.sqrt(num_comm))
+    base_scale = max(8000, 4000 * math.sqrt(num_comm))
 
     if num_comm == 1:
         meta_pos: dict[int, tuple[float, float]] = {0: (0.0, 0.0)}
@@ -119,7 +119,7 @@ def compute_graph_layout(nodes: list[dict], edges: list[dict]) -> dict:
 
         subgraph = G.subgraph(comm)
         # Scale inner layout: larger communities get more space
-        inner_scale = max(300, 120 * math.sqrt(len(comm)))
+        inner_scale = max(400, 180 * math.sqrt(len(comm)))
 
         try:
             pos = nx.spring_layout(
