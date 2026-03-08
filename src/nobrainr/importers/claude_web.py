@@ -4,7 +4,6 @@ import json
 import logging
 
 from nobrainr.db import queries
-from nobrainr.db.pool import get_pool
 from nobrainr.embeddings.ollama import embed_text
 
 logger = logging.getLogger("nobrainr")

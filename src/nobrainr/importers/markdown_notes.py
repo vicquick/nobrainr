@@ -63,7 +63,6 @@ async def import_markdown_notes(
         title = meta.get("title", md_file.stem.replace("-", " ").replace("_", " "))
         created = meta.get("created")
         category_raw = meta.get("category", "")
-        source = meta.get("source", source_type)
         pinned = meta.get("pinned", False)
         archived = meta.get("archived", False)
 
