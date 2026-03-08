@@ -21,6 +21,15 @@
 
       <div class="d-flex align-center ga-1 flex-wrap">
         <v-chip
+          v-if="memory.quality_score != null"
+          size="x-small"
+          variant="tonal"
+          :color="qualityColor"
+          class="font-weight-medium"
+        >
+          {{ qualityLabel }}
+        </v-chip>
+        <v-chip
           v-if="memory.similarity != null"
           size="x-small"
           variant="tonal"
@@ -77,6 +86,19 @@ const displayText = computed(() => {
 
 const formattedDate = computed(() => {
   return new Date(props.memory.created_at).toLocaleDateString()
+})
+
+const qualityColor = computed(() => {
+  const q = props.memory.quality_score ?? 0
+  if (q >= 0.8) return 'amber-darken-1'
+  if (q >= 0.6) return 'light-green'
+  if (q >= 0.4) return 'grey'
+  return 'grey-darken-1'
+})
+
+const qualityLabel = computed(() => {
+  const q = props.memory.quality_score ?? 0
+  return `Q ${(q * 100).toFixed(0)}%`
 })
 </script>
 

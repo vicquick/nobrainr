@@ -12,6 +12,7 @@ export function useMemories() {
   const searchQuery = ref('')
   const categoryFilter = ref('')
   const machineFilter = ref('')
+  const qualityFilter = ref(0)
   const categories = ref<string[]>([])
   const machines = ref<string[]>([])
 
@@ -69,6 +70,7 @@ export function useMemories() {
     searchQuery,
     categoryFilter,
     machineFilter,
+    qualityFilter,
     categories,
     machines,
     fetchMemories,

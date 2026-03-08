@@ -62,9 +62,35 @@
               <span class="text-caption font-weight-medium">{{ (memory.stability * 100).toFixed(0) }}%</span>
             </div>
           </div>
+          <div v-if="memory.quality_score != null" class="stat-block">
+            <div class="text-caption text-medium-emphasis mb-1">Quality</div>
+            <div class="d-flex align-center ga-2">
+              <v-progress-linear
+                :model-value="(memory.quality_score ?? 0) * 100"
+                :color="qualityColor"
+                height="6"
+                rounded
+                style="width: 80px;"
+              />
+              <span class="text-caption font-weight-medium">{{ ((memory.quality_score ?? 0) * 100).toFixed(0) }}%</span>
+            </div>
+          </div>
           <div class="stat-block">
             <div class="text-caption text-medium-emphasis mb-1">Accessed</div>
             <div class="text-body-2 font-weight-medium">{{ memory.access_count }}&times;</div>
+          </div>
+        </div>
+
+        <!-- Quality breakdown -->
+        <div v-if="memory.quality_specificity != null" class="d-flex ga-3 mb-5" style="opacity: 0.7;">
+          <div class="text-caption">
+            <span class="text-medium-emphasis">Specificity</span> {{ memory.quality_specificity }}/5
+          </div>
+          <div class="text-caption">
+            <span class="text-medium-emphasis">Actionability</span> {{ memory.quality_actionability }}/5
+          </div>
+          <div class="text-caption">
+            <span class="text-medium-emphasis">Self-contained</span> {{ memory.quality_self_containment }}/5
           </div>
         </div>
 
@@ -135,7 +161,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch } from 'vue'
+import { ref, reactive, watch, computed } from 'vue'
 import type { Memory, Entity } from '@/types'
 import EntityBadge from './EntityBadge.vue'
 
@@ -152,6 +178,14 @@ const emit = defineEmits<{
 const editing = ref(false)
 const saving = ref(false)
 const showDeleteDialog = ref(false)
+
+const qualityColor = computed(() => {
+  const q = props.memory.quality_score ?? 0
+  if (q >= 0.8) return 'amber-darken-1'
+  if (q >= 0.6) return 'light-green'
+  if (q >= 0.4) return 'grey'
+  return 'grey-darken-1'
+})
 
 const editForm = reactive({
   content: '',
