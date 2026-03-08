@@ -52,16 +52,16 @@
       </div>
     </div>
 
-    <!-- Canvas + Entity Side Panel (flex row) -->
-    <div v-show="!loading" class="graph-row">
+    <!-- Canvas + Entity Side Panel -->
+    <div v-show="!loading" class="graph-area" :style="panelOpen ? { paddingRight: '420px' } : {}">
       <div ref="sigmaContainer" class="sigma-canvas" />
-      <div class="entity-panel" :class="{ open: !!selectedNode && !mobile }">
+      <div v-if="panelOpen" class="entity-panel">
         <GraphSidePanel :node="selectedNode" @close="handleClosePanel" />
       </div>
     </div>
 
     <!-- Mobile overlay for entity panel -->
-    <v-dialog v-if="mobile" v-model="showMobilePanel" fullscreen transition="dialog-right-transition">
+    <v-dialog v-if="mobile && !!selectedNode" v-model="showMobilePanel" fullscreen transition="dialog-right-transition">
       <v-card color="#12121a">
         <GraphSidePanel :node="selectedNode" @close="handleClosePanel" />
       </v-card>
@@ -107,6 +107,7 @@ const edgeCount = ref(0)
 const communityCount = ref(0)
 const focusedLabel = ref('')
 
+const panelOpen = computed(() => !!selectedNode.value && !mobile.value)
 const showMobilePanel = computed({
   get: () => mobile.value && !!selectedNode.value,
   set: (v) => { if (!v) handleClosePanel() },
@@ -535,20 +536,36 @@ async function refreshGraph() {
   clearSelection()
   await fetchGraph()
   await nextTick()
-  initSigma()
+  requestAnimationFrame(() => initSigma())
 }
 
 useSSE(async (evt) => {
   if (['memory_created', 'memory_deleted'].includes(evt.type)) {
     await fetchGraph()
     await nextTick()
-    initSigma()
+    requestAnimationFrame(() => initSigma())
   }
 })
+
+// Wait until the container has non-zero dimensions (flex layout settled)
+function waitForLayout(): Promise<void> {
+  return new Promise((resolve) => {
+    const check = () => {
+      const rect = sigmaContainer.value?.getBoundingClientRect()
+      if (rect && rect.width > 0 && rect.height > 0) {
+        resolve()
+      } else {
+        requestAnimationFrame(check)
+      }
+    }
+    requestAnimationFrame(check)
+  })
+}
 
 onMounted(async () => {
   await fetchGraph()
   await nextTick()
+  await waitForLayout()
   initSigma()
 
   // ResizeObserver: auto-resize Sigma when container changes (panel open/close, window resize)
@@ -568,34 +585,36 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.graph-row {
-  display: flex;
+.graph-area {
   flex: 1;
+  width: 100%;
+  position: relative;
   min-height: 0;
+  box-sizing: border-box;
+  transition: padding-right 250ms ease;
   overflow: hidden;
 }
 .sigma-canvas {
-  flex: 1;
-  min-width: 0;
+  width: 100%;
+  height: 100%;
   background: #101016;
 }
 .entity-panel {
-  width: 0;
-  overflow: hidden;
-  flex-shrink: 0;
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 420px;
   background: #12121a;
   border-left: 1px solid rgba(255, 255, 255, 0.08);
-  transition: width 250ms ease;
-}
-.entity-panel.open {
-  width: 420px;
+  overflow-y: auto;
+  z-index: 5;
 }
 @media (max-width: 960px) {
-  .entity-panel.open {
-    width: 320px;
-  }
+  .graph-area { transition: none; }
 }
 .toolbar {
+  width: 100%;
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
   background: rgba(16, 16, 22, 0.6);
 }
@@ -613,6 +632,7 @@ onUnmounted(() => {
   display: none;
 }
 .status-bar {
+  width: 100%;
   border-bottom: 1px solid rgba(255, 255, 255, 0.03);
   background: rgba(16, 16, 22, 0.4);
   min-height: 20px;
