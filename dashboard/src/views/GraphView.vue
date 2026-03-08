@@ -141,12 +141,12 @@ function toggleType(type: string) {
 // Zoom camera to fit a set of nodes with padding
 function zoomToNodes(nodeIds: Set<string> | string[]) {
   if (!graph || !renderer) return
-  const ids = nodeIds instanceof Set ? [...nodeIds] : nodeIds
+  const ids = (nodeIds instanceof Set ? [...nodeIds] : nodeIds).filter(id => graph!.hasNode(id))
   if (ids.length === 0) return
 
+  // Bounding box in graph coordinates
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
   for (const id of ids) {
-    if (!graph.hasNode(id)) continue
     const x = graph.getNodeAttribute(id, 'x')
     const y = graph.getNodeAttribute(id, 'y')
     if (x < minX) minX = x
@@ -155,21 +155,41 @@ function zoomToNodes(nodeIds: Set<string> | string[]) {
     if (y > maxY) maxY = y
   }
 
-  const cx = (minX + maxX) / 2
-  const cy = (minY + maxY) / 2
-  const dx = maxX - minX || 1
-  const dy = maxY - minY || 1
-
-  // Compute ratio to fit bounding box — Sigma graph coords → viewport
   const camera = renderer.getCamera()
+  const state = camera.getState()
   const { width, height } = renderer.getDimensions()
-  const graphExtent = Math.max(dx, dy)
-  // Convert graph extent to ratio: larger extent = more zoomed out
-  const padding = 1.4 // 40% padding
-  const ratio = (graphExtent * padding) / Math.min(width, height) * (renderer.getCamera().ratio / 1)
 
-  // Use animatedReset-style approach: animate to center with computed ratio
-  camera.animate({ x: cx, y: cy, ratio: Math.max(0.02, Math.min(ratio * 40, 2)) }, { duration: 400 })
+  // Convert target center to viewport pixels using Sigma's coordinate system
+  const targetVp = renderer.graphToViewport({
+    x: (minX + maxX) / 2,
+    y: (minY + maxY) / 2,
+  })
+
+  // Pixel offset from viewport center to target center
+  const pxOffX = targetVp.x - width / 2
+  const pxOffY = targetVp.y - height / 2
+
+  // Convert pixel offset to camera-coordinate offset
+  // Sigma maps 1 camera unit ≈ height/ratio pixels
+  const newX = state.x + (pxOffX * state.ratio) / height
+  const newY = state.y + (pxOffY * state.ratio) / height
+
+  // Bounding box pixel extent at current zoom
+  const vpTL = renderer.graphToViewport({ x: minX, y: minY })
+  const vpBR = renderer.graphToViewport({ x: maxX, y: maxY })
+  const bbPxW = Math.abs(vpBR.x - vpTL.x)
+  const bbPxH = Math.abs(vpBR.y - vpTL.y)
+
+  // Scale ratio so bounding box fills viewport with padding
+  const padding = 1.5
+  const zoomX = bbPxW > 0 ? (bbPxW * padding) / width : 0.05
+  const zoomY = bbPxH > 0 ? (bbPxH * padding) / height : 0.05
+  const newRatio = state.ratio * Math.max(zoomX, zoomY, 0.05)
+
+  camera.animate(
+    { x: newX, y: newY, ratio: Math.max(0.01, Math.min(newRatio, 3)) },
+    { duration: 400 },
+  )
 }
 
 function focusNode(nodeId: string) {
@@ -263,6 +283,25 @@ function initSigma() {
         return res
       }
 
+      // Click-focus takes priority over search
+      if (focusedNode) {
+        if (node === focusedNode) {
+          res.zIndex = 2
+          res.color = lighten(res.color as string, 0.4)
+          res.size = (res.size as number) * 1.4
+          res.forceLabel = true
+          res.labelColor = 'rgba(255, 255, 255, 0.95)'
+        } else if (focusedNeighbors.has(node)) {
+          res.zIndex = 1
+          res.color = lighten(res.color as string, 0.1)
+          res.forceLabel = true
+          res.labelColor = 'rgba(255, 255, 255, 0.85)'
+        } else {
+          res.hidden = true
+        }
+        return res
+      }
+
       // Search: show only matches with labels
       if (searchMatches.size > 0) {
         if (searchMatches.has(node)) {
@@ -270,25 +309,6 @@ function initSigma() {
           res.color = lighten(res.color as string, 0.3)
           res.forceLabel = true
           res.labelColor = 'rgba(255, 255, 255, 0.9)'
-        } else {
-          res.hidden = true
-        }
-        return res
-      }
-
-      // Click-focus: show focused + neighbors with labels, hide rest
-      if (focusedNode) {
-        if (node === focusedNode) {
-          res.zIndex = 2
-          res.color = lighten(res.color as string, 0.4)
-          res.size = (res.size as number) * 1.4
-          res.forceLabel = true
-          res.labelColor = '#000000'
-        } else if (focusedNeighbors.has(node)) {
-          res.zIndex = 1
-          res.color = lighten(res.color as string, 0.1)
-          res.forceLabel = true
-          res.labelColor = 'rgba(255, 255, 255, 0.85)'
         } else {
           res.hidden = true
         }
