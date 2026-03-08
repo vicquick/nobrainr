@@ -112,7 +112,7 @@ async def stream_chat_response(
         "stream": True,
         "think": False,
         "options": {"temperature": 0.3, "num_ctx": 8192},
-        "keep_alive": "24h",
+        "keep_alive": "5m",
     }
 
     try:
