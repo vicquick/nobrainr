@@ -271,13 +271,11 @@ function initSigma() {
       if (focusedNode) {
         if (node === focusedNode) {
           res.zIndex = 2
-          res.color = lighten(res.color as string, 0.4)
           res.size = (res.size as number) * 1.4
           res.forceLabel = true
           res.labelColor = 'rgba(255, 255, 255, 0.95)'
         } else if (focusedNeighbors.has(node)) {
           res.zIndex = 1
-          res.color = lighten(res.color as string, 0.1)
           res.forceLabel = true
           res.labelColor = 'rgba(255, 255, 255, 0.85)'
         } else {
@@ -302,7 +300,7 @@ function initSigma() {
       // Hover: show label for hovered node only
       if (hoveredNode === node) {
         res.forceLabel = true
-        res.labelColor = 'rgba(255, 255, 255, 0.9)'
+        res.labelColor = '#000000'
       }
 
       // Zoom-based visibility
@@ -339,12 +337,12 @@ function initSigma() {
         return res
       }
 
-      // Dynamic edge filtering by degree + zoom
-      const [src, tgt] = graph!.extremities(edge)
-      const maxDeg = Math.max(graph!.degree(src), graph!.degree(tgt))
-      const minDeg = Math.max(1, Math.round(cameraRatio * DEGREE_FACTOR))
-      if (maxDeg < minDeg) {
-        res.hidden = true
+      // Sync edge visibility with node visibility
+      if (visibleNodes.size > 0) {
+        const [src, tgt] = graph!.extremities(edge)
+        if (!visibleNodes.has(src) || !visibleNodes.has(tgt)) {
+          res.hidden = true
+        }
       }
 
       return res
