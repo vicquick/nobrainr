@@ -9,6 +9,7 @@ from mcp.server.fastmcp import FastMCP
 from nobrainr.config import settings
 from nobrainr.db import queries
 from nobrainr.embeddings.ollama import embed_text
+from nobrainr.utils.categories import normalize_category
 
 
 def _validate_uuid(value: str) -> str:
@@ -33,18 +34,23 @@ mcp = FastMCP(
     instructions=(
         "nobrainr is a self-improving collective memory service for AI agents with a knowledge graph.\n\n"
         "## Core workflow\n"
-        "1. ALWAYS call `memory_search` before starting complex work — check what's already known.\n"
+        "1. ALWAYS call `memory_search` before starting any task — check what's already known. "
+        "This is CRITICAL: past sessions may have solved the same problem, established conventions, "
+        "or documented gotchas. Searching first prevents duplicate work and repeated mistakes.\n"
         "2. Use `memory_store` to save learnings, decisions, patterns, and context.\n"
         "3. Call `memory_feedback` after using search results — report if they were helpful.\n"
         "4. Call `memory_reflect` at session end with a batch of learnings from the session.\n"
         "5. Use `log_event` to record significant agent activity (session starts, decisions, completions).\n\n"
         "## Search & retrieval\n"
-        "- `memory_search` — semantic search, relevance-ranked (similarity + recency + importance).\n"
+        "- `memory_search` — semantic search, relevance-ranked (similarity + recency + importance + access). "
+        "Set `hybrid=True` to combine vector + text search for better results.\n"
         "- `memory_query` — structured filtering by tags, category, source.\n"
         "- `entity_search` / `entity_graph` — knowledge graph exploration.\n\n"
         "## Best practices\n"
         "- Always tag memories well so they can be found later.\n"
         "- Set `source_machine` to identify which host generated the memory.\n"
+        "- Use canonical categories: architecture, debugging, deployment, infrastructure, patterns, "
+        "tooling, security, frontend, backend, data, business, documentation, session-log, insight.\n"
         "- Feedback improves future search ranking — always report usefulness.\n"
         "- Maintenance runs automatically; `memory_maintenance` is available for manual runs."
     ),
@@ -83,6 +89,7 @@ async def memory_store(
         return {"error": f"Content too large ({len(content)} chars, max {settings.max_content_length})"}
 
     confidence = max(0.0, min(confidence, 1.0))
+    category = normalize_category(category)
 
     # Context-enriched embedding: prepend category + tags for better retrieval
     embed_parts = []
@@ -277,6 +284,7 @@ async def memory_update(
         _validate_uuid(memory_id)
     except ValueError:
         return {"error": "Invalid memory_id format"}
+    category = normalize_category(category)
     embedding = None
     if content is not None:
         embed_parts = []

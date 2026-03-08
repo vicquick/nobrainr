@@ -492,6 +492,25 @@ async def decay_stability() -> int:
         return int(result.split()[-1]) if result else 0
 
 
+async def normalize_categories(category_map: dict[str, str]) -> int:
+    """Bulk-normalize memory categories using a mapping dict. Returns count updated."""
+    pool = await get_pool()
+    total = 0
+    async with pool.acquire() as conn:
+        for old_cat, new_cat in category_map.items():
+            if old_cat == new_cat:
+                continue
+            result = await conn.execute(
+                "UPDATE memories SET category = $1 WHERE category = $2",
+                new_cat, old_cat,
+            )
+            count = int(result.split()[-1]) if result else 0
+            if count > 0:
+                total += count
+                logger.info("Normalized category '%s' → '%s': %d memories", old_cat, new_cat, count)
+    return total
+
+
 async def analyze_tables() -> None:
     """Run ANALYZE on core tables to refresh planner statistics."""
     pool = await get_pool()

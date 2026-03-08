@@ -247,5 +247,25 @@ def import_claude(directory, machine):
     console.print_json(json.dumps(result, indent=2))
 
 
+@main.command("normalize-categories")
+def normalize_categories_cmd():
+    """Normalize all memory categories to canonical set."""
+    async def _normalize():
+        from nobrainr.db.pool import get_pool, close_pool
+        from nobrainr.db.schema import init_schema
+        from nobrainr.db import queries as q
+        from nobrainr.utils.categories import _CATEGORY_MAP
+
+        pool = await get_pool()
+        await init_schema(pool)
+        count = await q.normalize_categories(_CATEGORY_MAP)
+        await close_pool()
+        return count
+
+    console.print("[bold]Normalizing categories...[/]")
+    count = asyncio.run(_normalize())
+    console.print(f"[bold green]Done![/] Updated {count} memories.")
+
+
 if __name__ == "__main__":
     main()

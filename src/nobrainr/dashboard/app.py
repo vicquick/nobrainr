@@ -86,6 +86,16 @@ async def lifespan(app):
             f"Run: ollama pull {settings.embedding_model}"
         )
 
+    # Normalize categories on startup (idempotent)
+    try:
+        from nobrainr.db import queries as q
+        from nobrainr.utils.categories import _CATEGORY_MAP
+        norm_count = await q.normalize_categories(_CATEGORY_MAP)
+        if norm_count:
+            logger.info("Normalized %d memory categories on startup", norm_count)
+    except Exception:
+        logger.exception("Category normalization failed")
+
     # Fire-and-forget backfill for any unextracted memories
     backfill_task = asyncio.create_task(_auto_backfill())
 
