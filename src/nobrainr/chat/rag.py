@@ -41,7 +41,8 @@ def _build_context(memories: list[dict], entities: list[dict]) -> str:
         parts.append("\nENTITIES:")
         for e in entities:
             desc = f" — {sanitize_context(e.get('description') or '', 200)}" if e.get("description") else ""
-            parts.append(f"  - {e['canonical_name']} ({e['entity_type']}){desc}")
+            name = e.get("canonical_name") or e.get("name") or "unknown"
+            parts.append(f"  - {name} ({e['entity_type']}){desc}")
     return "\n".join(parts) if parts else "(No relevant context found.)"
 
 
