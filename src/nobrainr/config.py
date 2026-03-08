@@ -90,5 +90,29 @@ class Settings(BaseSettings):
     knowledge_crawl_batch_size: int = 3  # pages per cycle
     knowledge_crawl_delay: float = 10.0  # seconds between requests (be polite)
 
+    # Link discovery (Phase 2) — queue interesting links found during crawling
+    link_discovery_enabled: bool = True
+    link_discovery_max_per_page: int = 5  # max links to queue per crawled page
+    link_discovery_min_score: float = 0.4  # minimum score to queue a link
+
+    # Entity web research (Phase 3) — targeted crawling for underdescribed entities
+    entity_research_enabled: bool = True
+    entity_research_interval_hours: float = 12.0
+    entity_research_batch_size: int = 3  # entities per cycle
+    entity_research_min_mentions: int = 5  # only research entities with 5+ mentions
+    entity_research_cooldown_days: int = 14  # don't re-research within 14 days
+
+    # Freshness re-crawl (Phase 4) — update stale crawled memories
+    freshness_enabled: bool = True
+    freshness_interval_hours: float = 24.0
+    freshness_batch_size: int = 3  # pages per cycle
+    freshness_max_age_days: int = 30  # re-crawl pages older than 30 days
+
+    # Interest tracking (Phase 5) — prioritize crawling based on usage signals
+    interest_tracking_enabled: bool = True
+    interest_expansion_interval_hours: float = 24.0
+    interest_expansion_batch_size: int = 3  # research topics per cycle
+    interest_signal_decay_days: int = 30  # signals older than 30 days lose weight
+
 
 settings = Settings()

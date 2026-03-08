@@ -1,6 +1,5 @@
 """nobrainr MCP server — collective agent memory with knowledge graph."""
 
-import asyncio
 import logging
 from uuid import UUID
 
@@ -9,6 +8,7 @@ from mcp.server.fastmcp import FastMCP
 from nobrainr.config import settings
 from nobrainr.db import queries
 from nobrainr.embeddings.ollama import embed_text
+from nobrainr.services.memory import store_memory_with_extraction
 from nobrainr.utils.categories import normalize_category
 
 
@@ -19,9 +19,6 @@ def _validate_uuid(value: str) -> str:
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("nobrainr")
-
-# Rate-limit entity extraction: max 1 concurrent, 30s cooldown between
-_extraction_semaphore = asyncio.Semaphore(1)
 
 # ──────────────────────────────────────────────
 # FastMCP instance (no lifespan — parent app handles it)
@@ -88,117 +85,19 @@ async def memory_store(
     if len(content) > settings.max_content_length:
         return {"error": f"Content too large ({len(content)} chars, max {settings.max_content_length})"}
 
-    confidence = max(0.0, min(confidence, 1.0))
     category = normalize_category(category)
 
-    # Context-enriched embedding: prepend category + tags for better retrieval
-    embed_parts = []
-    if category:
-        embed_parts.append(category)
-    if tags:
-        embed_parts.append(", ".join(tags))
-    if embed_parts:
-        embed_input = ". ".join(embed_parts) + ". " + content
-    else:
-        embed_input = content
-    embedding = await embed_text(embed_input)
-
-    # Write-path decision: ADD / UPDATE / SUPERSEDE / NOOP
-    if settings.extraction_enabled:
-        try:
-            from nobrainr.extraction.dedup import decide_write_action
-            decision = await decide_write_action(content, embedding)
-            action = decision.get("action", "ADD")
-
-            if action == "NOOP":
-                logger.info("Write path NOOP: %s", decision.get("reason"))
-                return {
-                    "status": "skipped",
-                    "reason": decision.get("reason", "Duplicate"),
-                }
-
-            if action == "UPDATE":
-                target_id = decision["target_id"]
-                merged_content = decision["content"]
-                new_embedding = await embed_text(merged_content)
-                await queries.update_memory(
-                    target_id,
-                    content=merged_content,
-                    embedding=new_embedding,
-                    tags=tags,
-                    category=category,
-                    metadata=metadata,
-                )
-                logger.info("Write path UPDATE %s: %s", target_id, decision.get("reason"))
-                return {
-                    "status": "updated",
-                    "updated_id": target_id,
-                    "reason": decision.get("reason", ""),
-                }
-
-            if action == "SUPERSEDE":
-                target_id = decision["target_id"]
-                new_content = decision["content"] or content
-                new_embedding = await embed_text(new_content)
-                # Archive old memory by moving to _archived category
-                await queries.update_memory(
-                    target_id,
-                    category="_archived",
-                    metadata={"archived_reason": "superseded", "superseded_by": "pending"},
-                )
-                # Store the new version (falls through to normal store below)
-                if metadata is None:
-                    metadata = {}
-                metadata["supersedes"] = target_id
-                logger.info("Write path SUPERSEDE %s: %s", target_id, decision.get("reason"))
-                # Fall through to store new memory below
-
-        except Exception:
-            logger.exception("Write path decision failed, storing as new")
-
-    # Store new memory (ADD or SUPERSEDE fall-through)
-    result = await queries.store_memory(
+    return await store_memory_with_extraction(
         content=content,
-        embedding=embedding,
         summary=summary,
+        tags=tags,
+        category=category,
         source_type=source_type,
         source_machine=source_machine,
         source_ref=source_ref,
-        tags=tags,
-        category=category,
         confidence=confidence,
         metadata=metadata,
     )
-
-    # Fire-and-forget entity extraction (rate-limited: 1 at a time, 30s cooldown)
-    if settings.extraction_enabled:
-        async def _rate_limited_extract(mem_id, mem_content, mem_tags):
-            async with _extraction_semaphore:
-                try:
-                    from nobrainr.extraction.pipeline import process_memory
-                    await process_memory(mem_id, mem_content, mem_tags)
-                except Exception:
-                    logger.exception("Extraction failed for %s", mem_id)
-                await asyncio.sleep(30)
-
-        try:
-            asyncio.create_task(_rate_limited_extract(result["id"], content, tags))
-        except Exception:
-            logger.exception("Failed to start extraction task")
-
-    # For SUPERSEDE, update the archived memory to point to the new one
-    if metadata and metadata.get("supersedes"):
-        old_id = metadata["supersedes"]
-        try:
-            await queries.update_memory(
-                old_id,
-                metadata={"superseded_by": result["id"]},
-            )
-        except Exception:
-            logger.warning("Failed to backlink superseded memory %s", old_id)
-        return {"status": "superseded", "new_id": result["id"], "archived_id": old_id}
-
-    return {"status": "stored", **result}
 
 
 # ──────────────────────────────────────────────
@@ -230,7 +129,7 @@ async def memory_search(
     limit = max(1, min(limit, 100))
     threshold = max(0.0, min(threshold, 1.0))
     embedding = await embed_text(query)
-    return await queries.search_memories(
+    results = await queries.search_memories(
         embedding=embedding,
         limit=limit,
         threshold=threshold,
@@ -240,6 +139,20 @@ async def memory_search(
         source_machine=source_machine,
         text_query=query if hybrid else None,
     )
+
+    # Record interest signal for the search query (Phase 5)
+    if settings.interest_tracking_enabled and query and len(query) > 5:
+        try:
+            await queries.record_interest_signal(
+                topic=query[:200],
+                signal_type="search",
+                strength=1.0,
+                source_machine=source_machine,
+            )
+        except Exception:
+            pass  # Don't fail the search for interest tracking
+
+    return results
 
 
 # ──────────────────────────────────────────────
@@ -744,6 +657,21 @@ async def crawl_and_store(
         source_machine=source_machine,
         source_ref=url,
     )
+
+    # Record interest signal for the crawled domain/topic (Phase 5)
+    if settings.interest_tracking_enabled:
+        try:
+            from urllib.parse import urlparse
+            domain = urlparse(url).netloc
+            await queries.record_interest_signal(
+                topic=domain,
+                signal_type="crawl",
+                strength=2.0,  # manual crawls signal stronger interest
+                source_machine=source_machine,
+                metadata={"url": url, "title": title},
+            )
+        except Exception:
+            pass
 
     return {
         "url": url,
