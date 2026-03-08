@@ -107,6 +107,13 @@ async def lifespan(app):
     except Exception:
         logger.exception("Category normalization failed")
 
+    # Ensure crawl_queue table exists for knowledge crawler
+    try:
+        from nobrainr.crawler.knowledge import ensure_crawl_queue_table
+        await ensure_crawl_queue_table()
+    except Exception:
+        logger.exception("Failed to create crawl_queue table")
+
     # Fire-and-forget backfill for any unextracted memories
     backfill_task = asyncio.create_task(_auto_backfill())
 

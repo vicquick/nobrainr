@@ -726,3 +726,9 @@ async def chatgpt_distill() -> dict:
         "skipped": result["skipped"],
         "ran_at": datetime.now().isoformat(),
     }
+
+
+async def knowledge_crawl() -> dict:
+    """Crawl documentation URLs and store as memories."""
+    from nobrainr.crawler.knowledge import knowledge_crawl as _crawl
+    return await _crawl()
