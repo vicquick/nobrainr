@@ -260,7 +260,15 @@ async def api_recall(request: Request) -> JSONResponse:
             q,
             limit,
         )
-        return JSONResponse([queries._row_to_dict(row) for row in rows])
+        results = [queries._row_to_dict(row) for row in rows]
+        # Track access on recalled memories
+        if results:
+            result_ids = [UUID(r["id"]) for r in results]
+            await conn.execute(
+                "UPDATE memories SET last_accessed_at = now(), access_count = access_count + 1 WHERE id = ANY($1)",
+                result_ids,
+            )
+        return JSONResponse(results)
 
 
 async def api_memory_feedback(request: Request) -> JSONResponse:

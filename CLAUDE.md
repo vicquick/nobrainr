@@ -10,6 +10,12 @@ Provides relevance-ranked semantic + hybrid (RRF) search, context-enriched embed
 automatic entity extraction, on-write dedup, and a Vue 3 dashboard with interactive
 graph visualization.
 
+### Canonical Categories
+Use one of these when storing memories — freeform categories are auto-normalized:
+`architecture`, `debugging`, `deployment`, `infrastructure`, `patterns`, `tooling`,
+`security`, `frontend`, `backend`, `data`, `business`, `documentation`, `session-log`,
+`insight`, `_archived`
+
 The system learns autonomously: it summarizes, consolidates duplicates, synthesizes
 cross-entity insights, detects contradictions, validates its own extractions, discovers
 cross-machine patterns, and archives stale knowledge — all on scheduled LLM-powered jobs.
