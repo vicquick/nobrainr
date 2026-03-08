@@ -26,6 +26,7 @@ cross-machine patterns, and archives stale knowledge — all on scheduled LLM-po
 - **PostgreSQL 18 + pgvector** — storage, vector similarity, knowledge graph
 - **Ollama + nomic-embed-text** — local embeddings (768 dimensions)
 - **Ollama + gemma3:12b** — entity/relationship extraction, scheduler jobs (structured output)
+- **Crawl4AI** — web crawling service (CPU-only container on `mcp` network, port 11235)
 
 ### Routing (when using a reverse proxy)
 | Path | Target |
@@ -112,6 +113,8 @@ dashboard/                  # Vue 3 frontend (separate build)
 | `log_event` | Record significant agent activity |
 | `memory_import_chatgpt` | Import ChatGPT export JSON |
 | `memory_import_claude` | Import Claude memory files |
+| `crawl_page` | Crawl a URL and return cleaned markdown content via Crawl4AI |
+| `crawl_and_store` | Crawl a URL and store the content as a memory with entity extraction |
 
 ## Client Connection
 
@@ -211,6 +214,12 @@ when containers restart. No manual post-deploy needed.
 # Manual fix if needed:
 docker network disconnect mcp <container> && docker network connect --alias nobrainr mcp <container>
 ```
+
+### Crawl4AI Configuration
+- Container: `crawl4ai` on `mcp` network, port 11235
+- CPU only (no GPU), 4GB RAM, 4 CPUs, `--shm-size=2g` for Chromium
+- Connects to Ollama via `http://ollama:11434` for LLM-based extraction
+- Env vars: `NOBRAINR_CRAWL4AI_URL=http://crawl4ai:11235`, `NOBRAINR_CRAWL4AI_API_TOKEN`
 
 ### TLS Certificates
 Uses Traefik `letsencrypt-dns` resolver (Cloudflare DNS challenge) — works behind VPN
