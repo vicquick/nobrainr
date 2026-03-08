@@ -1,28 +1,31 @@
 <template>
   <v-card
-    class="memory-card mb-2"
+    class="memory-card"
     :class="{ 'memory-card--selected': selected }"
-    variant="outlined"
+    variant="flat"
     hover
     @click="$emit('click')"
   >
     <v-card-text class="pa-3">
       <div class="d-flex align-center mb-2">
-        <v-chip v-if="memory.category" size="x-small" variant="tonal" color="primary">
+        <v-chip v-if="memory.category" size="x-small" variant="tonal" color="primary" class="font-weight-medium">
           {{ memory.category }}
         </v-chip>
         <v-spacer />
-        <span class="text-caption text-medium-emphasis">{{ formattedDate }}</span>
+        <span class="text-caption text-medium-emphasis" style="font-variant-numeric: tabular-nums;">
+          {{ formattedDate }}
+        </span>
       </div>
 
-      <div class="text-body-2 mb-2">{{ displayText }}</div>
+      <div class="text-body-2 mb-2" style="line-height: 1.5;">{{ displayText }}</div>
 
-      <div class="d-flex align-center ga-2 flex-wrap">
+      <div class="d-flex align-center ga-1 flex-wrap">
         <v-chip
           v-if="memory.similarity != null"
           size="x-small"
           variant="tonal"
           color="success"
+          class="font-weight-medium"
         >
           {{ (memory.similarity * 100).toFixed(0) }}% match
         </v-chip>
@@ -31,8 +34,9 @@
           size="x-small"
           variant="tonal"
           color="secondary"
+          class="font-weight-medium"
         >
-          rel {{ memory.relevance_score.toFixed(2) }}
+          {{ memory.relevance_score.toFixed(2) }}
         </v-chip>
         <v-chip
           v-for="tag in memory.tags.slice(0, 3)"
@@ -66,8 +70,8 @@ defineEmits<{
 
 const displayText = computed(() => {
   if (props.memory.summary) return props.memory.summary
-  return props.memory.content.length > 100
-    ? props.memory.content.slice(0, 100) + '...'
+  return props.memory.content.length > 120
+    ? props.memory.content.slice(0, 120) + '...'
     : props.memory.content
 })
 
@@ -77,8 +81,15 @@ const formattedDate = computed(() => {
 </script>
 
 <style scoped>
+.memory-card {
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  transition: all 150ms ease;
+}
+.memory-card:hover {
+  border-color: rgba(255, 255, 255, 0.1);
+}
 .memory-card--selected {
   border-color: rgb(var(--v-theme-primary)) !important;
-  border-width: 2px;
+  background: rgba(var(--v-theme-primary), 0.04) !important;
 }
 </style>

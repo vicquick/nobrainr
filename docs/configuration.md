@@ -25,7 +25,7 @@ All settings are configured via environment variables with the `NOBRAINR_` prefi
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NOBRAINR_EXTRACTION_ENABLED` | `true` | Enable automatic entity extraction |
-| `NOBRAINR_EXTRACTION_MODEL` | `qwen3:8b` | Ollama model for extraction |
+| `NOBRAINR_EXTRACTION_MODEL` | `qwen3.5:9b` | Ollama model for extraction |
 
 !!! tip
     On CPU-only servers, extraction takes ~60-120s per memory. Set `NOBRAINR_EXTRACTION_ENABLED=false` if you don't need the knowledge graph, or if your server doesn't have enough RAM for the extraction model.
@@ -36,7 +36,7 @@ All settings are configured via environment variables with the `NOBRAINR_` prefi
 |----------|---------|-------------|
 | `NOBRAINR_SCHEDULER_ENABLED` | `true` | Enable background learning jobs |
 | `NOBRAINR_SOURCE_MACHINE` | `<hostname>` | Machine name for scheduler-created memories |
-| `NOBRAINR_SCHEDULER_LLM_MODEL` | `qwen3:8b` | Model for scheduler LLM jobs |
+| `NOBRAINR_SCHEDULER_LLM_MODEL` | `qwen3.5:9b` | Model for scheduler LLM jobs |
 
 ### Job intervals
 
@@ -50,7 +50,7 @@ All settings are configured via environment variables with the `NOBRAINR_` prefi
 | `NOBRAINR_ENTITY_ENRICHMENT_INTERVAL_HOURS` | `2.0` | Improve entity descriptions |
 | `NOBRAINR_INSIGHT_EXTRACTION_INTERVAL_HOURS` | `1.0` | Extract learnings from agent events |
 | `NOBRAINR_CHATGPT_DISTILL_INTERVAL_HOURS` | `0.1` | Distill imported ChatGPT conversations |
-| `NOBRAINR_CHATGPT_DISTILL_MODEL` | `qwen3:8b` | Model for ChatGPT distillation |
+| `NOBRAINR_CHATGPT_DISTILL_MODEL` | `qwen3.5:9b` | Model for ChatGPT distillation |
 | `NOBRAINR_CONTRADICTION_INTERVAL_HOURS` | `4.0` | Detect contradicting memories |
 | `NOBRAINR_CROSS_MACHINE_INTERVAL_HOURS` | `6.0` | Discover patterns across machines |
 | `NOBRAINR_QUALITY_INTERVAL_HOURS` | `4.0` | Validate entity extractions |

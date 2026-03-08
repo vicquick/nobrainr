@@ -1,41 +1,56 @@
 <template>
-  <v-app-bar color="#161b22" density="comfortable" elevation="2">
-    <v-toolbar-title class="font-weight-bold text-primary ml-4">nobrainr</v-toolbar-title>
+  <v-app-bar color="rgba(10, 14, 20, 0.85)" density="comfortable" elevation="0" class="app-bar-glass">
+    <template #prepend>
+      <div class="d-flex align-center ml-3">
+        <v-icon icon="mdi-brain" color="primary" size="24" class="mr-2" />
+        <span class="text-h6 font-weight-bold" style="letter-spacing: -0.5px;">
+          <span class="text-primary">no</span><span class="text-high-emphasis">brainr</span>
+        </span>
+      </div>
+    </template>
 
-    <v-tabs v-model="activeTab" color="primary" class="ml-6">
-      <v-tab v-for="link in navLinks" :key="link.to" :to="link.to" :value="link.to">
-        <v-icon :icon="link.icon" class="mr-2" size="small" />
+    <div class="d-flex align-center ml-6">
+      <v-btn
+        v-for="link in navLinks"
+        :key="link.to"
+        :to="link.to"
+        :prepend-icon="link.icon"
+        :variant="route.path === link.to ? 'tonal' : 'text'"
+        :color="route.path === link.to ? 'primary' : undefined"
+        rounded="lg"
+        size="small"
+        class="mx-1 text-none"
+        style="letter-spacing: 0;"
+      >
         {{ link.label }}
-      </v-tab>
-    </v-tabs>
+      </v-btn>
+    </div>
 
     <v-spacer />
 
-    <div class="d-flex ga-2 mr-4" v-if="statsStore.stats">
-      <v-chip size="small" variant="tonal" color="primary">
-        <v-icon icon="mdi-brain" size="x-small" class="mr-1" />
-        {{ statsStore.stats.total_memories }}
+    <div class="d-flex align-center ga-2 mr-4" v-if="statsStore.stats">
+      <v-chip size="small" variant="tonal" color="primary" class="stat-chip">
+        <v-icon icon="mdi-brain" size="12" class="mr-1" />
+        {{ statsStore.stats.total_memories.toLocaleString() }}
       </v-chip>
-      <v-chip size="small" variant="tonal" color="secondary">
-        <v-icon icon="mdi-shape-outline" size="x-small" class="mr-1" />
-        {{ statsStore.stats.total_entities }}
+      <v-chip size="small" variant="tonal" color="secondary" class="stat-chip">
+        <v-icon icon="mdi-shape-outline" size="12" class="mr-1" />
+        {{ statsStore.stats.total_entities.toLocaleString() }}
       </v-chip>
-      <v-chip size="small" variant="tonal" color="success">
-        <v-icon icon="mdi-link-variant" size="x-small" class="mr-1" />
-        {{ statsStore.stats.total_relations }}
+      <v-chip size="small" variant="tonal" color="success" class="stat-chip">
+        <v-icon icon="mdi-link-variant" size="12" class="mr-1" />
+        {{ statsStore.stats.total_relations.toLocaleString() }}
       </v-chip>
     </div>
   </v-app-bar>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useStatsStore } from '@/stores/stats'
 
 const route = useRoute()
 const statsStore = useStatsStore()
-const activeTab = ref(route.path)
 
 const navLinks = [
   { to: '/graph', label: 'Graph', icon: 'mdi-graph-outline' },
@@ -44,3 +59,14 @@ const navLinks = [
   { to: '/scheduler', label: 'Scheduler', icon: 'mdi-calendar-clock' },
 ]
 </script>
+
+<style scoped>
+.app-bar-glass {
+  backdrop-filter: blur(12px) saturate(180%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04) !important;
+}
+.stat-chip {
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+</style>

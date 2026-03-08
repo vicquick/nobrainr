@@ -1,141 +1,158 @@
 <template>
-  <v-container fluid>
+  <v-container fluid style="max-width: 1200px;">
     <template v-if="loading">
-      <v-skeleton-loader type="card" class="mb-4" />
-      <v-skeleton-loader type="table" />
+      <div class="skeleton-block mb-4" style="height: 300px;" />
+      <div class="skeleton-block" style="height: 200px;" />
     </template>
 
     <template v-else>
       <v-row>
         <!-- Scheduler Status -->
-        <v-col cols="12" md="6">
-          <v-card variant="outlined" class="mb-4">
-            <v-card-title class="d-flex align-center">
-              <v-icon icon="mdi-calendar-clock" class="mr-2" />
-              Scheduler
+        <v-col cols="12" lg="7">
+          <v-card class="mb-4 scheduler-card">
+            <div class="d-flex align-center pa-4" style="border-bottom: 1px solid rgba(255,255,255,0.04);">
+              <v-icon icon="mdi-calendar-clock" size="20" class="mr-2 text-medium-emphasis" />
+              <span class="text-subtitle-1 font-weight-bold">Scheduler</span>
               <v-spacer />
               <v-chip
                 :color="status?.running ? 'success' : 'error'"
                 size="small"
-                variant="flat"
+                variant="tonal"
+                class="font-weight-medium"
               >
-                <v-icon :icon="status?.running ? 'mdi-circle' : 'mdi-circle-outline'" size="x-small" class="mr-1" />
+                <v-icon :icon="status?.running ? 'mdi-circle' : 'mdi-circle-outline'" size="8" class="mr-1" />
                 {{ status?.running ? 'Running' : 'Stopped' }}
               </v-chip>
-            </v-card-title>
+            </div>
 
-            <v-divider />
-
-            <v-table v-if="status?.tasks.length" density="compact">
+            <v-table v-if="status?.tasks.length" class="scheduler-table">
               <thead>
                 <tr>
-                  <th>Task</th>
-                  <th>Interval</th>
-                  <th>Last Run</th>
-                  <th>Next Run</th>
-                  <th>Runs</th>
+                  <th class="text-left">Task</th>
+                  <th class="text-left">Interval</th>
+                  <th class="text-left">Last Run</th>
+                  <th class="text-center">Runs</th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="task in status.tasks" :key="task.name">
-                  <td class="font-weight-medium">
-                    {{ task.name }}
-                    <v-chip v-if="task.type" size="x-small" variant="tonal" :color="task.type === 'llm' ? 'warning' : 'info'" class="ml-1">{{ task.type }}</v-chip>
+                <tr v-for="task in status.tasks" :key="task.name" class="task-row">
+                  <td>
+                    <span class="font-weight-medium">{{ task.name }}</span>
+                    <v-chip
+                      v-if="task.type"
+                      size="x-small"
+                      variant="tonal"
+                      :color="task.type === 'llm' ? 'warning' : 'info'"
+                      class="ml-2 font-weight-bold"
+                      style="font-size: 10px;"
+                    >
+                      {{ task.type }}
+                    </v-chip>
                   </td>
-                  <td>{{ task.interval_hours }}h</td>
-                  <td class="text-caption">{{ task.last_run ? new Date(task.last_run).toLocaleString() : '--' }}</td>
-                  <td class="text-caption">{{ task.next_run ? new Date(task.next_run).toLocaleString() : '--' }}</td>
-                  <td>{{ task.run_count }}</td>
+                  <td class="text-medium-emphasis">{{ task.interval_hours }}h</td>
+                  <td class="text-caption text-medium-emphasis" style="font-variant-numeric: tabular-nums;">
+                    {{ task.last_run ? formatRelative(task.last_run) : '--' }}
+                  </td>
+                  <td class="text-center">
+                    <v-chip size="x-small" variant="tonal" color="primary" class="font-weight-medium">
+                      {{ task.run_count }}
+                    </v-chip>
+                  </td>
                 </tr>
               </tbody>
             </v-table>
 
-            <v-card-text v-else class="text-medium-emphasis">
+            <div v-else class="pa-6 text-center text-medium-emphasis">
               No scheduled tasks
-            </v-card-text>
+            </div>
           </v-card>
         </v-col>
 
         <!-- Feedback Stats -->
-        <v-col cols="12" md="6">
-          <v-card variant="outlined" class="mb-4">
-            <v-card-title>
-              <v-icon icon="mdi-thumb-up-outline" class="mr-2" />
-              Feedback
-            </v-card-title>
+        <v-col cols="12" lg="5">
+          <v-card class="mb-4 scheduler-card">
+            <div class="d-flex align-center pa-4" style="border-bottom: 1px solid rgba(255,255,255,0.04);">
+              <v-icon icon="mdi-thumb-up-outline" size="20" class="mr-2 text-medium-emphasis" />
+              <span class="text-subtitle-1 font-weight-bold">Feedback</span>
+            </div>
 
-            <v-divider />
-
-            <v-card-text v-if="feedbackStats">
-              <v-row dense>
-                <v-col cols="4" class="text-center">
-                  <div class="text-h5">{{ feedbackStats.total }}</div>
-                  <div class="text-caption text-medium-emphasis">Total</div>
-                </v-col>
-                <v-col cols="4" class="text-center">
-                  <div class="text-h5 text-success">{{ feedbackStats.positive }}</div>
-                  <div class="text-caption text-medium-emphasis">Positive</div>
-                </v-col>
-                <v-col cols="4" class="text-center">
-                  <div class="text-h5 text-error">{{ feedbackStats.negative }}</div>
-                  <div class="text-caption text-medium-emphasis">Negative</div>
-                </v-col>
-              </v-row>
-              <div class="mt-3">
-                <div class="text-caption text-medium-emphasis mb-1">
-                  Positive Rate: {{ (feedbackStats.positive_rate * 100).toFixed(0) }}%
+            <v-card-text v-if="feedbackStats" class="pa-4">
+              <div class="d-flex ga-4 mb-4">
+                <div class="text-center flex-grow-1 feedback-stat">
+                  <div class="text-h4 font-weight-bold">{{ feedbackStats.total }}</div>
+                  <div class="text-caption text-medium-emphasis mt-1">Total</div>
+                </div>
+                <div class="text-center flex-grow-1 feedback-stat">
+                  <div class="text-h4 font-weight-bold text-success">{{ feedbackStats.positive }}</div>
+                  <div class="text-caption text-medium-emphasis mt-1">Positive</div>
+                </div>
+                <div class="text-center flex-grow-1 feedback-stat">
+                  <div class="text-h4 font-weight-bold text-error">{{ feedbackStats.negative }}</div>
+                  <div class="text-caption text-medium-emphasis mt-1">Negative</div>
+                </div>
+              </div>
+              <div>
+                <div class="d-flex align-center justify-space-between mb-2">
+                  <span class="text-caption text-medium-emphasis">Positive Rate</span>
+                  <span class="text-body-2 font-weight-bold text-success">
+                    {{ (feedbackStats.positive_rate * 100).toFixed(0) }}%
+                  </span>
                 </div>
                 <v-progress-linear
                   :model-value="feedbackStats.positive_rate * 100"
                   color="success"
                   height="8"
                   rounded
+                  bg-color="surface-bright"
                 />
               </div>
             </v-card-text>
 
-            <v-card-text v-else class="text-medium-emphasis">
+            <div v-else class="pa-6 text-center text-medium-emphasis">
               No feedback data
-            </v-card-text>
+            </div>
           </v-card>
         </v-col>
       </v-row>
 
       <!-- Events Log -->
-      <v-card variant="outlined">
-        <v-card-title>
-          <v-icon icon="mdi-history" class="mr-2" />
-          Recent Events
-        </v-card-title>
+      <v-card class="scheduler-card">
+        <div class="d-flex align-center pa-4" style="border-bottom: 1px solid rgba(255,255,255,0.04);">
+          <v-icon icon="mdi-history" size="20" class="mr-2 text-medium-emphasis" />
+          <span class="text-subtitle-1 font-weight-bold">Recent Events</span>
+          <v-chip v-if="events.length" size="x-small" variant="tonal" class="ml-2">{{ events.length }}</v-chip>
+        </div>
 
-        <v-divider />
-
-        <v-table v-if="events.length" density="compact">
+        <v-table v-if="events.length" class="scheduler-table">
           <thead>
             <tr>
-              <th>Type</th>
-              <th>Source</th>
-              <th>Data</th>
-              <th>Time</th>
+              <th class="text-left">Type</th>
+              <th class="text-left">Source</th>
+              <th class="text-left">Data</th>
+              <th class="text-left">Time</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="evt in events" :key="evt.id">
+            <tr v-for="evt in events" :key="evt.id" class="task-row">
               <td>
-                <v-chip size="x-small" variant="tonal" color="info">{{ evt.event_type }}</v-chip>
+                <v-chip size="x-small" variant="tonal" color="info" class="font-weight-medium">
+                  {{ evt.event_type }}
+                </v-chip>
               </td>
-              <td class="text-caption">{{ evt.source || '--' }}</td>
-              <td class="text-caption" style="max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+              <td class="text-caption text-medium-emphasis">{{ evt.source || '--' }}</td>
+              <td class="text-caption text-medium-emphasis" style="max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
                 {{ JSON.stringify(evt.event_data).slice(0, 100) }}
               </td>
-              <td class="text-caption">{{ new Date(evt.created_at).toLocaleString() }}</td>
+              <td class="text-caption text-medium-emphasis" style="white-space: nowrap; font-variant-numeric: tabular-nums;">
+                {{ formatRelative(evt.created_at) }}
+              </td>
             </tr>
           </tbody>
         </v-table>
 
-        <v-card-text v-else class="text-medium-emphasis">
+        <div v-else class="pa-6 text-center text-medium-emphasis">
           No recent events
-        </v-card-text>
+        </div>
       </v-card>
     </template>
   </v-container>
@@ -148,6 +165,17 @@ import { useSSE } from '@/composables/useSSE'
 
 const { status, events, feedbackStats, loading, fetchScheduler } = useScheduler()
 
+function formatRelative(iso: string) {
+  const diff = Date.now() - new Date(iso).getTime()
+  const mins = Math.floor(diff / 60000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
+}
+
 useSSE((evt) => {
   if (['agent_event', 'feedback_added'].includes(evt.type)) {
     fetchScheduler()
@@ -158,3 +186,43 @@ onMounted(() => {
   fetchScheduler()
 })
 </script>
+
+<style scoped>
+.scheduler-card {
+  border: 1px solid rgba(255, 255, 255, 0.04);
+}
+.scheduler-table {
+  background: transparent !important;
+}
+.scheduler-table th {
+  font-size: 0.75rem !important;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity)) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04) !important;
+}
+.task-row {
+  transition: background 100ms ease;
+}
+.task-row:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+.task-row td {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.02) !important;
+}
+.feedback-stat {
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.skeleton-block {
+  background: linear-gradient(90deg, rgb(var(--v-theme-surface)) 25%, rgba(255,255,255,0.03) 50%, rgb(var(--v-theme-surface)) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 12px;
+}
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+</style>

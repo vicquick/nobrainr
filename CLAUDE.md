@@ -25,7 +25,7 @@ cross-machine patterns, and archives stale knowledge — all on scheduled LLM-po
 - **Frontend** — Vue 3 + Vuetify + Cytoscape.js (separate container, nginx)
 - **PostgreSQL 18 + pgvector** — storage, vector similarity, knowledge graph
 - **Ollama + nomic-embed-text** — local embeddings (768 dimensions)
-- **Ollama + qwen3:8b** — entity/relationship extraction, scheduler jobs (structured output)
+- **Ollama + qwen3.5:9b** — entity/relationship extraction, scheduler jobs (structured output)
 
 ### Routing (when using a reverse proxy)
 | Path | Target |
@@ -171,22 +171,22 @@ Structured labeling jobs use `think=False` for ~10x speed.
 
 ## Deployment Notes
 
-### Ollama Configuration (dedicated-gpu-server: GPU (20GB VRAM), 20GB VRAM)
-Two models loaded, using ~8GB of 20GB VRAM:
-- `nomic-embed-text` — embeddings (0.6 GB VRAM)
-- `qwen3:8b` — extraction + scheduler LLM jobs (7.6 GB VRAM)
+### Ollama Configuration
+Two models are required:
+- `nomic-embed-text` — embeddings (~0.3 GB VRAM)
+- A structured-output-capable model (default: `qwen3.5:9b`, ~6.6 GB VRAM) — entity extraction + scheduler
 
-Key env vars:
+Recommended Ollama env vars for production:
 - `OLLAMA_FLASH_ATTENTION=1` — reduces VRAM, speeds inference
 - `OLLAMA_KV_CACHE_TYPE=q8_0` — halves KV cache memory per slot
-- `OLLAMA_NUM_PARALLEL=8` — 8 concurrent inference slots
+- `OLLAMA_NUM_PARALLEL=8` — concurrent inference slots
 - `OLLAMA_KEEP_ALIVE=24h` — keep models hot in VRAM
-- `OLLAMA_MAX_LOADED_MODELS=2` — only our two models
+- `OLLAMA_MAX_LOADED_MODELS=2` — embedding + LLM
 
 ### Extraction Performance
 - `ollama_chat()` uses `"think": false` for entity extraction (structured labeling doesn't need reasoning)
 - Scheduler jobs (consolidation, synthesis, dedup) keep `think=True` — they benefit from reasoning
-- Backfill: `nobrainr extract-backfill --batch-size 50` processes ~4-5 memories/min on GPU
+- Backfill: `nobrainr extract-backfill --batch-size 50`
 - Retry logic: 404s from Ollama (model loading contention) are retried 5× with exponential backoff
 
 ### Network Aliases (Coolify)

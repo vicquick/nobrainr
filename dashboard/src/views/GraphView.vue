@@ -1,40 +1,64 @@
 <template>
   <v-container fluid class="fill-height pa-0 d-flex flex-column">
     <!-- Toolbar -->
-    <div class="d-flex align-center ga-3 pa-3" style="border-bottom: 1px solid rgba(255,255,255,0.1);">
-      <v-select
-        v-model="typeFilter"
-        :items="typeOptions"
-        label="Entity types"
-        variant="outlined"
-        density="compact"
-        multiple
-        chips
-        closable-chips
-        clearable
-        hide-details
-        style="max-width: 400px;"
-      />
+    <div class="d-flex align-center ga-2 px-4 py-2" style="border-bottom: 1px solid rgba(255,255,255,0.04);">
+      <!-- Type filter chips -->
+      <div class="d-flex ga-1 flex-wrap">
+        <v-chip
+          v-for="type in entityTypes"
+          :key="type"
+          :color="TYPE_COLORS[type]"
+          :variant="isTypeActive(type) ? 'flat' : 'outlined'"
+          size="x-small"
+          class="type-chip"
+          @click="toggleType(type)"
+        >
+          {{ type }}
+        </v-chip>
+      </div>
+
+      <v-spacer />
+
+      <!-- Search -->
       <v-text-field
         v-model="searchQuery"
         prepend-inner-icon="mdi-magnify"
         placeholder="Search nodes..."
-        variant="outlined"
-        density="compact"
         clearable
-        hide-details
-        style="max-width: 250px;"
+        style="max-width: 220px;"
       />
-      <v-btn icon="mdi-refresh" variant="text" @click="resetView" />
+
+      <!-- Controls -->
+      <v-btn-group density="compact" variant="text" divided>
+        <v-btn icon="mdi-minus" size="small" @click="zoomOut" />
+        <v-btn icon="mdi-plus" size="small" @click="zoomIn" />
+        <v-btn icon="mdi-fit-to-screen-outline" size="small" @click="resetCamera" />
+      </v-btn-group>
+
+      <v-btn icon="mdi-refresh" variant="text" size="small" @click="refreshGraph" />
+    </div>
+
+    <!-- Node count -->
+    <div class="d-flex align-center ga-2 px-4 py-1" style="border-bottom: 1px solid rgba(255,255,255,0.04);">
+      <span class="text-caption text-medium-emphasis">
+        {{ nodeCount.toLocaleString() }} nodes &middot; {{ edgeCount.toLocaleString() }} edges
+      </span>
+      <v-chip v-if="layoutRunning" size="x-small" variant="tonal" color="warning" class="ml-1">
+        <v-progress-circular indeterminate size="10" width="1" class="mr-1" />
+        laying out
+      </v-chip>
     </div>
 
     <!-- Loading -->
     <div v-if="loading" class="d-flex align-center justify-center flex-grow-1">
-      <v-progress-circular indeterminate color="primary" size="48" />
+      <div class="text-center">
+        <v-progress-circular indeterminate color="primary" size="48" class="mb-3" />
+        <div class="text-body-2 text-medium-emphasis">Loading knowledge graph...</div>
+      </div>
     </div>
 
-    <!-- Cytoscape Canvas -->
-    <div v-show="!loading" ref="cyContainer" class="flex-grow-1" style="width: 100%;" />
+    <!-- Sigma Canvas -->
+    <div v-show="!loading" ref="sigmaContainer" class="flex-grow-1 sigma-canvas" />
 
     <!-- Side Panel -->
     <GraphSidePanel :node="selectedNode" @close="clearSelection" />
@@ -42,14 +66,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted } from 'vue'
-import cytoscape from 'cytoscape'
-import fcose from 'cytoscape-fcose'
+import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import Sigma from 'sigma'
+import Graph from 'graphology'
+import FA2Layout from 'graphology-layout-forceatlas2/worker'
 import { useGraph } from '@/composables/useGraph'
 import { useSSE } from '@/composables/useSSE'
 import GraphSidePanel from '@/components/GraphSidePanel.vue'
-
-cytoscape.use(fcose)
 
 const TYPE_COLORS: Record<string, string> = {
   person: '#58a6ff',
@@ -63,198 +86,284 @@ const TYPE_COLORS: Record<string, string> = {
   organization: '#58a6ff',
 }
 
-const typeOptions = Object.keys(TYPE_COLORS)
+const entityTypes = Object.keys(TYPE_COLORS)
 
 const { graphData, selectedNode, loading, fetchGraph, fetchNodeDetail, clearSelection } = useGraph()
 
-const cyContainer = ref<HTMLElement | null>(null)
+const sigmaContainer = ref<HTMLElement | null>(null)
 const searchQuery = ref('')
-const typeFilter = ref<string[]>([])
+const activeTypes = ref(new Set(entityTypes))
+const layoutRunning = ref(false)
+const nodeCount = ref(0)
+const edgeCount = ref(0)
 
-let cy: cytoscape.Core | null = null
+let graph: Graph | null = null
+let renderer: Sigma | null = null
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let fa2Layout: any = null
+let hoveredNode: string | null = null
+const hoveredNeighbors = new Set<string>()
+const searchMatches = new Set<string>()
 
-function initCytoscape() {
-  if (!cyContainer.value || !graphData.value) return
-  if (cy) cy.destroy()
+function isTypeActive(type: string) {
+  return activeTypes.value.has(type)
+}
 
-  cy = cytoscape({
-    container: cyContainer.value,
-    elements: [
-      ...graphData.value.nodes.map((n) => ({ group: 'nodes' as const, data: n.data })),
-      ...graphData.value.edges.map((e) => ({ group: 'edges' as const, data: e.data })),
-    ],
-    style: [
-      {
-        selector: 'node',
-        style: {
-          'background-color': (ele: cytoscape.NodeSingular) =>
-            TYPE_COLORS[ele.data('type')] || '#8b949e',
-          label: 'data(label)',
-          width: (ele: cytoscape.NodeSingular) =>
-            Math.max(20, Math.min(60, (ele.data('mention_count') || 1) * 3)),
-          height: (ele: cytoscape.NodeSingular) =>
-            Math.max(20, Math.min(60, (ele.data('mention_count') || 1) * 3)),
-          'font-size': '10px',
-          color: '#ffffff',
-          'text-outline-color': '#0d1117',
-          'text-outline-width': 2,
-          'text-valign': 'bottom',
-          'text-margin-y': 5,
-        } as cytoscape.Css.Node,
-      },
-      {
-        selector: 'edge',
-        style: {
-          'line-color': '#30363d',
-          width: (ele: cytoscape.EdgeSingular) =>
-            Math.max(1, Math.min(4, (ele.data('confidence') || 0.5) * 4)),
-          'curve-style': 'bezier',
-          'target-arrow-shape': 'triangle',
-          'target-arrow-color': '#30363d',
-          label: '',
-          opacity: 0.6,
-        } as cytoscape.Css.Edge,
-      },
-      {
-        selector: 'edge.highlighted',
-        style: {
-          label: 'data(label)',
-          'font-size': '8px',
-          color: '#8b949e',
-          'text-rotation': 'autorotate',
-          'text-outline-color': '#0d1117',
-          'text-outline-width': 1,
-          opacity: 1,
-          'line-color': '#58a6ff',
-          'target-arrow-color': '#58a6ff',
-        } as cytoscape.Css.Edge,
-      },
-      {
-        selector: 'node[[degree = 0]]',
-        style: {
-          opacity: 0.4,
-          width: 12,
-          height: 12,
-          'font-size': '7px',
-        } as cytoscape.Css.Node,
-      },
-      {
-        selector: '.dimmed',
-        style: { opacity: 0.15 },
-      },
-      {
-        selector: '.highlighted',
-        style: { opacity: 1 },
-      },
-    ],
-    layout: {
-      name: 'fcose',
-      quality: 'default',
-      nodeRepulsion: 50000,
-      idealEdgeLength: 200,
-      edgeElasticity: 0.1,
-      gravity: 0.05,
-      gravityRange: 1.5,
-      numIter: 5000,
-      nodeSeparation: 100,
-      animate: false,
-      fit: true,
-      padding: 50,
-    } as cytoscape.LayoutOptions,
-    minZoom: 0.05,
-    maxZoom: 5,
-  })
+function toggleType(type: string) {
+  const next = new Set(activeTypes.value)
+  if (next.has(type)) {
+    next.delete(type)
+  } else {
+    next.add(type)
+  }
+  activeTypes.value = next
+  renderer?.refresh()
+}
 
-  // Node tap
-  cy.on('tap', 'node', async (evt) => {
-    const node = evt.target
-    const id = node.data('id')
+function initSigma() {
+  if (!sigmaContainer.value || !graphData.value) return
 
-    // Highlight
-    cy!.elements().addClass('dimmed')
-    node.removeClass('dimmed').addClass('highlighted')
-    node.connectedEdges().removeClass('dimmed').addClass('highlighted')
-    node.neighborhood('node').removeClass('dimmed').addClass('highlighted')
+  // Cleanup previous
+  if (fa2Layout) {
+    fa2Layout.stop()
+    fa2Layout.kill()
+    fa2Layout = null
+  }
+  if (renderer) {
+    renderer.kill()
+    renderer = null
+  }
 
-    await fetchNodeDetail(id)
-  })
+  graph = new Graph()
 
-  // Background tap
-  cy.on('tap', (evt) => {
-    if (evt.target === cy) {
-      cy!.elements().removeClass('dimmed highlighted')
-      clearSelection()
+  for (const node of graphData.value.nodes) {
+    graph.addNode(node.data.id, {
+      label: node.data.label,
+      x: Math.random() * 100,
+      y: Math.random() * 100,
+      size: Math.max(3, Math.min(20, Math.sqrt(node.data.mention_count || 1) * 3)),
+      color: TYPE_COLORS[node.data.type] || '#8b949e',
+      nodeType: node.data.type,
+    })
+  }
+
+  for (const edge of graphData.value.edges) {
+    if (graph.hasNode(edge.data.source) && graph.hasNode(edge.data.target)) {
+      try {
+        graph.addEdge(edge.data.source, edge.data.target, {
+          label: edge.data.label,
+          size: Math.max(0.5, (edge.data.confidence || 0.5) * 2),
+          color: 'rgba(48, 54, 61, 0.5)',
+        })
+      } catch {
+        // duplicate edge — skip
+      }
     }
+  }
+
+  nodeCount.value = graph.order
+  edgeCount.value = graph.size
+
+  renderer = new Sigma(graph, sigmaContainer.value, {
+    renderLabels: true,
+    labelColor: { color: '#c9d1d9' },
+    labelSize: 12,
+    labelFont: '"Inter", system-ui, sans-serif',
+    labelDensity: 0.07,
+    labelGridCellSize: 60,
+    labelRenderedSizeThreshold: 5,
+    defaultNodeColor: '#8b949e',
+    defaultEdgeColor: 'rgba(48, 54, 61, 0.5)',
+    stagePadding: 30,
+    zIndex: true,
+    nodeReducer(node, data) {
+      const res = { ...data }
+      const type = graph!.getNodeAttribute(node, 'nodeType')
+
+      // Type filter
+      if (activeTypes.value.size < entityTypes.length && !activeTypes.value.has(type)) {
+        res.hidden = true
+        return res
+      }
+
+      // Search
+      if (searchMatches.size > 0) {
+        if (searchMatches.has(node)) {
+          res.highlighted = true
+          res.zIndex = 1
+        } else {
+          res.color = '#1a1a2e'
+          res.label = ''
+        }
+        return res
+      }
+
+      // Hover
+      if (hoveredNode) {
+        if (node === hoveredNode) {
+          res.highlighted = true
+          res.zIndex = 2
+        } else if (hoveredNeighbors.has(node)) {
+          res.highlighted = true
+          res.zIndex = 1
+        } else {
+          res.color = '#0d1117'
+          res.label = ''
+        }
+      }
+
+      return res
+    },
+    edgeReducer(edge, data) {
+      const res = { ...data }
+
+      if (hoveredNode) {
+        if (graph!.extremities(edge).includes(hoveredNode)) {
+          res.color = '#58a6ff'
+          res.size = 2
+          res.zIndex = 1
+        } else {
+          res.hidden = true
+        }
+      }
+
+      if (searchMatches.size > 0 && !hoveredNode) {
+        const [src, tgt] = graph!.extremities(edge)
+        if (!searchMatches.has(src) && !searchMatches.has(tgt)) {
+          res.hidden = true
+        }
+      }
+
+      return res
+    },
   })
+
+  renderer.on('enterNode', ({ node }) => {
+    hoveredNode = node
+    hoveredNeighbors.clear()
+    graph!.forEachNeighbor(node, (n) => hoveredNeighbors.add(n))
+    sigmaContainer.value!.style.cursor = 'pointer'
+    renderer!.refresh()
+  })
+
+  renderer.on('leaveNode', () => {
+    hoveredNode = null
+    hoveredNeighbors.clear()
+    sigmaContainer.value!.style.cursor = 'default'
+    renderer!.refresh()
+  })
+
+  renderer.on('clickNode', async ({ node }) => {
+    await fetchNodeDetail(node)
+  })
+
+  renderer.on('clickStage', () => {
+    clearSelection()
+  })
+
+  // ForceAtlas2 in web worker
+  layoutRunning.value = true
+  fa2Layout = new FA2Layout(graph, {
+    settings: {
+      gravity: 0.5,
+      scalingRatio: 10,
+      barnesHutOptimize: true,
+      barnesHutTheta: 0.5,
+      slowDown: 5,
+      strongGravityMode: false,
+      linLogMode: false,
+      outboundAttractionDistribution: false,
+      adjustSizes: false,
+      edgeWeightInfluence: 1,
+    },
+  })
+  fa2Layout.start()
+
+  setTimeout(() => {
+    if (fa2Layout) {
+      fa2Layout.stop()
+      layoutRunning.value = false
+    }
+  }, 8000)
 }
 
-function resetView() {
-  if (!cy) return
-  cy.elements().removeClass('dimmed highlighted')
-  clearSelection()
-  searchQuery.value = ''
-  typeFilter.value = []
-  cy.elements().show()
-  cy.fit()
-}
-
-// Search filter
+// Debounced search
+let searchTimeout: ReturnType<typeof setTimeout>
 watch(searchQuery, (q) => {
-  if (!cy) return
-  if (!q) {
-    cy.elements().removeClass('dimmed highlighted')
-    return
-  }
-  const lower = q.toLowerCase()
-  cy.elements().addClass('dimmed')
-  cy.nodes()
-    .filter((n) => n.data('label')?.toLowerCase().includes(lower))
-    .removeClass('dimmed')
-    .addClass('highlighted')
+  clearTimeout(searchTimeout)
+  searchTimeout = setTimeout(() => {
+    searchMatches.clear()
+    if (q && graph) {
+      const lower = q.toLowerCase()
+      graph.forEachNode((node, attrs) => {
+        if (attrs.label?.toLowerCase().includes(lower)) {
+          searchMatches.add(node)
+        }
+      })
+    }
+    renderer?.refresh()
+  }, 200)
 })
 
-// Type filter
-watch(typeFilter, (types) => {
-  if (!cy) return
-  if (!types.length) {
-    cy.nodes().show()
-    cy.edges().show()
-    return
-  }
-  cy.nodes().forEach((n) => {
-    if (types.includes(n.data('type'))) {
-      n.show()
-    } else {
-      n.hide()
-    }
-  })
-  cy.edges().forEach((e) => {
-    const srcVisible = e.source().visible()
-    const tgtVisible = e.target().visible()
-    if (srcVisible && tgtVisible) {
-      e.show()
-    } else {
-      e.hide()
-    }
-  })
-})
+function zoomIn() {
+  renderer?.getCamera().animatedZoom({ duration: 300 })
+}
+
+function zoomOut() {
+  renderer?.getCamera().animatedUnzoom({ duration: 300 })
+}
+
+function resetCamera() {
+  renderer?.getCamera().animatedReset({ duration: 400 })
+}
+
+async function refreshGraph() {
+  searchQuery.value = ''
+  searchMatches.clear()
+  activeTypes.value = new Set(entityTypes)
+  hoveredNode = null
+  hoveredNeighbors.clear()
+  clearSelection()
+  await fetchGraph()
+  await nextTick()
+  initSigma()
+}
 
 useSSE(async (evt) => {
   if (['memory_created', 'memory_deleted'].includes(evt.type)) {
     await fetchGraph()
-    initCytoscape()
+    await nextTick()
+    initSigma()
   }
 })
 
 onMounted(async () => {
   await fetchGraph()
-  initCytoscape()
+  await nextTick()
+  initSigma()
 })
 
 onUnmounted(() => {
-  if (cy) {
-    cy.destroy()
-    cy = null
+  if (fa2Layout) {
+    fa2Layout.stop()
+    fa2Layout.kill()
   }
+  renderer?.kill()
 })
 </script>
+
+<style scoped>
+.sigma-canvas {
+  width: 100%;
+  background: #0a0e14;
+}
+.type-chip {
+  cursor: pointer;
+  transition: all 150ms ease;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+.type-chip:hover {
+  transform: scale(1.05);
+}
+</style>

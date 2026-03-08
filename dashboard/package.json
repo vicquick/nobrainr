@@ -1,7 +1,7 @@
 {
   "name": "nobrainr-dashboard",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -15,8 +15,9 @@
     "pinia": "^2.3.0",
     "axios": "^1.7.9",
     "@mdi/font": "^7.4.47",
-    "cytoscape": "^3.30.4",
-    "cytoscape-fcose": "^2.2.0"
+    "sigma": "^3.0.0",
+    "graphology": "^0.25.4",
+    "graphology-layout-forceatlas2": "^0.10.1"
   },
   "devDependencies": {
     "vite": "^6.0.0",
