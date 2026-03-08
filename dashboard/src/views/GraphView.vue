@@ -110,6 +110,26 @@ let fa2Layout: any = null
 let focusedNode: string | null = null
 const focusedNeighbors = new Set<string>()
 const searchMatches = new Set<string>()
+let cameraRatio = 1
+const visibleNodes = new Set<string>()
+
+function recomputeVisibility() {
+  visibleNodes.clear()
+  if (!graph) return
+  const minDeg = Math.max(1, Math.round(cameraRatio * 20))
+  // Hubs: nodes with degree >= threshold
+  const hubs = new Set<string>()
+  graph.forEachNode((node) => {
+    if (graph!.degree(node) >= minDeg) {
+      hubs.add(node)
+      visibleNodes.add(node)
+    }
+  })
+  // Neighbors of hubs are also visible (they have at least one visible edge)
+  for (const hub of hubs) {
+    graph.forEachNeighbor(hub, (neighbor) => visibleNodes.add(neighbor))
+  }
+}
 
 function isTypeActive(type: string) {
   return activeTypes.value.has(type)
@@ -173,8 +193,8 @@ function initSigma() {
       try {
         graph.addEdge(edge.data.source, edge.data.target, {
           label: edge.data.label,
-          size: 0.3,
-          color: 'rgba(255, 255, 255, 0.012)',
+          size: 0.2,
+          color: 'rgba(255, 255, 255, 0.04)',
         })
       } catch {
         // duplicate edge
@@ -195,9 +215,11 @@ function initSigma() {
     labelGridCellSize: 80,
     labelRenderedSizeThreshold: 6,
     defaultNodeColor: '#6b7280',
-    defaultEdgeColor: 'rgba(255, 255, 255, 0.012)',
+    defaultEdgeColor: 'rgba(255, 255, 255, 0.04)',
     stagePadding: 40,
     zIndex: true,
+
+    enableNodeHoverHighlighting: false,
 
     nodeReducer(node, data) {
       const res = { ...data }
@@ -212,7 +234,6 @@ function initSigma() {
       // Search highlighting
       if (searchMatches.size > 0) {
         if (searchMatches.has(node)) {
-          res.highlighted = true
           res.zIndex = 1
           res.color = lighten(res.color as string, 0.3)
         } else {
@@ -225,18 +246,22 @@ function initSigma() {
       // Click-focus highlighting
       if (focusedNode) {
         if (node === focusedNode) {
-          res.highlighted = true
           res.zIndex = 2
           res.color = lighten(res.color as string, 0.4)
           res.size = (res.size as number) * 1.3
         } else if (focusedNeighbors.has(node)) {
-          res.highlighted = true
           res.zIndex = 1
           res.color = lighten(res.color as string, 0.15)
         } else {
           res.color = 'rgba(255, 255, 255, 0.03)'
           res.label = ''
         }
+        return res
+      }
+
+      // Zoom-based node visibility: hide nodes with no visible edges
+      if (visibleNodes.size > 0 && !visibleNodes.has(node)) {
+        res.hidden = true
       }
 
       return res
@@ -247,25 +272,53 @@ function initSigma() {
 
       if (focusedNode) {
         if (graph!.extremities(edge).includes(focusedNode)) {
-          res.color = 'rgba(255, 255, 255, 0.12)'
-          res.size = 0.5
+          res.color = 'rgba(255, 255, 255, 0.10)'
+          res.size = 0.4
           res.zIndex = 1
         } else {
           res.hidden = true
         }
+        return res
       }
 
-      if (searchMatches.size > 0 && !focusedNode) {
+      if (searchMatches.size > 0) {
         const [src, tgt] = graph!.extremities(edge)
         if (!searchMatches.has(src) && !searchMatches.has(tgt)) {
           res.hidden = true
         } else {
-          res.color = 'rgba(255, 255, 255, 0.06)'
+          res.color = 'rgba(255, 255, 255, 0.08)'
         }
+        return res
+      }
+
+      // Dynamic edge filtering: zoomed out = only hub edges, zoomed in = all
+      // cameraRatio: >1 = zoomed out, 1 = default, <1 = zoomed in
+      const [src, tgt] = graph!.extremities(edge)
+      const maxDeg = Math.max(graph!.degree(src), graph!.degree(tgt))
+      // At ratio 1.0 (default) → need degree ≥ 20 (only major hubs)
+      // At ratio 0.5 → need degree ≥ 10
+      // At ratio 0.25 or less → show all
+      const minDeg = Math.max(1, Math.round(cameraRatio * 20))
+      if (maxDeg < minDeg) {
+        res.hidden = true
       }
 
       return res
     },
+  })
+
+  // Recompute visibility on zoom changes (debounced)
+  recomputeVisibility()
+  let zoomRefreshTimer: ReturnType<typeof setTimeout>
+  renderer.getCamera().on('updated', (state: { ratio: number }) => {
+    if (Math.abs(state.ratio - cameraRatio) > 0.05) {
+      cameraRatio = state.ratio
+      clearTimeout(zoomRefreshTimer)
+      zoomRefreshTimer = setTimeout(() => {
+        recomputeVisibility()
+        renderer?.refresh()
+      }, 150)
+    }
   })
 
   // Pointer cursor on node hover (no visual change)
