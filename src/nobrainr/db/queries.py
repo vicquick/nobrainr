@@ -1793,3 +1793,156 @@ def _row_to_dict(row) -> dict:
 
 def _jsonb(data: dict | None) -> str:
     return json.dumps(data or {})
+
+
+# ──────────────────────────────────────────────
+# Entity web research (Phase 3)
+# ──────────────────────────────────────────────
+
+async def get_research_candidates(
+    min_mentions: int = 5,
+    cooldown_days: int = 14,
+    limit: int = 3,
+) -> list[dict]:
+    """Find entities worth researching on the web.
+
+    Criteria: important entities (5+ mentions) with thin descriptions,
+    no web research in the last N days, and no existing crawled memory about them.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT e.id, e.name, e.entity_type, e.canonical_name,
+                   e.description, e.mention_count,
+                   ARRAY_AGG(DISTINCT m.content ORDER BY m.importance DESC)
+                       FILTER (WHERE m.content IS NOT NULL) AS memory_contents
+            FROM entities e
+            LEFT JOIN entity_memories em ON em.entity_id = e.id
+            LEFT JOIN memories m ON m.id = em.memory_id AND m.category <> '_archived'
+            WHERE e.mention_count >= $1
+              AND e.entity_type IN ('technology', 'project', 'concept', 'organization')
+              -- No web research event in last N days
+              AND NOT EXISTS (
+                  SELECT 1 FROM agent_events ae
+                  WHERE ae.event_type = 'web_research'
+                    AND ae.metadata->>'entity_id' = e.id::text
+                    AND ae.created_at > NOW() - INTERVAL '1 day' * $2
+              )
+            GROUP BY e.id, e.name, e.entity_type, e.canonical_name,
+                     e.description, e.mention_count
+            ORDER BY e.mention_count DESC
+            LIMIT $3
+            """,
+            min_mentions,
+            cooldown_days,
+            limit,
+        )
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["id"] = str(d["id"])
+            d["memory_contents"] = d["memory_contents"] or []
+            result.append(d)
+        return result
+
+
+# ──────────────────────────────────────────────
+# Interest signals (Phase 5)
+# ──────────────────────────────────────────────
+
+async def ensure_interest_signals_table() -> None:
+    """Create the interest_signals table if it doesn't exist."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS interest_signals (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                topic TEXT NOT NULL,
+                signal_type TEXT NOT NULL,
+                strength FLOAT DEFAULT 1.0,
+                source_machine TEXT,
+                metadata JSONB DEFAULT '{}',
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_interest_signals_topic
+            ON interest_signals (topic);
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_interest_signals_created
+            ON interest_signals (created_at DESC);
+        """)
+
+
+async def record_interest_signal(
+    topic: str,
+    signal_type: str,
+    strength: float = 1.0,
+    source_machine: str | None = None,
+    metadata: dict | None = None,
+) -> None:
+    """Record an interest signal for a topic."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO interest_signals (topic, signal_type, strength, source_machine, metadata)
+            VALUES ($1, $2, $3, $4, $5::jsonb)
+            """,
+            topic, signal_type, strength, source_machine, _jsonb(metadata),
+        )
+
+
+async def get_hot_topics(
+    decay_days: int = 30,
+    limit: int = 10,
+) -> list[dict]:
+    """Get topics ranked by recent interest (time-decayed signal strength).
+
+    Each signal decays exponentially: strength * exp(-age_days / decay_days).
+    Returns topics with their aggregated weighted score.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                topic,
+                SUM(
+                    strength * EXP(-EXTRACT(EPOCH FROM (NOW() - created_at)) / (86400.0 * $1))
+                ) AS score,
+                COUNT(*) AS signal_count,
+                MAX(created_at) AS last_signal
+            FROM interest_signals
+            WHERE created_at > NOW() - INTERVAL '1 day' * ($1 * 3)
+            GROUP BY topic
+            HAVING SUM(
+                strength * EXP(-EXTRACT(EPOCH FROM (NOW() - created_at)) / (86400.0 * $1))
+            ) > 0.1
+            ORDER BY score DESC
+            LIMIT $2
+            """,
+            decay_days,
+            limit,
+        )
+        return [dict(r) for r in rows]
+
+
+async def get_topic_research_status(topic: str) -> dict | None:
+    """Check if a topic has been recently researched."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT MAX(created_at) AS last_researched
+            FROM agent_events
+            WHERE event_type = 'interest_research'
+              AND metadata->>'topic' = $1
+            """,
+            topic,
+        )
+        if row and row["last_researched"]:
+            return {"topic": topic, "last_researched": row["last_researched"].isoformat()}
+        return None

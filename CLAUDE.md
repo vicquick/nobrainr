@@ -144,7 +144,7 @@ dashboard/                  # Vue 3 frontend (separate build)
 
 ## Scheduler Jobs
 
-The scheduler runs 13 autonomous jobs (3 SQL + 10 LLM). LLM jobs use a configurable
+The scheduler runs 18 autonomous jobs (3 SQL + 15 LLM). LLM jobs use a configurable
 semaphore (`NOBRAINR_SCHEDULER_LLM_CONCURRENCY`, default 3) with 1s inter-request delay
 between batch LLM calls for live request coexistence. LLM retry: 5 attempts with
 exponential backoff on empty/malformed JSON responses. Structured labeling jobs use
@@ -160,6 +160,14 @@ exponential backoff on empty/malformed JSON responses. Structured labeling jobs 
 | `entity_enrichment` | 2h | 20 | LLM | Generate descriptions for underdescribed entities |
 | `synthesis` | 4h | 5 | LLM | Cross-entity insight generation from memory clusters |
 
+### Web Intelligence (NEW — knowledge crawl evolution)
+| Job | Interval | Batch | Type | Purpose |
+|-----|----------|-------|------|---------|
+| `knowledge_crawl` | 6h | 3 | LLM | Crawl seed URLs + queued URLs, store with entity extraction, discover links |
+| `entity_web_research` | 12h | 3 | LLM | Find underdescribed entities, LLM suggests docs URL, crawl + store |
+| `freshness_recrawl` | 24h | 3 | LLM | Re-crawl stale pages (>30 days), update if content changed |
+| `interest_expansion` | 24h | 3 | LLM | Research hot topics based on agent search/crawl interest signals |
+
 ### Quality & Integrity
 | Job | Interval | Batch | Type | Purpose |
 |-----|----------|-------|------|---------|
@@ -173,6 +181,23 @@ exponential backoff on empty/malformed JSON responses. Structured labeling jobs 
 | `maintenance` | 6h | SQL | Recompute importance scores, decay stability |
 | `feedback_integration` | 12h | SQL | Adjust importance based on feedback |
 | `memory_decay` | 24h | SQL | Archive low-value, never-accessed memories >30 days old |
+
+### Knowledge Growth Loop
+```
+Agent sessions → interest signals (search queries, manual crawls)
+    ↓
+interest_expansion (24h) → targeted web research based on hot topics
+    ↓
+knowledge_crawl (6h) → crawl seed URLs + queued links
+    ↓
+Link discovery → queue interesting links from crawled pages
+    ↓
+entity_web_research (12h) → LLM picks underdescribed entities → suggests docs → crawls
+    ↓
+freshness_recrawl (24h) → re-crawl stale pages → update if changed
+    ↓
+Knowledge graph grows → entities enriched → new relations discovered
+```
 
 ## Deployment Notes
 

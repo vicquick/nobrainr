@@ -114,6 +114,13 @@ async def lifespan(app):
     except Exception:
         logger.exception("Failed to create crawl_queue table")
 
+    # Ensure interest_signals table exists for interest tracking (Phase 5)
+    try:
+        from nobrainr.db.queries import ensure_interest_signals_table
+        await ensure_interest_signals_table()
+    except Exception:
+        logger.exception("Failed to create interest_signals table")
+
     # Fire-and-forget backfill for any unextracted memories
     backfill_task = asyncio.create_task(_auto_backfill())
 
