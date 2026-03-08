@@ -99,6 +99,7 @@ let focusedNode: string | null = null
 let hoveredNode: string | null = null
 const focusedNeighbors = new Set<string>()
 const searchMatches = new Set<string>()
+const hubNodes = new Set<string>()
 
 function isTypeActive(type: string) {
   return activeTypes.value.has(type)
@@ -195,7 +196,7 @@ function initSigma() {
         graph.addEdge(edge.data.source, edge.data.target, {
           label: edge.data.label,
           size: 1,
-          color: 'rgba(255, 255, 255, 0.015)',
+          color: 'rgba(255, 255, 255, 0.008)',
         })
       } catch {
         // duplicate edge
@@ -206,6 +207,12 @@ function initSigma() {
   nodeCount.value = graph.order
   edgeCount.value = graph.size
   communityCount.value = communities.size
+
+  // Identify hub nodes for edge filtering at overview level
+  hubNodes.clear()
+  graph.forEachNode((node) => {
+    if (graph!.degree(node) >= 10) hubNodes.add(node)
+  })
 
   renderer = new Sigma(graph, sigmaContainer.value, {
     // Edge rendering — gl.LINES for performance
@@ -227,7 +234,7 @@ function initSigma() {
 
     // Defaults
     defaultNodeColor: '#6b7280',
-    defaultEdgeColor: 'rgba(255, 255, 255, 0.015)',
+    defaultEdgeColor: 'rgba(255, 255, 255, 0.008)',
     stagePadding: 40,
     zIndex: true,
     enableNodeHoverHighlighting: false,
@@ -309,6 +316,12 @@ function initSigma() {
           res.color = 'rgba(255, 255, 255, 0.1)'
         }
         return res
+      }
+
+      // Default overview: only show edges between hub nodes (degree >= 5)
+      const [src, tgt] = graph!.extremities(edge)
+      if (!hubNodes.has(src) || !hubNodes.has(tgt)) {
+        res.hidden = true
       }
 
       return res
