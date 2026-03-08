@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     max_content_length: int = 50000  # 50KB max memory content
 
     # Extraction (knowledge graph)
-    extraction_model: str = "qwen3.5:9b"
+    extraction_model: str = "gemma3:12b"
     extraction_enabled: bool = True
 
     # Scheduler
@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     source_machine: str = ""
 
     # LLM scheduler jobs
-    scheduler_llm_model: str = "qwen3.5:9b"
+    scheduler_llm_model: str = "gemma3:12b"
     summarize_interval_hours: float = 1.0
     summarize_batch_size: int = 20
     consolidation_interval_hours: float = 2.0
@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     insight_extraction_batch_size: int = 30
     chatgpt_distill_interval_hours: float = 0.1
     chatgpt_distill_batch_size: int = 20
-    chatgpt_distill_model: str = "qwen3.5:9b"
+    chatgpt_distill_model: str = "gemma3:12b"
     # Memory decay
     decay_interval_hours: float = 24.0
     decay_batch_size: int = 50
