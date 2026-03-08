@@ -20,12 +20,30 @@ def _valid_uuid(value: str) -> bool:
 
 
 async def api_graph(request: Request) -> JSONResponse:
-    """Full knowledge graph data for Cytoscape.js. Optional ?min_connections=N filter."""
+    """Full knowledge graph with server-computed layout (Louvain + spring)."""
     try:
         min_conn = max(0, int(request.query_params.get("min_connections", "0")))
     except ValueError:
         min_conn = 0
     data = await queries.get_all_entities_for_graph(min_connections=min_conn)
+
+    # Compute layout server-side
+    from nobrainr.layout import compute_graph_layout
+
+    layout = compute_graph_layout(data["nodes"], data["edges"])
+
+    # Inject positions + community into node data
+    for node in data["nodes"]:
+        nid = node["data"]["id"]
+        if nid in layout:
+            node["data"]["x"] = layout[nid]["x"]
+            node["data"]["y"] = layout[nid]["y"]
+            node["data"]["community"] = layout[nid]["community"]
+        else:
+            node["data"]["x"] = 0.0
+            node["data"]["y"] = 0.0
+            node["data"]["community"] = -1
+
     return JSONResponse(data)
 
 
