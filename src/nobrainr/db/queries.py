@@ -148,13 +148,13 @@ async def search_memories(
             f"""
             SELECT id, content, summary, source_type, source_machine, tags, category,
                    confidence, metadata, created_at, updated_at, importance, stability,
-                   access_count, last_accessed_at,
+                   access_count, last_accessed_at, quality_score,
                    1 - (embedding <=> $1) AS similarity,
-                   memory_relevance($1, embedding, created_at, importance, stability, access_count) AS relevance
+                   memory_relevance($1, embedding, created_at, importance, stability, access_count, now(), quality_score) AS relevance
             FROM memories
             WHERE {where}
               AND 1 - (embedding <=> $1) >= $2
-            ORDER BY memory_relevance($1, embedding, created_at, importance, stability, access_count) DESC
+            ORDER BY memory_relevance($1, embedding, created_at, importance, stability, access_count, now(), quality_score) DESC
             LIMIT $3
             """,
             *params,
@@ -232,14 +232,14 @@ async def _hybrid_search_rrf(
             f"""
             SELECT id, content, summary, source_type, source_machine, tags, category,
                    confidence, metadata, created_at, updated_at, importance, stability,
-                   access_count, last_accessed_at,
+                   access_count, last_accessed_at, quality_score,
                    1 - (embedding <=> $1) AS similarity,
-                   memory_relevance($1, embedding, created_at, importance, stability, access_count) AS relevance
+                   memory_relevance($1, embedding, created_at, importance, stability, access_count, now(), quality_score) AS relevance
             FROM memories
             WHERE embedding IS NOT NULL
               AND 1 - (embedding <=> $1) >= $2
               {vec_extra}
-            ORDER BY memory_relevance($1, embedding, created_at, importance, stability, access_count) DESC
+            ORDER BY memory_relevance($1, embedding, created_at, importance, stability, access_count, now(), quality_score) DESC
             LIMIT $3
             """,
             embedding, threshold, overfetch, *vec_fparams,
@@ -253,7 +253,7 @@ async def _hybrid_search_rrf(
             f"""
             SELECT id, content, summary, source_type, source_machine, tags, category,
                    confidence, metadata, created_at, updated_at, importance, stability,
-                   access_count, last_accessed_at,
+                   access_count, last_accessed_at, quality_score,
                    ts_rank(to_tsvector('english', content), plainto_tsquery('english', $1)) AS fts_rank
             FROM memories
             WHERE to_tsvector('english', content) @@ plainto_tsquery('english', $1)
@@ -310,7 +310,8 @@ async def get_memory(memory_id: str) -> dict | None:
             """
             SELECT id, content, summary, source_type, source_machine, source_ref,
                    tags, category, confidence, metadata, created_at, updated_at,
-                   importance, stability, access_count, last_accessed_at, extraction_status
+                   importance, stability, access_count, last_accessed_at, extraction_status,
+                   quality_score, quality_specificity, quality_actionability, quality_self_containment
             FROM memories WHERE id = $1
             """,
             UUID(memory_id),
@@ -445,7 +446,8 @@ async def query_memories(
         rows = await conn.fetch(
             f"""
             SELECT id, content, summary, source_type, source_machine, tags, category,
-                   confidence, metadata, created_at, updated_at, importance, stability
+                   confidence, metadata, created_at, updated_at, importance, stability,
+                   quality_score
             FROM memories
             WHERE {where}
             ORDER BY created_at DESC
@@ -461,15 +463,21 @@ async def query_memories(
 # ──────────────────────────────────────────────
 
 async def recompute_importance() -> int:
-    """Recompute importance scores for all memories. Returns count updated."""
+    """Recompute importance using graph-structural signals + quality score."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         result = await conn.execute(
             """
-            UPDATE memories SET importance = LEAST(1.0,
-                (0.4 * LN(GREATEST(access_count, 0) + 1) / LN(100))
-              + (0.3 * EXP(-0.023 * EXTRACT(EPOCH FROM (now() - created_at)) / 86400.0))
-              + (0.3 * COALESCE(stability, 1.0))
+            UPDATE memories m SET importance = LEAST(1.0,
+                -- 40% entity connectivity (how many entities this memory links to, normalized)
+                (0.4 * LEAST(1.0, COALESCE((
+                    SELECT count(*)::real / 10.0
+                    FROM entity_memories em WHERE em.memory_id = m.id
+                ), 0.0)))
+                -- 30% quality score (LLM-assessed, default 0.5 if not scored)
+              + (0.3 * COALESCE(quality_score, 0.5))
+                -- 30% confidence (source reliability)
+              + (0.3 * COALESCE(confidence, 0.7))
             )
             WHERE embedding IS NOT NULL
             """
@@ -786,6 +794,54 @@ async def archive_stale_memories(limit: int = 50) -> int:
         """, limit)
         count = int(result.split()[-1])
         return count
+
+
+async def get_unscored_memories(limit: int = 20) -> list[dict]:
+    """Get memories that haven't been quality-scored yet."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, content, summary, source_type, category, tags
+            FROM memories
+            WHERE quality_score IS NULL
+              AND category != '_archived'
+              AND content IS NOT NULL
+              AND length(content) > 20
+            ORDER BY created_at DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [_row_to_dict(row) for row in rows]
+
+
+async def update_quality_score(
+    memory_id: str,
+    *,
+    quality_score: float,
+    specificity: int,
+    actionability: int,
+    self_containment: int,
+) -> None:
+    """Update quality scores for a memory."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE memories
+            SET quality_score = $2,
+                quality_specificity = $3,
+                quality_actionability = $4,
+                quality_self_containment = $5
+            WHERE id = $1
+            """,
+            UUID(memory_id),
+            quality_score,
+            specificity,
+            actionability,
+            self_containment,
+        )
 
 
 async def get_potential_contradictions(limit: int = 5) -> list[dict]:

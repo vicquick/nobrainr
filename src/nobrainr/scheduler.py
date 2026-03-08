@@ -24,6 +24,7 @@ LLM_JOB_DELAYS = {
     "extraction_quality": 14 * 60,
     "cross_machine_insights": 16 * 60,
     "knowledge_crawl": 18 * 60,
+    "quality_scoring": 1 * 60,  # start fast — lots of unscored memories
 }
 
 # Per-job timeout for LLM operations
@@ -98,6 +99,8 @@ class Scheduler:
              settings.quality_interval_hours * 3600),
             ("knowledge_crawl", scheduler_jobs.knowledge_crawl,
              settings.knowledge_crawl_interval_hours * 3600),
+            ("quality_scoring", scheduler_jobs.quality_scoring,
+             settings.quality_scoring_interval_hours * 3600),
         ]
 
         for name, job_func, interval in llm_jobs:
@@ -113,7 +116,7 @@ class Scheduler:
             "Scheduler started: maintenance=%.1fh, feedback=%.1fh, decay=%.1fh, "
             "summarize=%.1fh, insight=%.1fh, enrichment=%.1fh, merging=%.1fh, "
             "consolidation=%.1fh, synthesis=%.1fh, contradiction=%.1fh, "
-            "cross_machine=%.1fh, quality=%.1fh, knowledge_crawl=%.1fh",
+            "cross_machine=%.1fh, quality=%.1fh, knowledge_crawl=%.1fh, quality_scoring=%.1fh",
             settings.maintenance_interval_hours,
             settings.feedback_interval_hours,
             settings.decay_interval_hours,
@@ -127,6 +130,7 @@ class Scheduler:
             settings.cross_machine_interval_hours,
             settings.quality_interval_hours,
             settings.knowledge_crawl_interval_hours,
+            settings.quality_scoring_interval_hours,
         )
 
     async def stop(self) -> None:

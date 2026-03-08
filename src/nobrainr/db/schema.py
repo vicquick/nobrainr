@@ -36,6 +36,12 @@ ALTER TABLE memories ADD COLUMN IF NOT EXISTS stability real DEFAULT 1.0;
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS importance real DEFAULT 0.0;
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS extraction_status text;
 
+-- v3: Quality scoring columns
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS quality_score real;
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS quality_specificity smallint;
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS quality_actionability smallint;
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS quality_self_containment smallint;
+
 -- HNSW index for fast approximate nearest neighbor search
 CREATE INDEX IF NOT EXISTS idx_memories_embedding_hnsw
     ON memories USING hnsw (embedding vector_cosine_ops)
@@ -60,6 +66,10 @@ CREATE INDEX IF NOT EXISTS idx_memories_source_machine
 -- Index for extraction_status (backfill queries)
 CREATE INDEX IF NOT EXISTS idx_memories_extraction_status
     ON memories (extraction_status);
+
+-- Index for quality scoring queries (find unscored memories)
+CREATE INDEX IF NOT EXISTS idx_memories_quality_score
+    ON memories (quality_score) WHERE quality_score IS NULL;
 
 -- Full-text search on content
 CREATE INDEX IF NOT EXISTS idx_memories_content_fts
@@ -227,8 +237,7 @@ CREATE TRIGGER trg_entities_updated_at
     BEFORE UPDATE ON entities
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
--- Composite relevance scoring function
--- Accepts current_ts so the function is IMMUTABLE (planner can optimize)
+-- Composite relevance scoring function (v3: quality-based, no access-count dependency)
 CREATE OR REPLACE FUNCTION memory_relevance(
     query_embedding vector({settings.embedding_dimensions}),
     mem_embedding vector({settings.embedding_dimensions}),
@@ -236,30 +245,28 @@ CREATE OR REPLACE FUNCTION memory_relevance(
     mem_importance real,
     mem_stability real,
     mem_access_count integer DEFAULT 0,
-    current_ts timestamptz DEFAULT now()
+    current_ts timestamptz DEFAULT now(),
+    mem_quality_score real DEFAULT NULL
 ) RETURNS real AS $$
 DECLARE
     cosine_sim real;
     recency_boost real;
-    access_boost real;
-    age_days real;
+    quality real;
 BEGIN
     -- Cosine similarity (0..1)
     cosine_sim := 1.0 - (query_embedding <=> mem_embedding);
 
-    -- Recency boost: exponential decay, half-life ~90 days (knowledge base, not chat)
-    age_days := EXTRACT(EPOCH FROM (current_ts - mem_created_at)) / 86400.0;
-    recency_boost := EXP(-0.0077 * age_days);  -- ln(2)/90 ≈ 0.0077
+    -- Slight recency boost, half-life ~180 days (gentle, not punishing)
+    recency_boost := EXP(-0.00385 * EXTRACT(EPOCH FROM (current_ts - mem_created_at)) / 86400.0);
 
-    -- Access boost: log-scaled (0..1), saturates around 50 accesses
-    access_boost := LEAST(1.0, LN(COALESCE(mem_access_count, 0) + 1) / LN(50));
+    -- Quality: use LLM-assessed score if available, else assume neutral (0.5)
+    quality := COALESCE(mem_quality_score, 0.5);
 
-    -- Weighted composite: 60% similarity + 10% recency + 15% importance + 5% stability + 10% access
-    RETURN (0.60 * cosine_sim)
-         + (0.10 * recency_boost)
-         + (0.15 * COALESCE(mem_importance, 0.0))
-         + (0.05 * COALESCE(mem_stability, 1.0))
-         + (0.10 * access_boost);
+    -- 65% similarity + 15% quality + 10% importance + 10% recency
+    RETURN (0.65 * cosine_sim)
+         + (0.15 * quality)
+         + (0.10 * COALESCE(mem_importance, 0.5))
+         + (0.10 * recency_boost);
 END;
 $$ LANGUAGE plpgsql STABLE;
 """
