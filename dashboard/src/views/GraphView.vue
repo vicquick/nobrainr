@@ -536,14 +536,20 @@ async function refreshGraph() {
   clearSelection()
   await fetchGraph()
   await nextTick()
-  requestAnimationFrame(() => initSigma())
+  requestAnimationFrame(() => {
+    initSigma()
+    loading.value = false
+  })
 }
 
 useSSE(async (evt) => {
   if (['memory_created', 'memory_deleted'].includes(evt.type)) {
     await fetchGraph()
     await nextTick()
-    requestAnimationFrame(() => initSigma())
+    requestAnimationFrame(() => {
+      initSigma()
+      loading.value = false
+    })
   }
 })
 
@@ -567,6 +573,7 @@ onMounted(async () => {
   await nextTick()
   await waitForLayout()
   initSigma()
+  loading.value = false
 
   // ResizeObserver: auto-resize Sigma when container changes (panel open/close, window resize)
   if (sigmaContainer.value) {

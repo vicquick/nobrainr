@@ -10,12 +10,9 @@ export function useGraph() {
 
   async function fetchGraph() {
     loading.value = true
-    try {
-      const { data } = await api.get<GraphData>('/api/graph')
-      graphData.value = data
-    } finally {
-      loading.value = false
-    }
+    const { data } = await api.get<GraphData>('/api/graph')
+    graphData.value = data
+    // Caller sets loading = false after Sigma init
   }
 
   async function fetchNodeDetail(entityId: string) {
