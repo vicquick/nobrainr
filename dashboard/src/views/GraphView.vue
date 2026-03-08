@@ -65,20 +65,21 @@ import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import Sigma from 'sigma'
 import Graph from 'graphology'
 import { EdgeLineProgram } from 'sigma/rendering'
+import { createNodeBorderProgram } from '@sigma/node-border'
 import { useGraph } from '@/composables/useGraph'
 import { useSSE } from '@/composables/useSSE'
 import GraphSidePanel from '@/components/GraphSidePanel.vue'
 
 const TYPE_COLORS: Record<string, string> = {
-  person: '#7f8cff',
-  project: '#6bcb77',
-  technology: '#a78bfa',
-  concept: '#d4a056',
-  file: '#6b7280',
-  config: '#c4983c',
-  error: '#e06060',
-  location: '#6bcb77',
-  organization: '#7f8cff',
+  person: '#7b8ec8',
+  project: '#6ba87a',
+  technology: '#9585c4',
+  concept: '#c4a46a',
+  file: '#7a8290',
+  config: '#b09060',
+  error: '#c46b6b',
+  location: '#6b9e8f',
+  organization: '#7d92b0',
 }
 
 const entityTypes = Object.keys(TYPE_COLORS)
@@ -95,6 +96,55 @@ const focusedLabel = ref('')
 
 let graph: Graph | null = null
 let renderer: Sigma | null = null
+
+// Custom label renderer with dark background plate
+function drawLabelWithBg(
+  context: CanvasRenderingContext2D,
+  data: Record<string, any>,
+  settings: Record<string, any>,
+): void {
+  if (!data.label) return
+  const size = settings.labelSize
+  const font = settings.labelFont
+  const weight = settings.labelWeight
+  const color = data.labelColor || 'rgba(255, 255, 255, 0.7)'
+
+  context.font = `${weight} ${size}px ${font}`
+  const textWidth = context.measureText(data.label).width
+  const x = data.x + data.size + 3
+  const y = data.y + size / 3
+
+  // Background plate — tight to text
+  const px = 4, r = 3
+  const rx = x - px, ry = y - size + 1
+  const rw = textWidth + px * 2, rh = size + 3
+  context.fillStyle = 'rgba(10, 10, 14, 0.8)'
+  context.beginPath()
+  context.moveTo(rx + r, ry)
+  context.lineTo(rx + rw - r, ry)
+  context.quadraticCurveTo(rx + rw, ry, rx + rw, ry + r)
+  context.lineTo(rx + rw, ry + rh - r)
+  context.quadraticCurveTo(rx + rw, ry + rh, rx + rw - r, ry + rh)
+  context.lineTo(rx + r, ry + rh)
+  context.quadraticCurveTo(rx, ry + rh, rx, ry + rh - r)
+  context.lineTo(rx, ry + r)
+  context.quadraticCurveTo(rx, ry, rx + r, ry)
+  context.closePath()
+  context.fill()
+
+  // Text
+  context.fillStyle = color
+  context.fillText(data.label, x, y)
+}
+
+// Node program with subtle border for depth
+const BorderedNodeProgram = createNodeBorderProgram({
+  borders: [
+    { size: { value: 0.12 }, color: { value: '#2a2a36' } },
+    { size: { fill: true }, color: { attribute: 'color' } },
+  ],
+  drawLabel: drawLabelWithBg,
+})
 let focusedNode: string | null = null
 let hoveredNode: string | null = null
 const focusedNeighbors = new Set<string>()
@@ -185,6 +235,7 @@ function initSigma() {
       y: node.data.y,
       size: Math.max(3, Math.min(18, Math.sqrt(mc) * 2.8)),
       color: TYPE_COLORS[node.data.type] || '#6b7280',
+      labelColor: 'rgba(255, 255, 255, 0.7)',
       nodeType: node.data.type,
       community: node.data.community,
     })
@@ -215,6 +266,10 @@ function initSigma() {
   })
 
   renderer = new Sigma(graph, sigmaContainer.value, {
+    // Node rendering — bordered circles for depth
+    defaultNodeType: 'bordered',
+    nodeProgramClasses: { bordered: BorderedNodeProgram },
+
     // Edge rendering — gl.LINES for performance
     defaultEdgeType: 'line',
     edgeProgramClasses: { line: EdgeLineProgram },
@@ -223,6 +278,7 @@ function initSigma() {
     enableEdgeEvents: false,
 
     // Labels
+    drawLabel: drawLabelWithBg,
     renderLabels: true,
     labelColor: { attribute: 'labelColor', defaultValue: 'rgba(255, 255, 255, 0.7)' },
     labelSize: 11,
@@ -443,35 +499,37 @@ onUnmounted(() => {
 .type-pill {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 2px 8px;
-  border-radius: 12px;
-  font-size: 10px;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 11px;
   font-weight: 500;
+  letter-spacing: 0.01em;
   border: 1px solid rgba(255, 255, 255, 0.06);
-  background: transparent;
-  color: rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.02);
+  color: rgba(255, 255, 255, 0.35);
   cursor: pointer;
   transition: all 150ms ease;
   font-family: inherit;
 }
 .type-pill.active {
-  color: var(--pill-color);
-  border-color: color-mix(in srgb, var(--pill-color) 30%, transparent);
-  background: color-mix(in srgb, var(--pill-color) 8%, transparent);
+  color: color-mix(in srgb, var(--pill-color) 85%, white);
+  border-color: color-mix(in srgb, var(--pill-color) 25%, transparent);
+  background: color-mix(in srgb, var(--pill-color) 10%, transparent);
 }
 .type-pill:hover {
-  border-color: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
 }
 .type-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 2px;
   background: var(--pill-color);
-  opacity: 0.3;
+  opacity: 0.25;
   transition: opacity 150ms ease;
 }
 .type-pill.active .type-dot {
-  opacity: 1;
+  opacity: 0.9;
 }
 </style>

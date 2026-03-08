@@ -9,15 +9,15 @@
 import { computed } from 'vue'
 
 const TYPE_META: Record<string, { color: string; icon: string }> = {
-  person: { color: '#58a6ff', icon: 'mdi-account' },
-  project: { color: '#3fb950', icon: 'mdi-folder-outline' },
-  technology: { color: '#bc8cff', icon: 'mdi-code-braces' },
-  concept: { color: '#f0883e', icon: 'mdi-lightbulb-outline' },
-  file: { color: '#8b949e', icon: 'mdi-file-outline' },
-  config: { color: '#d29922', icon: 'mdi-cog-outline' },
-  error: { color: '#f85149', icon: 'mdi-alert-circle-outline' },
-  location: { color: '#3fb950', icon: 'mdi-map-marker-outline' },
-  organization: { color: '#58a6ff', icon: 'mdi-domain' },
+  person: { color: '#7b8ec8', icon: 'mdi-account' },
+  project: { color: '#6ba87a', icon: 'mdi-folder-outline' },
+  technology: { color: '#9585c4', icon: 'mdi-code-braces' },
+  concept: { color: '#c4a46a', icon: 'mdi-lightbulb-outline' },
+  file: { color: '#7a8290', icon: 'mdi-file-outline' },
+  config: { color: '#b09060', icon: 'mdi-cog-outline' },
+  error: { color: '#c46b6b', icon: 'mdi-alert-circle-outline' },
+  location: { color: '#6b9e8f', icon: 'mdi-map-marker-outline' },
+  organization: { color: '#7d92b0', icon: 'mdi-domain' },
 }
 
 const props = defineProps<{
