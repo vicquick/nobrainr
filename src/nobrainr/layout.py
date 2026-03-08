@@ -17,7 +17,7 @@ from networkx.algorithms.community import louvain_communities
 
 logger = logging.getLogger("nobrainr")
 
-MERGE_THRESHOLD = 8  # communities smaller than this get merged
+MERGE_THRESHOLD = 15  # communities smaller than this get merged
 
 
 def compute_graph_layout(nodes: list[dict], edges: list[dict]) -> dict:
@@ -89,27 +89,23 @@ def compute_graph_layout(nodes: list[dict], edges: list[dict]) -> dict:
 
     if num_comm == 1:
         meta_pos: dict[int, tuple[float, float]] = {0: (0.0, 0.0)}
-    elif num_comm <= 100:
-        raw_pos = nx.spring_layout(
-            meta_G,
-            k=3.0 / math.sqrt(num_comm),
-            iterations=300,
-            seed=42,
-            scale=base_scale,
-        )
-        meta_pos = {k: (float(v[0]), float(v[1])) for k, v in raw_pos.items()}
-    else:
-        # Too many communities even after merge — use kamada_kawai for better structure
+    elif num_comm <= 200:
+        # Kamada-Kawai preserves graph distances better on sparse graphs
         try:
             raw_pos = nx.kamada_kawai_layout(meta_G, scale=base_scale)
             meta_pos = {k: (float(v[0]), float(v[1])) for k, v in raw_pos.items()}
         except Exception:
-            # Fallback: circle
-            angle_step = 2 * math.pi / num_comm
-            meta_pos = {
-                i: (base_scale * math.cos(i * angle_step), base_scale * math.sin(i * angle_step))
-                for i in range(num_comm)
-            }
+            raw_pos = nx.spring_layout(
+                meta_G, k=3.0 / math.sqrt(num_comm),
+                iterations=300, seed=42, scale=base_scale,
+            )
+            meta_pos = {k: (float(v[0]), float(v[1])) for k, v in raw_pos.items()}
+    else:
+        raw_pos = nx.spring_layout(
+            meta_G, k=3.0 / math.sqrt(num_comm),
+            iterations=300, seed=42, scale=base_scale,
+        )
+        meta_pos = {k: (float(v[0]), float(v[1])) for k, v in raw_pos.items()}
 
     # --- Step 4: Position nodes within each community ---
     result: dict[str, dict] = {}

@@ -27,6 +27,15 @@ async def api_graph(request: Request) -> JSONResponse:
         min_conn = 0
     data = await queries.get_all_entities_for_graph(min_connections=min_conn)
 
+    # Filter to connected nodes only (nodes with at least one edge)
+    connected_only = request.query_params.get("connected_only", "true").lower() != "false"
+    if connected_only:
+        node_ids_in_edges: set[str] = set()
+        for edge in data["edges"]:
+            node_ids_in_edges.add(edge["data"]["source"])
+            node_ids_in_edges.add(edge["data"]["target"])
+        data["nodes"] = [n for n in data["nodes"] if n["data"]["id"] in node_ids_in_edges]
+
     # Compute layout server-side
     from nobrainr.layout import compute_graph_layout
 
