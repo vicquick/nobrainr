@@ -233,7 +233,6 @@ function unfocusNode() {
   focusedNeighbors.clear()
   focusedLabel.value = ''
   renderer?.refresh()
-  renderer?.getCamera().animate({ x: 0.5, y: 0.5, ratio: 1 }, { duration: 400 })
 }
 
 function initSigma() {
