@@ -144,50 +144,34 @@ function zoomToNodes(nodeIds: Set<string> | string[]) {
   const ids = (nodeIds instanceof Set ? [...nodeIds] : nodeIds).filter(id => graph!.hasNode(id))
   if (ids.length === 0) return
 
-  // Bounding box in graph coordinates
+  // Use getNodeDisplayData which returns positions in camera coordinate space
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
   for (const id of ids) {
-    const x = graph.getNodeAttribute(id, 'x')
-    const y = graph.getNodeAttribute(id, 'y')
-    if (x < minX) minX = x
-    if (x > maxX) maxX = x
-    if (y < minY) minY = y
-    if (y > maxY) maxY = y
+    const d = renderer.getNodeDisplayData(id)
+    if (!d) continue
+    if (d.x < minX) minX = d.x
+    if (d.x > maxX) maxX = d.x
+    if (d.y < minY) minY = d.y
+    if (d.y > maxY) maxY = d.y
   }
 
-  const camera = renderer.getCamera()
-  const state = camera.getState()
+  if (minX === Infinity) return
+
+  const cx = (minX + maxX) / 2
+  const cy = (minY + maxY) / 2
+  const dx = maxX - minX
+  const dy = maxY - minY
+
+  // At ratio=R, viewport shows R units vertically and R*aspect horizontally
   const { width, height } = renderer.getDimensions()
-
-  // Convert target center to viewport pixels using Sigma's coordinate system
-  const targetVp = renderer.graphToViewport({
-    x: (minX + maxX) / 2,
-    y: (minY + maxY) / 2,
-  })
-
-  // Pixel offset from viewport center to target center
-  const pxOffX = targetVp.x - width / 2
-  const pxOffY = targetVp.y - height / 2
-
-  // Convert pixel offset to camera-coordinate offset
-  // Sigma maps 1 camera unit ≈ height/ratio pixels
-  const newX = state.x + (pxOffX * state.ratio) / height
-  const newY = state.y + (pxOffY * state.ratio) / height
-
-  // Bounding box pixel extent at current zoom
-  const vpTL = renderer.graphToViewport({ x: minX, y: minY })
-  const vpBR = renderer.graphToViewport({ x: maxX, y: maxY })
-  const bbPxW = Math.abs(vpBR.x - vpTL.x)
-  const bbPxH = Math.abs(vpBR.y - vpTL.y)
-
-  // Scale ratio so bounding box fills viewport with padding
+  const aspect = width / height
   const padding = 1.5
-  const zoomX = bbPxW > 0 ? (bbPxW * padding) / width : 0.05
-  const zoomY = bbPxH > 0 ? (bbPxH * padding) / height : 0.05
-  const newRatio = state.ratio * Math.max(zoomX, zoomY, 0.05)
+  const ratioForWidth = (dx * padding) / aspect
+  const ratioForHeight = dy * padding
+  const newRatio = Math.max(ratioForWidth, ratioForHeight, 0.1)
 
-  camera.animate(
-    { x: newX, y: newY, ratio: Math.max(0.01, Math.min(newRatio, 3)) },
+  renderer.getCamera().animate(
+    { x: cx, y: cy, ratio: Math.max(0.05, Math.min(newRatio, 2)) },
     { duration: 400 },
   )
 }
