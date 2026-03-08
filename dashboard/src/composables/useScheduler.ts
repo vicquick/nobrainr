@@ -1,11 +1,12 @@
 import { ref } from 'vue'
 import api from '@/api/client'
-import type { SchedulerStatus, AgentEvent, FeedbackStats } from '@/types'
+import type { SchedulerStatus, AgentEvent, FeedbackStats, SystemHealth } from '@/types'
 
 export function useScheduler() {
   const status = ref<SchedulerStatus | null>(null)
   const events = ref<AgentEvent[]>([])
   const feedbackStats = ref<FeedbackStats | null>(null)
+  const health = ref<SystemHealth | null>(null)
   const loading = ref(false)
 
   async function fetchScheduler() {
@@ -23,6 +24,7 @@ export function useScheduler() {
         }>
         feedback: FeedbackStats
         recent_events: AgentEvent[]
+        health: SystemHealth
       }>('/api/scheduler')
       status.value = {
         running: data.scheduler_running,
@@ -37,6 +39,7 @@ export function useScheduler() {
       }
       events.value = data.recent_events
       feedbackStats.value = data.feedback
+      health.value = data.health || null
     } finally {
       loading.value = false
     }
@@ -46,6 +49,7 @@ export function useScheduler() {
     status,
     events,
     feedbackStats,
+    health,
     loading,
     fetchScheduler,
   }

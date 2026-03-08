@@ -46,6 +46,32 @@ class Scheduler:
     def running(self) -> bool:
         return self._running
 
+    def get_jobs(self) -> list[dict]:
+        """Return all registered jobs with their configuration."""
+        sql_jobs = [
+            {"name": "maintenance", "interval_hours": settings.maintenance_interval_hours, "type": "sql"},
+            {"name": "feedback_integration", "interval_hours": settings.feedback_interval_hours, "type": "sql"},
+            {"name": "memory_decay", "interval_hours": settings.decay_interval_hours, "type": "sql"},
+        ]
+        llm_jobs = [
+            {"name": "chatgpt_distill", "interval_hours": settings.chatgpt_distill_interval_hours, "type": "llm"},
+            {"name": "auto_summarize", "interval_hours": settings.summarize_interval_hours, "type": "llm"},
+            {"name": "insight_extraction", "interval_hours": settings.insight_extraction_interval_hours, "type": "llm"},
+            {"name": "entity_enrichment", "interval_hours": settings.entity_enrichment_interval_hours, "type": "llm"},
+            {"name": "entity_merging", "interval_hours": settings.entity_merging_interval_hours, "type": "llm"},
+            {"name": "consolidation", "interval_hours": settings.consolidation_interval_hours, "type": "llm"},
+            {"name": "synthesis", "interval_hours": settings.synthesis_interval_hours, "type": "llm"},
+            {"name": "contradiction_detection", "interval_hours": settings.contradiction_interval_hours, "type": "llm"},
+            {"name": "cross_machine_insights", "interval_hours": settings.cross_machine_interval_hours, "type": "llm"},
+            {"name": "extraction_quality", "interval_hours": settings.quality_interval_hours, "type": "llm"},
+            {"name": "knowledge_crawl", "interval_hours": settings.knowledge_crawl_interval_hours, "type": "llm"},
+            {"name": "quality_scoring", "interval_hours": settings.quality_scoring_interval_hours, "type": "llm"},
+            {"name": "entity_web_research", "interval_hours": settings.entity_research_interval_hours, "type": "llm"},
+            {"name": "freshness_recrawl", "interval_hours": settings.freshness_interval_hours, "type": "llm"},
+            {"name": "interest_expansion", "interval_hours": settings.interest_expansion_interval_hours, "type": "llm"},
+        ]
+        return sql_jobs + llm_jobs
+
     def start(self) -> None:
         if self._running:
             return

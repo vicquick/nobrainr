@@ -217,31 +217,46 @@ async def api_scheduler(request: Request) -> JSONResponse:
     from nobrainr.config import settings
     from nobrainr.scheduler import scheduler
 
-    events = await queries.get_scheduler_events(limit=50)
+    events = await queries.get_scheduler_events(limit=100)
     feedback_stats = await queries.get_feedback_stats()
 
-    # Build jobs list with all registered jobs
-    jobs = [
-        {"name": "maintenance", "interval_hours": settings.maintenance_interval_hours, "type": "sql"},
-        {"name": "feedback_integration", "interval_hours": settings.feedback_interval_hours, "type": "sql"},
-        {"name": "auto_summarize", "interval_hours": settings.summarize_interval_hours, "type": "llm"},
-        {"name": "insight_extraction", "interval_hours": settings.insight_extraction_interval_hours, "type": "llm"},
-        {"name": "entity_enrichment", "interval_hours": settings.entity_enrichment_interval_hours, "type": "llm"},
-        {"name": "consolidation", "interval_hours": settings.consolidation_interval_hours, "type": "llm"},
-        {"name": "synthesis", "interval_hours": settings.synthesis_interval_hours, "type": "llm"},
-        {"name": "chatgpt_distill", "interval_hours": settings.chatgpt_distill_interval_hours, "type": "llm"},
-        {"name": "entity_merging", "interval_hours": settings.entity_merging_interval_hours, "type": "llm"},
-        {"name": "contradiction_detection", "interval_hours": settings.contradiction_interval_hours, "type": "llm"},
-        {"name": "cross_machine_insights", "interval_hours": settings.cross_machine_interval_hours, "type": "llm"},
-        {"name": "extraction_quality", "interval_hours": settings.quality_interval_hours, "type": "llm"},
-        {"name": "memory_decay", "interval_hours": settings.decay_interval_hours, "type": "sql"},
-    ]
+    # Dynamic job discovery from scheduler registry
+    jobs = scheduler.get_jobs()
 
     # Enrich with last_run and run_count from events
     for job in jobs:
         job_events = [e for e in events if e.get("metadata", {}).get("job") == job["name"]]
         job["last_run"] = job_events[0]["created_at"] if job_events else None
         job["run_count"] = len(job_events)
+
+    # System health stats for dashboard
+    from nobrainr.db.pool import get_pool
+    health = {}
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            health["total_memories"] = await conn.fetchval("SELECT COUNT(*) FROM memories")
+            health["extraction_done"] = await conn.fetchval(
+                "SELECT COUNT(*) FROM memories WHERE extraction_status = 'done'"
+            )
+            health["extraction_pending"] = await conn.fetchval(
+                "SELECT COUNT(*) FROM memories WHERE extraction_status IS NULL OR extraction_status = 'failed'"
+            )
+            health["total_entities"] = await conn.fetchval("SELECT COUNT(*) FROM entities")
+            health["total_relations"] = await conn.fetchval("SELECT COUNT(*) FROM entity_relations")
+            health["undistilled"] = await conn.fetchval(
+                "SELECT COUNT(*) FROM conversations_raw "
+                "WHERE source_type IN ('chatgpt', 'claude_web') "
+                "AND (metadata->>'distilled') IS NULL"
+            )
+            health["quality_scored"] = await conn.fetchval(
+                "SELECT COUNT(*) FROM memories WHERE quality_score IS NOT NULL"
+            )
+            health["quality_unscored"] = await conn.fetchval(
+                "SELECT COUNT(*) FROM memories WHERE quality_score IS NULL"
+            )
+    except Exception:
+        pass
 
     # Map feedback stats to frontend-expected shape
     total = feedback_stats.get("feedback_total", 0)
@@ -275,6 +290,7 @@ async def api_scheduler(request: Request) -> JSONResponse:
         "jobs": jobs,
         "feedback": feedback,
         "recent_events": mapped_events,
+        "health": health,
     })
 
 
