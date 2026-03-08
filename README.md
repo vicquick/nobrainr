@@ -59,6 +59,10 @@ graph TB
     style Storage fill:#0d1117,stroke:#30363d,color:#e6e6e6
 ```
 
+<p align="center">
+  <img src="docs/nobrainr-architecture.png" alt="nobrainr Knowledge Flywheel Architecture" width="800">
+</p>
+
 Fully local. No API keys. No cloud. Your data stays on your hardware. Built on PostgreSQL + pgvector for storage, Ollama for free local embeddings, and MCP as the standard interface.
 
 ## Quick start

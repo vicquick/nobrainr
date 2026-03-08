@@ -12,3 +12,7 @@ site/
 .pytest_cache/
 .claude/
 node_modules/
+
+# Screenshots & test artifacts (root-level only)
+/*.png
+.playwright-mcp/
