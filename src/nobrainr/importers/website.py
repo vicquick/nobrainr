@@ -1,4 +1,4 @@
-"""Import website content from PHP files (my-website travel/philosophy writing)."""
+"""Import website content from PHP files (static site content)."""
 
 import logging
 import re

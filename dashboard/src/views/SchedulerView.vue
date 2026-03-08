@@ -6,6 +6,84 @@
     </template>
 
     <template v-else>
+      <!-- System Health -->
+      <v-card v-if="health" class="mb-4 scheduler-card">
+        <div class="d-flex align-center pa-4" style="border-bottom: 1px solid rgba(255,255,255,0.04);">
+          <v-icon icon="mdi-heart-pulse" size="20" class="mr-2 text-medium-emphasis" />
+          <span class="text-subtitle-1 font-weight-bold">System Health</span>
+        </div>
+
+        <v-card-text class="pa-4">
+          <!-- Top stats row -->
+          <div class="d-flex ga-3 mb-5 flex-wrap">
+            <div class="text-center flex-grow-1 health-stat">
+              <div class="text-h5 font-weight-bold">{{ health.total_memories?.toLocaleString() }}</div>
+              <div class="text-caption text-medium-emphasis mt-1">Memories</div>
+            </div>
+            <div class="text-center flex-grow-1 health-stat">
+              <div class="text-h5 font-weight-bold">{{ health.total_entities?.toLocaleString() }}</div>
+              <div class="text-caption text-medium-emphasis mt-1">Entities</div>
+            </div>
+            <div class="text-center flex-grow-1 health-stat">
+              <div class="text-h5 font-weight-bold">{{ health.total_relations?.toLocaleString() }}</div>
+              <div class="text-caption text-medium-emphasis mt-1">Relations</div>
+            </div>
+          </div>
+
+          <!-- Extraction progress -->
+          <div class="mb-4">
+            <div class="d-flex align-center justify-space-between mb-2">
+              <span class="text-body-2 text-medium-emphasis">Entity Extraction</span>
+              <span class="text-body-2 font-weight-bold" :class="extractionPct >= 90 ? 'text-success' : 'text-warning'">
+                {{ health.extraction_done?.toLocaleString() }} / {{ (health.extraction_done + health.extraction_pending)?.toLocaleString() }}
+                <span class="text-medium-emphasis font-weight-regular ml-1">({{ extractionPct }}%)</span>
+              </span>
+            </div>
+            <v-progress-linear
+              :model-value="extractionPct"
+              :color="extractionPct >= 90 ? 'success' : 'warning'"
+              height="10"
+              rounded
+              bg-color="surface-bright"
+            />
+            <div v-if="health.extraction_pending > 0" class="text-caption text-medium-emphasis mt-1">
+              {{ health.extraction_pending?.toLocaleString() }} pending
+            </div>
+          </div>
+
+          <!-- Quality scoring progress -->
+          <div class="mb-4">
+            <div class="d-flex align-center justify-space-between mb-2">
+              <span class="text-body-2 text-medium-emphasis">Quality Scoring</span>
+              <span class="text-body-2 font-weight-bold" :class="qualityPct >= 90 ? 'text-success' : 'text-info'">
+                {{ health.quality_scored?.toLocaleString() }} / {{ (health.quality_scored + health.quality_unscored)?.toLocaleString() }}
+                <span class="text-medium-emphasis font-weight-regular ml-1">({{ qualityPct }}%)</span>
+              </span>
+            </div>
+            <v-progress-linear
+              :model-value="qualityPct"
+              :color="qualityPct >= 90 ? 'success' : 'info'"
+              height="10"
+              rounded
+              bg-color="surface-bright"
+            />
+            <div v-if="health.quality_unscored > 0" class="text-caption text-medium-emphasis mt-1">
+              {{ health.quality_unscored?.toLocaleString() }} unscored
+            </div>
+          </div>
+
+          <!-- Undistilled conversations -->
+          <div v-if="health.undistilled > 0">
+            <div class="d-flex align-center justify-space-between mb-2">
+              <span class="text-body-2 text-medium-emphasis">Undistilled Conversations</span>
+              <v-chip size="small" variant="tonal" color="warning" class="font-weight-bold">
+                {{ health.undistilled }}
+              </v-chip>
+            </div>
+          </div>
+        </v-card-text>
+      </v-card>
+
       <v-row>
         <!-- Scheduler Status -->
         <v-col cols="12" lg="7">
@@ -159,11 +237,23 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useScheduler } from '@/composables/useScheduler'
 import { useSSE } from '@/composables/useSSE'
 
-const { status, events, feedbackStats, loading, fetchScheduler } = useScheduler()
+const { status, events, feedbackStats, health, loading, fetchScheduler } = useScheduler()
+
+const extractionPct = computed(() => {
+  if (!health.value) return 0
+  const total = health.value.extraction_done + health.value.extraction_pending
+  return total > 0 ? Math.round((health.value.extraction_done / total) * 100) : 100
+})
+
+const qualityPct = computed(() => {
+  if (!health.value) return 0
+  const total = health.value.quality_scored + health.value.quality_unscored
+  return total > 0 ? Math.round((health.value.quality_scored / total) * 100) : 100
+})
 
 function formatRelative(iso: string) {
   const diff = Date.now() - new Date(iso).getTime()
@@ -214,6 +304,12 @@ onMounted(() => {
   padding: 12px;
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.02);
+}
+.health-stat {
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  min-width: 100px;
 }
 .skeleton-block {
   background: linear-gradient(90deg, rgb(var(--v-theme-surface)) 25%, rgba(255,255,255,0.03) 50%, rgb(var(--v-theme-surface)) 75%);

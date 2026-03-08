@@ -94,6 +94,17 @@ export interface FeedbackStats {
   positive_rate: number
 }
 
+export interface SystemHealth {
+  total_memories: number
+  extraction_done: number
+  extraction_pending: number
+  total_entities: number
+  total_relations: number
+  undistilled: number
+  quality_scored: number
+  quality_unscored: number
+}
+
 export interface ChatSources {
   memories: Array<{ id: string; summary: string | null; content: string }>
   entities: Array<{ id: string; name: string; entity_type: string }>
