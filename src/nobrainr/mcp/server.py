@@ -788,6 +788,138 @@ async def memory_import_claude(directory: str, machine_name: str | None = None) 
     return await import_claude_memory(str(resolved), machine_name=machine_name)
 
 
+@mcp.tool()
+async def memory_import_claude_web(
+    file_path: str, source_machine: str | None = None,
+) -> dict:
+    """Import Claude.ai web export (conversations.json from Settings → Export Data).
+
+    Args:
+        file_path: Path to conversations.json from Claude.ai export ZIP.
+        source_machine: Machine identifier.
+    """
+    from pathlib import Path
+    resolved = Path(file_path).resolve()
+    if not resolved.is_file():
+        return {"error": f"File not found: {file_path}"}
+    from nobrainr.importers.claude_web import import_claude_web_export
+    return await import_claude_web_export(str(resolved), source_machine=source_machine)
+
+
+@mcp.tool()
+async def memory_import_claude_memories(
+    file_path: str, source_machine: str | None = None,
+) -> dict:
+    """Import Claude.ai memories.json (built-in user memory from export).
+
+    Args:
+        file_path: Path to memories.json from Claude.ai export ZIP.
+        source_machine: Machine identifier.
+    """
+    from pathlib import Path
+    resolved = Path(file_path).resolve()
+    if not resolved.is_file():
+        return {"error": f"File not found: {file_path}"}
+    from nobrainr.importers.claude_web import import_claude_memories
+    return await import_claude_memories(str(resolved), source_machine=source_machine)
+
+
+@mcp.tool()
+async def memory_import_claude_projects(
+    file_path: str, source_machine: str | None = None,
+) -> dict:
+    """Import Claude.ai projects.json (project descriptions from export).
+
+    Args:
+        file_path: Path to projects.json from Claude.ai export ZIP.
+        source_machine: Machine identifier.
+    """
+    from pathlib import Path
+    resolved = Path(file_path).resolve()
+    if not resolved.is_file():
+        return {"error": f"File not found: {file_path}"}
+    from nobrainr.importers.claude_web import import_claude_projects
+    return await import_claude_projects(str(resolved), source_machine=source_machine)
+
+
+@mcp.tool()
+async def memory_import_sticky_notes(
+    file_path: str, source_machine: str | None = None,
+) -> dict:
+    """Import Windows Sticky Notes from CSV export.
+
+    Args:
+        file_path: Path to stickynotes.CSV file.
+        source_machine: Machine identifier (default: workpc).
+    """
+    from pathlib import Path
+    resolved = Path(file_path).resolve()
+    if not resolved.is_file():
+        return {"error": f"File not found: {file_path}"}
+    from nobrainr.importers.sticky_notes import import_sticky_notes
+    return await import_sticky_notes(str(resolved), source_machine=source_machine)
+
+
+@mcp.tool()
+async def memory_import_markdown_notes(
+    directory: str,
+    source_type: str = "google_keep",
+    source_machine: str | None = None,
+) -> dict:
+    """Import markdown notes with YAML frontmatter from a directory.
+
+    Args:
+        directory: Path to directory containing .md files.
+        source_type: Type identifier (google_keep, affine_memos).
+        source_machine: Machine identifier.
+    """
+    from pathlib import Path
+    resolved = Path(directory).resolve()
+    if not resolved.is_dir():
+        return {"error": f"Directory not found: {directory}"}
+    from nobrainr.importers.markdown_notes import import_markdown_notes
+    return await import_markdown_notes(str(resolved), source_type=source_type, source_machine=source_machine)
+
+
+@mcp.tool()
+async def memory_import_docx(
+    directory: str, source_machine: str | None = None,
+) -> dict:
+    """Import .docx files from a directory (Google Docs, Nextcloud documents).
+
+    Args:
+        directory: Path to directory containing .docx files (searched recursively).
+        source_machine: Machine identifier.
+    """
+    from pathlib import Path
+    resolved = Path(directory).resolve()
+    if not resolved.is_dir():
+        return {"error": f"Directory not found: {directory}"}
+    from nobrainr.importers.docx_importer import import_docx_files
+    return await import_docx_files(str(resolved), source_machine=source_machine)
+
+
+@mcp.tool()
+async def memory_import_website(
+    directory: str,
+    website_name: str = "my-website",
+    source_machine: str | None = None,
+) -> dict:
+    """Import website content from PHP files.
+
+    Args:
+        directory: Path to directory containing PHP files.
+        website_name: Name of the website for tagging.
+        source_machine: Machine identifier.
+    """
+    from pathlib import Path
+    resolved = Path(directory).resolve()
+    if not resolved.is_dir():
+        return {"error": f"Directory not found: {directory}"}
+    from nobrainr.importers.website import import_website_content
+    return await import_website_content(str(resolved), source_machine=source_machine, website_name=website_name)
+
+
 # ──────────────────────────────────────────────
 # Entry points
 # ──────────────────────────────────────────────

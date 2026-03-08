@@ -155,7 +155,7 @@ async def distill_conversations(
             """
             SELECT id, title, messages, metadata
             FROM conversations_raw
-            WHERE source_type = 'chatgpt'
+            WHERE source_type IN ('chatgpt', 'claude_web')
               AND (metadata->>'distilled') IS NULL
             ORDER BY imported_at ASC
             LIMIT $1
