@@ -734,6 +734,317 @@ async def knowledge_crawl() -> dict:
     return await _crawl()
 
 
+async def freshness_recrawl() -> dict:
+    """Re-crawl stale documentation and update changed content."""
+    if not settings.freshness_enabled:
+        return {"skipped": True, "reason": "disabled", "ran_at": datetime.now().isoformat()}
+    from nobrainr.crawler.knowledge import freshness_recrawl as _recrawl
+    return await _recrawl()
+
+
+# ──────────────────────────────────────────────
+# Phase 3: Entity web research
+# ──────────────────────────────────────────────
+
+RESEARCH_QUERY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "should_research": {
+            "type": "boolean",
+            "description": "Whether this entity would benefit from web research",
+        },
+        "search_url": {
+            "type": "string",
+            "description": "A single authoritative documentation URL to crawl (official docs preferred). Must be a full https:// URL.",
+        },
+        "reason": {
+            "type": "string",
+            "description": "Brief reason for the research recommendation",
+        },
+    },
+    "required": ["should_research", "search_url", "reason"],
+}
+
+
+async def entity_web_research() -> dict:
+    """Research underdescribed entities by crawling authoritative web sources.
+
+    Finds important entities (5+ mentions) that lack good descriptions or
+    web-sourced knowledge, asks the LLM to suggest a documentation URL,
+    then crawls and stores it.
+    """
+    if not settings.entity_research_enabled:
+        return {"skipped": True, "reason": "disabled", "ran_at": datetime.now().isoformat()}
+
+    model = settings.scheduler_llm_model
+    candidates = await queries.get_research_candidates(
+        min_mentions=settings.entity_research_min_mentions,
+        cooldown_days=settings.entity_research_cooldown_days,
+        limit=settings.entity_research_batch_size,
+    )
+    if not candidates:
+        return {"researched": 0, "stored": 0, "ran_at": datetime.now().isoformat()}
+
+    from nobrainr.crawler.knowledge import _crawl_url, _is_already_crawled
+    from nobrainr.services.memory import store_memory_with_extraction
+
+    researched = 0
+    stored = 0
+
+    for entity in candidates:
+        try:
+            # Build context from existing memories
+            contents = entity.get("memory_contents", [])
+            context = "\n".join(c[:200] for c in contents[:5]) if contents else "No existing context"
+
+            # Ask LLM to suggest a documentation URL
+            result = await ollama_chat(
+                system=(
+                    "You are a research assistant. Given an entity from a knowledge graph, "
+                    "determine if it would benefit from web research and suggest a single "
+                    "authoritative documentation URL to crawl. Prefer official documentation "
+                    "sites (docs.*, github.com, MDN, etc). Only suggest URLs you're confident "
+                    "exist and are publicly accessible. Return should_research=false for generic "
+                    "concepts that don't have specific documentation pages."
+                ),
+                user=(
+                    f"Entity: {entity['name']} (type: {entity['entity_type']})\n"
+                    f"Current description: {entity.get('description', 'none')}\n"
+                    f"Mentions: {entity['mention_count']}\n\n"
+                    f"Context from related memories:\n{context}\n\n"
+                    "Should we research this entity? If yes, suggest the best documentation URL."
+                ),
+                schema=RESEARCH_QUERY_SCHEMA,
+                model=model,
+                timeout=60.0,
+                think=False,
+            )
+
+            researched += 1
+
+            if not result.get("should_research"):
+                # Log that we checked but skipped
+                await queries.log_agent_event(
+                    event_type="web_research",
+                    description=f"Skipped web research for {entity['name']}: {result.get('reason', '')}",
+                    agent_id="scheduler",
+                    category="system",
+                    metadata={"entity_id": entity["id"], "skipped": True},
+                )
+                await _yield_to_live_requests()
+                continue
+
+            url = result.get("search_url", "").strip()
+            if not url or not url.startswith("http"):
+                await _yield_to_live_requests()
+                continue
+
+            # Skip if already crawled
+            if await _is_already_crawled(url):
+                await queries.log_agent_event(
+                    event_type="web_research",
+                    description=f"URL already crawled for {entity['name']}: {url}",
+                    agent_id="scheduler",
+                    category="system",
+                    metadata={"entity_id": entity["id"], "url": url, "already_crawled": True},
+                )
+                await _yield_to_live_requests()
+                continue
+
+            # Crawl the URL
+            crawl_result = await _crawl_url(url)
+            if not crawl_result:
+                await _yield_to_live_requests()
+                continue
+
+            markdown = crawl_result["markdown"][:8000]
+            if len(markdown.strip()) < 100:
+                await _yield_to_live_requests()
+                continue
+
+            # Store the research
+            tags = ["crawled", "entity-research", entity["entity_type"], entity["canonical_name"]]
+            store_result = await store_memory_with_extraction(
+                content=markdown,
+                summary=f"Research: {entity['name']} — {crawl_result['title']}"[:200],
+                source_type="crawl",
+                source_machine=settings.source_machine or "unknown",
+                source_ref=url,
+                tags=tags,
+                category="documentation",
+                confidence=0.8,
+                metadata={"researched_entity": entity["name"], "entity_id": entity["id"]},
+            )
+
+            if store_result.get("status") in ("stored", "merged"):
+                stored += 1
+                logger.info(
+                    "Entity research stored: %s → %s (%s)",
+                    entity["name"], url, crawl_result["title"],
+                )
+
+            # Log the research event (for cooldown tracking)
+            await queries.log_agent_event(
+                event_type="web_research",
+                description=f"Researched {entity['name']}: {url}",
+                agent_id="scheduler",
+                category="system",
+                metadata={"entity_id": entity["id"], "url": url, "title": crawl_result["title"]},
+            )
+
+        except Exception:
+            logger.exception("entity_web_research failed for %s", entity["name"])
+
+        await _yield_to_live_requests()
+
+    return {
+        "researched": researched,
+        "stored": stored,
+        "ran_at": datetime.now().isoformat(),
+    }
+
+
+# ──────────────────────────────────────────────
+# Phase 5: Interest-based expansion
+# ──────────────────────────────────────────────
+
+INTEREST_RESEARCH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "should_research": {
+            "type": "boolean",
+            "description": "Whether this topic warrants web research",
+        },
+        "search_url": {
+            "type": "string",
+            "description": "A documentation URL to crawl for this topic (full https:// URL)",
+        },
+        "refined_topic": {
+            "type": "string",
+            "description": "A more specific version of the topic for storage tags",
+        },
+    },
+    "required": ["should_research", "search_url", "refined_topic"],
+}
+
+
+async def interest_expansion() -> dict:
+    """Research hot topics based on accumulated interest signals.
+
+    Looks at what agents have been searching for and working on,
+    identifies knowledge gaps, and proactively crawls relevant documentation.
+    """
+    if not settings.interest_tracking_enabled:
+        return {"skipped": True, "reason": "disabled", "ran_at": datetime.now().isoformat()}
+
+    model = settings.scheduler_llm_model
+    hot_topics = await queries.get_hot_topics(
+        decay_days=settings.interest_signal_decay_days,
+        limit=settings.interest_expansion_batch_size * 2,  # fetch more, filter later
+    )
+    if not hot_topics:
+        return {"researched": 0, "stored": 0, "ran_at": datetime.now().isoformat()}
+
+    from nobrainr.crawler.knowledge import _crawl_url, _is_already_crawled
+    from nobrainr.services.memory import store_memory_with_extraction
+
+    researched = 0
+    stored = 0
+
+    for topic_data in hot_topics[:settings.interest_expansion_batch_size]:
+        topic = topic_data["topic"]
+        score = topic_data["score"]
+
+        try:
+            # Check if recently researched
+            status = await queries.get_topic_research_status(topic)
+            if status:
+                continue
+
+            # Ask LLM to suggest a research URL
+            result = await ollama_chat(
+                system=(
+                    "You are a research assistant. Given a topic that AI agents have been "
+                    "frequently searching for, suggest the best authoritative URL to crawl "
+                    "for up-to-date documentation or knowledge. Only suggest URLs you're "
+                    "confident exist. Return should_research=false for vague or overly broad topics."
+                ),
+                user=(
+                    f"Hot topic: \"{topic}\" (interest score: {score:.2f}, "
+                    f"signals: {topic_data['signal_count']})\n\n"
+                    "Should we research this? If yes, suggest the best documentation URL."
+                ),
+                schema=INTEREST_RESEARCH_SCHEMA,
+                model=model,
+                timeout=60.0,
+                think=False,
+            )
+
+            if not result.get("should_research"):
+                await _yield_to_live_requests()
+                continue
+
+            url = result.get("search_url", "").strip()
+            if not url or not url.startswith("http"):
+                await _yield_to_live_requests()
+                continue
+
+            if await _is_already_crawled(url):
+                await _yield_to_live_requests()
+                continue
+
+            # Crawl it
+            crawl_result = await _crawl_url(url)
+            if not crawl_result:
+                await _yield_to_live_requests()
+                continue
+
+            markdown = crawl_result["markdown"][:8000]
+            if len(markdown.strip()) < 100:
+                await _yield_to_live_requests()
+                continue
+
+            refined = result.get("refined_topic", topic)
+            tags = ["crawled", "interest-research", refined.lower().replace(" ", "-")]
+            store_result = await store_memory_with_extraction(
+                content=markdown,
+                summary=f"Interest research: {refined} — {crawl_result['title']}"[:200],
+                source_type="crawl",
+                source_machine=settings.source_machine or "unknown",
+                source_ref=url,
+                tags=tags,
+                category="documentation",
+                confidence=0.75,
+                metadata={"interest_topic": topic, "interest_score": score},
+            )
+
+            if store_result.get("status") in ("stored", "merged"):
+                stored += 1
+                logger.info("Interest research stored: %s → %s", topic, url)
+
+            # Log for cooldown
+            await queries.log_agent_event(
+                event_type="interest_research",
+                description=f"Researched interest topic: {topic} → {url}",
+                agent_id="scheduler",
+                category="system",
+                metadata={"topic": topic, "url": url, "score": score},
+            )
+
+            researched += 1
+
+        except Exception:
+            logger.exception("interest_expansion failed for topic %s", topic)
+
+        await _yield_to_live_requests()
+
+    return {
+        "researched": researched,
+        "stored": stored,
+        "ran_at": datetime.now().isoformat(),
+    }
+
+
 QUALITY_SCHEMA = {
     "type": "object",
     "properties": {
