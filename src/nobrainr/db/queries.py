@@ -1103,7 +1103,8 @@ async def get_memory_entities(memory_id: str) -> list[dict]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT e.id, e.name, e.entity_type, em.role, em.confidence
+            SELECT e.id, e.name, e.canonical_name, e.entity_type,
+                   e.description, em.role, em.confidence
             FROM entities e
             JOIN entity_memories em ON em.entity_id = e.id
             WHERE em.memory_id = $1
