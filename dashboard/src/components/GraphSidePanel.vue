@@ -1,104 +1,92 @@
 <template>
-  <v-navigation-drawer
-    :model-value="!!node"
-    location="right"
-    width="420"
-    temporary
-    scrim="rgba(0,0,0,0.5)"
-    class="side-panel"
-    @update:model-value="!$event && $emit('close')"
-  >
-    <template v-if="node">
-      <div class="d-flex flex-column fill-height">
-        <!-- Header -->
-        <div class="panel-header pa-4">
-          <div class="d-flex align-center mb-2">
-            <EntityBadge :type="node.entity.entity_type" />
-            <v-spacer />
-            <v-btn icon="mdi-close" variant="text" size="x-small" @click="$emit('close')" />
-          </div>
-          <div class="entity-name">
-            {{ node.entity.canonical_name }}
-          </div>
-          <div v-if="node.entity.description" class="entity-description mt-1">
-            {{ node.entity.description }}
-          </div>
-          <div class="d-flex ga-3 mt-3">
-            <div class="stat-item">
-              <v-icon icon="mdi-eye-outline" size="13" />
-              {{ node.entity.mention_count }} mentions
+  <div v-if="node" class="d-flex flex-column fill-height">
+    <!-- Header -->
+    <div class="panel-header pa-4">
+      <div class="d-flex align-center mb-2">
+        <EntityBadge :type="node.entity.entity_type" />
+        <v-spacer />
+        <v-btn icon="mdi-close" variant="text" size="x-small" @click="$emit('close')" />
+      </div>
+      <div class="entity-name">
+        {{ node.entity.canonical_name }}
+      </div>
+      <div v-if="node.entity.description" class="entity-description mt-1">
+        {{ node.entity.description }}
+      </div>
+      <div class="d-flex ga-3 mt-3">
+        <div class="stat-item">
+          <v-icon icon="mdi-eye-outline" size="13" />
+          {{ node.entity.mention_count }} mentions
+        </div>
+        <div class="stat-item">
+          <v-icon icon="mdi-clock-outline" size="13" />
+          {{ new Date(node.entity.created_at).toLocaleDateString() }}
+        </div>
+      </div>
+    </div>
+
+    <!-- Content -->
+    <div class="flex-grow-1 pa-4" style="overflow-y: auto;">
+      <!-- Connections -->
+      <div v-if="node.connections.length" class="mb-5">
+        <div class="section-header mb-3">
+          <v-icon icon="mdi-link-variant" size="15" />
+          <span>Connections</span>
+          <v-chip size="x-small" variant="tonal" color="primary" class="ml-2">{{ node.connections.length }}</v-chip>
+        </div>
+        <div class="connections-list">
+          <div
+            v-for="(conn, i) in node.connections"
+            :key="i"
+            class="connection-item d-flex align-center pa-2 rounded-lg"
+          >
+            <v-icon
+              :icon="conn.direction === 'outgoing' ? 'mdi-arrow-right' : 'mdi-arrow-left'"
+              size="13"
+              :color="conn.direction === 'outgoing' ? '#7b8ec8' : '#6ba87a'"
+              class="mr-2 flex-shrink-0"
+            />
+            <div class="flex-grow-1" style="min-width: 0;">
+              <span class="conn-relation">{{ conn.relationship_type }}</span>
+              <span class="conn-target">{{ conn.connected_name }}</span>
             </div>
-            <div class="stat-item">
-              <v-icon icon="mdi-clock-outline" size="13" />
-              {{ new Date(node.entity.created_at).toLocaleDateString() }}
-            </div>
+            <span class="conn-confidence">
+              {{ (conn.confidence * 100).toFixed(0) }}%
+            </span>
           </div>
         </div>
+      </div>
 
-        <!-- Content -->
-        <div class="flex-grow-1 pa-4" style="overflow-y: auto;">
-          <!-- Connections -->
-          <div v-if="node.connections.length" class="mb-5">
-            <div class="section-header mb-3">
-              <v-icon icon="mdi-link-variant" size="15" />
-              <span>Connections</span>
-              <v-chip size="x-small" variant="tonal" color="primary" class="ml-2">{{ node.connections.length }}</v-chip>
+      <!-- Related Memories -->
+      <div v-if="node.memories.length">
+        <div class="section-header mb-3">
+          <v-icon icon="mdi-brain" size="15" />
+          <span>Memories</span>
+          <v-chip size="x-small" variant="tonal" color="primary" class="ml-2">{{ node.memories.length }}</v-chip>
+        </div>
+        <div class="d-flex flex-column ga-2">
+          <div
+            v-for="mem in node.memories.slice(0, 15)"
+            :key="mem.id"
+            class="memory-item pa-3 rounded-lg"
+          >
+            <div class="memory-text mb-1">
+              {{ mem.summary || mem.content.slice(0, 120) + '...' }}
             </div>
-            <div class="connections-list">
-              <div
-                v-for="(conn, i) in node.connections"
-                :key="i"
-                class="connection-item d-flex align-center pa-2 rounded-lg"
-              >
-                <v-icon
-                  :icon="conn.direction === 'outgoing' ? 'mdi-arrow-right' : 'mdi-arrow-left'"
-                  size="13"
-                  :color="conn.direction === 'outgoing' ? '#7f8cff' : '#6bcb77'"
-                  class="mr-2 flex-shrink-0"
-                />
-                <div class="flex-grow-1" style="min-width: 0;">
-                  <span class="conn-relation">{{ conn.relationship_type }}</span>
-                  <span class="conn-target">{{ conn.connected_name }}</span>
-                </div>
-                <span class="conn-confidence">
-                  {{ (conn.confidence * 100).toFixed(0) }}%
-                </span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Related Memories -->
-          <div v-if="node.memories.length">
-            <div class="section-header mb-3">
-              <v-icon icon="mdi-brain" size="15" />
-              <span>Memories</span>
-              <v-chip size="x-small" variant="tonal" color="primary" class="ml-2">{{ node.memories.length }}</v-chip>
-            </div>
-            <div class="d-flex flex-column ga-2">
-              <div
-                v-for="mem in node.memories.slice(0, 15)"
-                :key="mem.id"
-                class="memory-item pa-3 rounded-lg"
-              >
-                <div class="memory-text mb-1">
-                  {{ mem.summary || mem.content.slice(0, 120) + '...' }}
-                </div>
-                <div class="d-flex align-center ga-2">
-                  <v-chip v-if="mem.category" size="x-small" variant="tonal" color="primary">
-                    {{ mem.category }}
-                  </v-chip>
-                  <v-spacer />
-                  <span class="memory-date">
-                    {{ new Date(mem.created_at).toLocaleDateString() }}
-                  </span>
-                </div>
-              </div>
+            <div class="d-flex align-center ga-2">
+              <v-chip v-if="mem.category" size="x-small" variant="tonal" color="primary">
+                {{ mem.category }}
+              </v-chip>
+              <v-spacer />
+              <span class="memory-date">
+                {{ new Date(mem.created_at).toLocaleDateString() }}
+              </span>
             </div>
           </div>
         </div>
       </div>
-    </template>
-  </v-navigation-drawer>
+    </div>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -115,10 +103,6 @@ defineEmits<{
 </script>
 
 <style scoped>
-.side-panel {
-  background: #12121a !important;
-  border-left: 1px solid rgba(255, 255, 255, 0.08) !important;
-}
 .panel-header {
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.02);

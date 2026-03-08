@@ -89,3 +89,16 @@ export interface FeedbackStats {
   negative: number
   positive_rate: number
 }
+
+export interface ChatSources {
+  memories: Array<{ id: string; summary: string | null; content: string }>
+  entities: Array<{ id: string; name: string; entity_type: string }>
+}
+
+export interface ChatMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  sources?: ChatSources
+  timestamp: number
+}

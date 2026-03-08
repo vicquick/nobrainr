@@ -1,14 +1,22 @@
 """API endpoints — pure JSON responses + SSE stream."""
 
+import time
+from collections import defaultdict
 from uuid import UUID
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
+from nobrainr.config import settings
 from nobrainr.db import queries
 from nobrainr.embeddings.ollama import embed_text
 from nobrainr.events import subscribe
+
+# Simple in-memory rate limiter for chat
+_chat_rate: dict[str, list[float]] = defaultdict(list)
+_CHAT_RATE_LIMIT = 10  # requests per minute
+_CHAT_RATE_WINDOW = 60.0  # seconds
 
 
 def _valid_uuid(value: str) -> bool:
@@ -381,7 +389,46 @@ async def api_tags(request: Request) -> JSONResponse:
     return JSONResponse(tags)
 
 
+async def api_chat(request: Request) -> StreamingResponse | JSONResponse:
+    """RAG chatbot — streams SSE tokens from Ollama with memory context."""
+    if not settings.chat_enabled:
+        return JSONResponse({"error": "Chat is disabled"}, status_code=503)
+
+    # Rate limit by IP
+    ip = request.client.host if request.client else "unknown"
+    now = time.monotonic()
+    _chat_rate[ip] = [t for t in _chat_rate[ip] if now - t < _CHAT_RATE_WINDOW]
+    if len(_chat_rate[ip]) >= _CHAT_RATE_LIMIT:
+        return JSONResponse({"error": "Rate limit exceeded. Try again in a minute."}, status_code=429)
+    _chat_rate[ip].append(now)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    message = body.get("message", "")
+    if not isinstance(message, str) or not message.strip():
+        return JSONResponse({"error": "Message required"}, status_code=400)
+    if len(message) > settings.chat_max_message_length:
+        return JSONResponse({"error": f"Message too long (max {settings.chat_max_message_length})"}, status_code=400)
+
+    history = body.get("history", [])
+    if not isinstance(history, list):
+        history = []
+    history = history[-settings.chat_max_history_length:]
+
+    from nobrainr.chat.rag import stream_chat_response
+
+    return StreamingResponse(
+        stream_chat_response(message, history),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 api_routes = [
+    Route("/api/chat", api_chat, methods=["POST"]),
     Route("/api/graph", api_graph),
     Route("/api/memories", api_memories),
     Route("/api/memories/{memory_id}", api_memory_detail, methods=["GET"]),
