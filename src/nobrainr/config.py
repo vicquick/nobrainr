@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     default_search_limit: int = 10
     default_similarity_threshold: float = 0.3
 
+    # Crawl4AI
+    crawl4ai_url: str = "http://crawl4ai:11235"
+    crawl4ai_api_token: str = ""
+
     # Security
     cors_origins: list[str] = ["http://localhost:8420"]
     max_content_length: int = 50000  # 50KB max memory content
