@@ -35,7 +35,7 @@ class Scheduler:
     def __init__(self):
         self._tasks: list[asyncio.Task] = []
         self._running = False
-        self._llm_semaphore = asyncio.Semaphore(6)  # match Ollama NUM_PARALLEL=8 (leave headroom)
+        self._llm_semaphore = asyncio.Semaphore(settings.scheduler_llm_concurrency)
 
     @property
     def running(self) -> bool:

@@ -40,6 +40,7 @@ class Settings(BaseSettings):
 
     # Scheduler
     scheduler_enabled: bool = True
+    scheduler_llm_concurrency: int = 3  # max concurrent LLM jobs (leave slots for live requests)
     maintenance_interval_hours: float = 6.0
     feedback_interval_hours: float = 12.0
 
