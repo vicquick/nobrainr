@@ -1,35 +1,34 @@
 """Graph layout computation using NetworkX.
 
-Computes community-grouped positions for the knowledge graph visualization.
-Uses Louvain community detection + two-level spring layout:
-1. Communities detected via Louvain
-2. Community centroids positioned via spring layout on a meta-graph
-3. Nodes positioned within communities via local spring layout
+Two-level approach:
+1. Louvain community detection → many small communities
+2. Merge small communities into nearest large one (target: 30-80 clusters)
+3. Spring layout on the community meta-graph for centroids
+4. Spring layout within each community for local structure
+5. Isolates scattered around periphery
 """
 
 import logging
 import math
+from collections import Counter
 
 import networkx as nx
 from networkx.algorithms.community import louvain_communities
 
 logger = logging.getLogger("nobrainr")
 
+MERGE_THRESHOLD = 8  # communities smaller than this get merged
+
 
 def compute_graph_layout(nodes: list[dict], edges: list[dict]) -> dict:
-    """Compute community-grouped layout for graph visualization.
-
-    Returns dict mapping node_id -> {"x": float, "y": float, "community": int}
-    """
+    """Compute community-grouped layout for graph visualization."""
     G = nx.Graph()
 
     node_ids = set()
-    node_weight: dict[str, int] = {}
     for node in nodes:
         nid = node["data"]["id"]
         G.add_node(nid)
         node_ids.add(nid)
-        node_weight[nid] = node["data"].get("mention_count", 1)
 
     for edge in edges:
         src = edge["data"]["source"]
@@ -43,36 +42,38 @@ def compute_graph_layout(nodes: list[dict], edges: list[dict]) -> dict:
     if len(G) == 0:
         return {}
 
-    # --- Community detection ---
+    # --- Step 1: Community detection ---
     try:
         communities_raw = list(louvain_communities(G, seed=42, resolution=1.0))
     except Exception:
         communities_raw = [set(G.nodes())]
 
-    # Separate connected communities from isolates
-    real_communities: list[set[str]] = []
+    # Separate isolates from connected nodes
+    connected_communities: list[set[str]] = []
     isolate_nodes: list[str] = []
     for comm in communities_raw:
         connected = {n for n in comm if G.degree(n) > 0}
         isolated = [n for n in comm if G.degree(n) == 0]
         if connected:
-            real_communities.append(connected)
+            connected_communities.append(connected)
         isolate_nodes.extend(isolated)
 
-    # Sort by total weight (most important first)
-    real_communities.sort(
-        key=lambda c: sum(node_weight.get(n, 1) for n in c), reverse=True
-    )
+    if not connected_communities:
+        # All isolates — scatter in grid
+        return _scatter_grid(list(G.nodes()), community=0)
 
-    # --- Build meta-graph for community positioning ---
+    # --- Step 2: Merge small communities into nearest large one ---
+    merged = _merge_communities(connected_communities, G, MERGE_THRESHOLD)
+
+    # --- Step 3: Build meta-graph and position centroids ---
     node_to_comm: dict[str, int] = {}
-    for i, comm in enumerate(real_communities):
+    for i, comm in enumerate(merged):
         for n in comm:
             node_to_comm[n] = i
 
     meta_G = nx.Graph()
-    for i in range(len(real_communities)):
-        meta_G.add_node(i, size=len(real_communities[i]))
+    for i in range(len(merged)):
+        meta_G.add_node(i, size=len(merged[i]))
 
     for src, tgt in G.edges():
         c_src = node_to_comm.get(src)
@@ -83,39 +84,46 @@ def compute_graph_layout(nodes: list[dict], edges: list[dict]) -> dict:
             else:
                 meta_G.add_edge(c_src, c_tgt, weight=1)
 
-    # Position community centroids using spring layout on meta-graph
-    num_comm = len(real_communities)
-    base_scale = max(5000, 2000 * math.sqrt(num_comm))
+    num_comm = len(merged)
+    base_scale = max(5000, 2500 * math.sqrt(num_comm))
 
-    if num_comm == 0:
-        meta_pos: dict = {}
-    elif num_comm == 1:
-        meta_pos = {0: (0.0, 0.0)}
-    else:
-        meta_pos = nx.spring_layout(
+    if num_comm == 1:
+        meta_pos: dict[int, tuple[float, float]] = {0: (0.0, 0.0)}
+    elif num_comm <= 100:
+        raw_pos = nx.spring_layout(
             meta_G,
-            k=4.0 / math.sqrt(num_comm),
-            iterations=200,
+            k=3.0 / math.sqrt(num_comm),
+            iterations=300,
             seed=42,
             scale=base_scale,
         )
-        # Convert numpy arrays to tuples of floats
-        meta_pos = {k: (float(v[0]), float(v[1])) for k, v in meta_pos.items()}
+        meta_pos = {k: (float(v[0]), float(v[1])) for k, v in raw_pos.items()}
+    else:
+        # Too many communities even after merge — use kamada_kawai for better structure
+        try:
+            raw_pos = nx.kamada_kawai_layout(meta_G, scale=base_scale)
+            meta_pos = {k: (float(v[0]), float(v[1])) for k, v in raw_pos.items()}
+        except Exception:
+            # Fallback: circle
+            angle_step = 2 * math.pi / num_comm
+            meta_pos = {
+                i: (base_scale * math.cos(i * angle_step), base_scale * math.sin(i * angle_step))
+                for i in range(num_comm)
+            }
 
-    # --- Position nodes within each community ---
+    # --- Step 4: Position nodes within each community ---
     result: dict[str, dict] = {}
 
-    for i, comm in enumerate(real_communities):
+    for i, comm in enumerate(merged):
         cx, cy = meta_pos.get(i, (0.0, 0.0))
 
         if len(comm) == 1:
-            node_id = list(comm)[0]
-            result[node_id] = {"x": cx, "y": cy, "community": i}
+            result[list(comm)[0]] = {"x": cx, "y": cy, "community": i}
             continue
 
         subgraph = G.subgraph(comm)
-        # Scale inner layout proportional to sqrt of community size
-        inner_scale = max(300, 150 * math.sqrt(len(comm)))
+        # Scale inner layout: larger communities get more space
+        inner_scale = max(300, 120 * math.sqrt(len(comm)))
 
         try:
             pos = nx.spring_layout(
@@ -136,25 +144,94 @@ def compute_graph_layout(nodes: list[dict], edges: list[dict]) -> dict:
                 "community": i,
             }
 
-    # --- Scatter isolates around the periphery ---
+    # --- Step 5: Scatter isolates around periphery ---
     if isolate_nodes:
         iso_community = num_comm
         for j, node_id in enumerate(isolate_nodes):
             angle = 2 * math.pi * j / max(len(isolate_nodes), 1)
-            # Vary radius for organic look
-            r = base_scale * 1.4 + 300 * math.sin(j * 5.7)
+            r = base_scale * 1.4 + 200 * math.sin(j * 5.7)
             result[node_id] = {
                 "x": r * math.cos(angle),
                 "y": r * math.sin(angle),
                 "community": iso_community,
             }
 
-    total_communities = num_comm + (1 if isolate_nodes else 0)
+    total_comm = num_comm + (1 if isolate_nodes else 0)
     logger.info(
-        "Layout computed: %d nodes, %d communities (%d isolates)",
+        "Layout: %d nodes, %d communities (%d merged from %d, %d isolates)",
         len(result),
-        total_communities,
+        total_comm,
+        num_comm,
+        len(connected_communities),
         len(isolate_nodes),
     )
+    return result
 
+
+def _merge_communities(
+    communities: list[set[str]], G: nx.Graph, threshold: int
+) -> list[set[str]]:
+    """Merge small communities into their most-connected larger neighbor."""
+    # Sort by size descending
+    communities = sorted(communities, key=len, reverse=True)
+
+    major: list[set[str]] = []
+    minor: list[set[str]] = []
+    for comm in communities:
+        if len(comm) >= threshold:
+            major.append(comm)
+        else:
+            minor.append(comm)
+
+    if not major:
+        # All communities are small — just return as-is
+        return communities
+
+    # Build lookup: node -> major community index
+    node_to_major: dict[str, int] = {}
+    for i, comm in enumerate(major):
+        for n in comm:
+            node_to_major[n] = i
+
+    # Merge each minor into the major it connects to most
+    orphans: list[set[str]] = []
+    for mc in minor:
+        edge_counts: Counter[int] = Counter()
+        for n in mc:
+            for neighbor in G.neighbors(n):
+                if neighbor in node_to_major:
+                    edge_counts[node_to_major[neighbor]] += 1
+        if edge_counts:
+            best_major = edge_counts.most_common(1)[0][0]
+            major[best_major] = major[best_major] | mc
+            for n in mc:
+                node_to_major[n] = best_major
+        else:
+            orphans.append(mc)
+
+    # Group orphans together into chunks of ~threshold size
+    if orphans:
+        current: set[str] = set()
+        for oc in orphans:
+            current |= oc
+            if len(current) >= threshold:
+                major.append(current)
+                current = set()
+        if current:
+            major.append(current)
+
+    return major
+
+
+def _scatter_grid(node_ids: list[str], community: int) -> dict:
+    """Place nodes in a grid pattern."""
+    cols = max(1, int(math.sqrt(len(node_ids))))
+    spacing = 200
+    result = {}
+    for j, nid in enumerate(node_ids):
+        result[nid] = {
+            "x": float((j % cols) * spacing),
+            "y": float((j // cols) * spacing),
+            "community": community,
+        }
     return result
