@@ -170,6 +170,8 @@ const focusedNeighbors = new Set<string>()
 const searchMatches = new Set<string>()
 const hubNodes = new Set<string>()
 const chatHighlightedNodes = new Set<string>()
+let chatHighlightPaused = false  // paused by click-void, resumed on next message
+let lastConversationSize = 0     // track when new entities arrive
 
 function isTypeActive(type: string) {
   return activeTypes.value.has(type)
@@ -450,12 +452,13 @@ function initSigma() {
     await fetchNodeDetail(node)
   })
 
-  // Click background to deselect
+  // Click background to deselect — pause conversation highlight, restore full graph
   renderer.on('clickStage', () => {
     unfocusNode()
     clearSelection()
     chatHighlightedNodes.clear()
-    chatStore.clearSources()
+    chatHighlightPaused = true
+    renderer?.refresh()
   })
 }
 
@@ -493,28 +496,37 @@ watch(() => chatStore.focusEntityId, async (entityId) => {
   chatStore.clearFocus()
 })
 
-// Watch chat sources — highlight entities on graph
-watch(() => chatStore.currentSources, (sources) => {
-  chatHighlightedNodes.clear()
-  if (!sources || !graph) {
+// Watch accumulated conversation entities — highlight all discussed entities on graph
+watch(() => chatStore.conversationEntityIds, (entityIds) => {
+  if (!entityIds || entityIds.size === 0 || !graph) {
+    chatHighlightedNodes.clear()
+    lastConversationSize = 0
     renderer?.refresh()
     return
   }
-  for (const entity of sources.entities) {
-    if (graph.hasNode(entity.id)) {
-      chatHighlightedNodes.add(entity.id)
+
+  const newEntitiesArrived = entityIds.size > lastConversationSize
+  lastConversationSize = entityIds.size
+
+  // Resume highlight when new entities arrive from a new message
+  if (newEntitiesArrived) chatHighlightPaused = false
+
+  if (chatHighlightPaused) return
+
+  chatHighlightedNodes.clear()
+  for (const id of entityIds) {
+    if (graph.hasNode(id)) {
+      chatHighlightedNodes.add(id)
     }
   }
-  if (chatHighlightedNodes.size > 0) {
-    // Clear click-focus so chat highlight shows
-    focusedNode = null
-    focusedNeighbors.clear()
-    focusedLabel.value = ''
-    clearSelection()
+  if (chatHighlightedNodes.size > 0 && !focusedNode) {
     renderer?.refresh()
-    zoomToNodes(chatHighlightedNodes)
+    // Zoom to new entities when they first arrive
+    if (newEntitiesArrived) {
+      zoomToNodes(chatHighlightedNodes)
+    }
   }
-})
+}, { deep: true })
 
 function zoomIn() {
   renderer?.getCamera().animatedZoom({ duration: 300 })
