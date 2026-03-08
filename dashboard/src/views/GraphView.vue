@@ -32,14 +32,10 @@
       </div>
     </div>
 
-    <!-- Minimal status -->
+    <!-- Status bar -->
     <div class="d-flex align-center ga-3 px-3 py-0 status-bar">
       <span class="text-caption text-medium-emphasis" style="font-variant-numeric: tabular-nums; font-size: 10px;">
-        {{ nodeCount.toLocaleString() }} nodes · {{ edgeCount.toLocaleString() }} edges
-      </span>
-      <span v-if="layoutRunning" class="layout-indicator">
-        <span class="layout-dot" />
-        converging
+        {{ nodeCount.toLocaleString() }} nodes · {{ edgeCount.toLocaleString() }} edges · {{ communityCount }} clusters
       </span>
       <v-spacer />
       <span v-if="focusedLabel" class="text-caption" style="font-size: 10px;">
@@ -68,7 +64,7 @@
 import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import Sigma from 'sigma'
 import Graph from 'graphology'
-import FA2Layout from 'graphology-layout-forceatlas2/worker'
+import { EdgeLineProgram } from 'sigma/rendering'
 import { useGraph } from '@/composables/useGraph'
 import { useSSE } from '@/composables/useSSE'
 import GraphSidePanel from '@/components/GraphSidePanel.vue'
@@ -92,39 +88,17 @@ const { graphData, selectedNode, loading, fetchGraph, fetchNodeDetail, clearSele
 const sigmaContainer = ref<HTMLElement | null>(null)
 const searchQuery = ref('')
 const activeTypes = ref(new Set(entityTypes))
-const layoutRunning = ref(false)
 const nodeCount = ref(0)
 const edgeCount = ref(0)
+const communityCount = ref(0)
 const focusedLabel = ref('')
 
 let graph: Graph | null = null
 let renderer: Sigma | null = null
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let fa2Layout: any = null
 let focusedNode: string | null = null
 let hoveredNode: string | null = null
 const focusedNeighbors = new Set<string>()
 const searchMatches = new Set<string>()
-let cameraRatio = 1
-const visibleNodes = new Set<string>()
-
-const DEGREE_FACTOR = 50
-
-function recomputeVisibility() {
-  visibleNodes.clear()
-  if (!graph) return
-  const minDeg = Math.max(1, Math.round(cameraRatio * DEGREE_FACTOR))
-  const hubs = new Set<string>()
-  graph.forEachNode((node) => {
-    if (graph!.degree(node) >= minDeg) {
-      hubs.add(node)
-      visibleNodes.add(node)
-    }
-  })
-  for (const hub of hubs) {
-    graph.forEachNeighbor(hub, (neighbor) => visibleNodes.add(neighbor))
-  }
-}
 
 function isTypeActive(type: string) {
   return activeTypes.value.has(type)
@@ -138,13 +112,11 @@ function toggleType(type: string) {
   renderer?.refresh()
 }
 
-// Zoom camera to fit a set of nodes with padding
 function zoomToNodes(nodeIds: Set<string> | string[]) {
   if (!graph || !renderer) return
   const ids = (nodeIds instanceof Set ? [...nodeIds] : nodeIds).filter(id => graph!.hasNode(id))
   if (ids.length === 0) return
 
-  // Use getNodeDisplayData which returns positions in camera coordinate space
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
   for (const id of ids) {
     const d = renderer.getNodeDisplayData(id)
@@ -161,8 +133,6 @@ function zoomToNodes(nodeIds: Set<string> | string[]) {
   const cy = (minY + maxY) / 2
   const dx = maxX - minX
   const dy = maxY - minY
-
-  // At ratio=R, viewport shows R units vertically and R*aspect horizontally
   const { width, height } = renderer.getDimensions()
   const aspect = width / height
   const padding = 1.5
@@ -182,10 +152,7 @@ function focusNode(nodeId: string) {
   graph!.forEachNeighbor(nodeId, (n) => focusedNeighbors.add(n))
   focusedLabel.value = graph!.getNodeAttribute(nodeId, 'label') || ''
   renderer?.refresh()
-
-  // Auto-zoom to fit focused node + neighbors
-  const allVisible = new Set([nodeId, ...focusedNeighbors])
-  zoomToNodes(allVisible)
+  zoomToNodes(new Set([nodeId, ...focusedNeighbors]))
 }
 
 function unfocusNode() {
@@ -193,18 +160,12 @@ function unfocusNode() {
   focusedNeighbors.clear()
   focusedLabel.value = ''
   renderer?.refresh()
-  // Zoom back to overview
   renderer?.getCamera().animate({ x: 0.5, y: 0.5, ratio: 1 }, { duration: 400 })
 }
 
 function initSigma() {
   if (!sigmaContainer.value || !graphData.value) return
 
-  if (fa2Layout) {
-    fa2Layout.stop()
-    fa2Layout.kill()
-    fa2Layout = null
-  }
   if (renderer) {
     renderer.kill()
     renderer = null
@@ -212,15 +173,19 @@ function initSigma() {
 
   graph = new Graph()
 
+  const communities = new Set<number>()
+
   for (const node of graphData.value.nodes) {
     const mc = node.data.mention_count || 1
+    communities.add(node.data.community)
     graph.addNode(node.data.id, {
       label: node.data.label,
-      x: Math.random() * 100,
-      y: Math.random() * 100,
-      size: Math.max(2.5, Math.min(16, Math.sqrt(mc) * 2.5)),
+      x: node.data.x,
+      y: node.data.y,
+      size: Math.max(3, Math.min(18, Math.sqrt(mc) * 2.8)),
       color: TYPE_COLORS[node.data.type] || '#6b7280',
       nodeType: node.data.type,
+      community: node.data.community,
     })
   }
 
@@ -229,8 +194,8 @@ function initSigma() {
       try {
         graph.addEdge(edge.data.source, edge.data.target, {
           label: edge.data.label,
-          size: 0.2,
-          color: 'rgba(255, 255, 255, 0.04)',
+          size: 1,
+          color: 'rgba(255, 255, 255, 0.06)',
         })
       } catch {
         // duplicate edge
@@ -240,8 +205,17 @@ function initSigma() {
 
   nodeCount.value = graph.order
   edgeCount.value = graph.size
+  communityCount.value = communities.size
 
   renderer = new Sigma(graph, sigmaContainer.value, {
+    // Edge rendering — gl.LINES for performance
+    defaultEdgeType: 'line',
+    edgeProgramClasses: { line: EdgeLineProgram },
+
+    // Performance
+    enableEdgeEvents: false,
+
+    // Labels
     renderLabels: true,
     labelColor: { attribute: 'labelColor', defaultValue: 'rgba(255, 255, 255, 0.7)' },
     labelSize: 11,
@@ -249,11 +223,12 @@ function initSigma() {
     labelWeight: '500',
     labelDensity: 0.07,
     labelGridCellSize: 80,
-    // Very high threshold = no labels by default
-    labelRenderedSizeThreshold: 999,
+    labelRenderedSizeThreshold: 8,
+
+    // Defaults
     defaultNodeColor: '#6b7280',
-    defaultEdgeColor: 'rgba(255, 255, 255, 0.04)',
-    stagePadding: 20,
+    defaultEdgeColor: 'rgba(255, 255, 255, 0.06)',
+    stagePadding: 40,
     zIndex: true,
     enableNodeHoverHighlighting: false,
 
@@ -267,7 +242,7 @@ function initSigma() {
         return res
       }
 
-      // Click-focus takes priority over search
+      // Click-focus takes priority
       if (focusedNode) {
         if (node === focusedNode) {
           res.zIndex = 2
@@ -279,12 +254,14 @@ function initSigma() {
           res.forceLabel = true
           res.labelColor = 'rgba(255, 255, 255, 0.85)'
         } else {
-          res.hidden = true
+          res.color = 'rgba(60, 60, 70, 0.15)'
+          res.size = 1.5
+          res.label = ''
         }
         return res
       }
 
-      // Search: show only matches with labels
+      // Search: highlight matches, dim others
       if (searchMatches.size > 0) {
         if (searchMatches.has(node)) {
           res.zIndex = 1
@@ -292,20 +269,17 @@ function initSigma() {
           res.forceLabel = true
           res.labelColor = 'rgba(255, 255, 255, 0.9)'
         } else {
-          res.hidden = true
+          res.color = 'rgba(60, 60, 70, 0.15)'
+          res.size = 1.5
+          res.label = ''
         }
         return res
       }
 
-      // Hover: show label for hovered node only
+      // Hover: show label
       if (hoveredNode === node) {
         res.forceLabel = true
         res.labelColor = '#000000'
-      }
-
-      // Zoom-based visibility
-      if (visibleNodes.size > 0 && !visibleNodes.has(node)) {
-        res.hidden = true
       }
 
       return res
@@ -317,8 +291,8 @@ function initSigma() {
       // Click-focus: show only edges to focused node
       if (focusedNode) {
         if (graph!.extremities(edge).includes(focusedNode)) {
-          res.color = 'rgba(255, 255, 255, 0.12)'
-          res.size = 0.4
+          res.color = 'rgba(255, 255, 255, 0.15)'
+          res.size = 1.5
           res.zIndex = 1
         } else {
           res.hidden = true
@@ -326,44 +300,22 @@ function initSigma() {
         return res
       }
 
-      // Search
+      // Search: show only edges between matches
       if (searchMatches.size > 0) {
         const [src, tgt] = graph!.extremities(edge)
-        if (!searchMatches.has(src) && !searchMatches.has(tgt)) {
+        if (!searchMatches.has(src) || !searchMatches.has(tgt)) {
           res.hidden = true
         } else {
-          res.color = 'rgba(255, 255, 255, 0.08)'
+          res.color = 'rgba(255, 255, 255, 0.1)'
         }
         return res
-      }
-
-      // Sync edge visibility with node visibility
-      if (visibleNodes.size > 0) {
-        const [src, tgt] = graph!.extremities(edge)
-        if (!visibleNodes.has(src) || !visibleNodes.has(tgt)) {
-          res.hidden = true
-        }
       }
 
       return res
     },
   })
 
-  // Recompute visibility on zoom (debounced)
-  recomputeVisibility()
-  let zoomRefreshTimer: ReturnType<typeof setTimeout>
-  renderer.getCamera().on('updated', (state: { ratio: number }) => {
-    if (Math.abs(state.ratio - cameraRatio) > 0.05) {
-      cameraRatio = state.ratio
-      clearTimeout(zoomRefreshTimer)
-      zoomRefreshTimer = setTimeout(() => {
-        recomputeVisibility()
-        renderer?.refresh()
-      }, 150)
-    }
-  })
-
-  // Hover: show label + pointer cursor
+  // Hover events
   renderer.on('enterNode', ({ node }) => {
     hoveredNode = node
     sigmaContainer.value!.style.cursor = 'pointer'
@@ -386,31 +338,6 @@ function initSigma() {
     unfocusNode()
     clearSelection()
   })
-
-  // ForceAtlas2 in web worker
-  layoutRunning.value = true
-  fa2Layout = new FA2Layout(graph, {
-    settings: {
-      gravity: 0.5,
-      scalingRatio: 10,
-      barnesHutOptimize: true,
-      barnesHutTheta: 0.5,
-      slowDown: 5,
-      strongGravityMode: false,
-      linLogMode: false,
-      outboundAttractionDistribution: false,
-      adjustSizes: false,
-      edgeWeightInfluence: 1,
-    },
-  })
-  fa2Layout.start()
-
-  setTimeout(() => {
-    if (fa2Layout) {
-      fa2Layout.stop()
-      layoutRunning.value = false
-    }
-  }, 8000)
 }
 
 function lighten(hex: string, amount: number): string {
@@ -482,10 +409,6 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  if (fa2Layout) {
-    fa2Layout.stop()
-    fa2Layout.kill()
-  }
   renderer?.kill()
 })
 </script>
@@ -537,23 +460,5 @@ onUnmounted(() => {
 }
 .type-pill.active .type-dot {
   opacity: 1;
-}
-.layout-indicator {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 10px;
-  color: rgba(255, 255, 255, 0.35);
-}
-.layout-dot {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: #d4a056;
-  animation: pulse 1.5s ease-in-out infinite;
-}
-@keyframes pulse {
-  0%, 100% { opacity: 0.3; }
-  50% { opacity: 1; }
 }
 </style>

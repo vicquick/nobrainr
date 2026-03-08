@@ -42,7 +42,7 @@ export interface NodeDetail {
 }
 
 export interface GraphData {
-  nodes: Array<{ data: { id: string; label: string; type: string; mention_count: number; description?: string } }>
+  nodes: Array<{ data: { id: string; label: string; type: string; mention_count: number; description?: string; x: number; y: number; community: number } }>
   edges: Array<{ data: { id: string; source: string; target: string; label: string; confidence: number } }>
 }
 
