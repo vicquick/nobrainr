@@ -255,6 +255,9 @@ async def distill_conversations(
             await _mark_distilled(convo_id, 0, error=err_msg)
             async with lock:
                 results["processed"] += 1
+        # Yield between distillations to let live requests through
+        from nobrainr.config import settings as _s
+        await asyncio.sleep(_s.scheduler_inter_request_delay)
 
     tasks = [asyncio.create_task(_distill_one(row)) for row in rows]
     await asyncio.gather(*tasks, return_exceptions=True)

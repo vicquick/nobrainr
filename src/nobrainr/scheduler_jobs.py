@@ -1,5 +1,6 @@
 """LLM-powered scheduler jobs for autonomous knowledge growth."""
 
+import asyncio
 import logging
 import socket
 from datetime import datetime
@@ -15,6 +16,11 @@ from nobrainr.extraction.dedup import DEDUP_SCHEMA
 from nobrainr.extraction.llm import ollama_chat
 
 logger = logging.getLogger("nobrainr")
+
+
+async def _yield_to_live_requests():
+    """Brief pause between batch LLM calls to let live requests through."""
+    await asyncio.sleep(settings.scheduler_inter_request_delay)
 
 
 def _hostname() -> str:
@@ -125,6 +131,7 @@ async def auto_summarize() -> dict:
                 count += 1
         except Exception:
             logger.exception("auto_summarize failed for memory %s", mem["id"][:8])
+        await _yield_to_live_requests()
 
     return {"summarized": count, "batch_size": len(batch), "ran_at": datetime.now().isoformat()}
 
@@ -177,6 +184,7 @@ async def consolidation() -> dict:
             checked += 1
         except Exception:
             logger.exception("consolidation failed for pair %s/%s", str(pair["id_a"])[:8], str(pair["id_b"])[:8])
+                await _yield_to_live_requests()
 
     return {"merged": merged, "checked": checked, "ran_at": datetime.now().isoformat()}
 
@@ -236,6 +244,7 @@ async def synthesis() -> dict:
                 count += 1
         except Exception:
             logger.exception("synthesis failed for entity %s", cand["entity_name"])
+        await _yield_to_live_requests()
 
     return {"synthesized": count, "candidates": len(candidates), "ran_at": datetime.now().isoformat()}
 
@@ -339,6 +348,7 @@ async def entity_merging() -> dict:
             checked += 1
         except Exception:
             logger.exception("entity_merging failed for pair %s/%s", pair["name_a"], pair["name_b"])
+        await _yield_to_live_requests()
 
     return {"merged": merged, "checked": checked, "ran_at": datetime.now().isoformat()}
 
@@ -387,6 +397,7 @@ async def entity_enrichment() -> dict:
                 count += 1
         except Exception:
             logger.exception("entity_enrichment failed for %s", ent["name"])
+        await _yield_to_live_requests()
 
     return {"enriched": count, "candidates": len(entities), "ran_at": datetime.now().isoformat()}
 
@@ -449,6 +460,7 @@ async def insight_extraction() -> dict:
             processed += 1
         except Exception:
             logger.exception("insight_extraction failed for event %s", event["id"][:8])
+        await _yield_to_live_requests()
 
     return {
         "extracted": extracted,
@@ -517,6 +529,7 @@ async def contradiction_detection() -> dict:
             checked += 1
         except Exception:
             logger.exception("contradiction_detection failed for pair")
+        await _yield_to_live_requests()
 
     return {"contradictions_found": found, "checked": checked, "ran_at": datetime.now().isoformat()}
 
@@ -614,6 +627,7 @@ async def cross_machine_insights() -> dict:
                 count += 1
         except Exception:
             logger.exception("cross_machine_insights failed for %s", cluster["entity_name"])
+        await _yield_to_live_requests()
 
     return {"insights": count, "checked": len(clusters), "ran_at": datetime.now().isoformat()}
 
@@ -683,6 +697,7 @@ async def extraction_quality() -> dict:
             validated += 1
         except Exception:
             logger.exception("extraction_quality failed for entity %s", sample["entity_name"])
+        await _yield_to_live_requests()
 
     return {"validated": validated, "invalid": invalid, "ran_at": datetime.now().isoformat()}
 
