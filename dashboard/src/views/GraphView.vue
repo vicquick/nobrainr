@@ -1,20 +1,20 @@
 <template>
   <v-container fluid class="fill-height pa-0 d-flex flex-column">
     <!-- Toolbar -->
-    <div class="d-flex align-center ga-2 px-4 py-2" style="border-bottom: 1px solid rgba(255,255,255,0.04);">
+    <div class="d-flex align-center ga-2 px-4 py-2 toolbar">
       <!-- Type filter chips -->
       <div class="d-flex ga-1 flex-wrap">
-        <v-chip
+        <button
           v-for="type in entityTypes"
           :key="type"
-          :color="TYPE_COLORS[type]"
-          :variant="isTypeActive(type) ? 'flat' : 'outlined'"
-          size="x-small"
-          class="type-chip"
+          class="type-pill"
+          :class="{ active: isTypeActive(type) }"
+          :style="{ '--pill-color': TYPE_COLORS[type] }"
           @click="toggleType(type)"
         >
+          <span class="type-dot" />
           {{ type }}
-        </v-chip>
+        </button>
       </div>
 
       <v-spacer />
@@ -25,35 +25,39 @@
         prepend-inner-icon="mdi-magnify"
         placeholder="Search nodes..."
         clearable
-        style="max-width: 220px;"
+        style="max-width: 200px;"
       />
 
       <!-- Controls -->
-      <v-btn-group density="compact" variant="text" divided>
-        <v-btn icon="mdi-minus" size="small" @click="zoomOut" />
-        <v-btn icon="mdi-plus" size="small" @click="zoomIn" />
-        <v-btn icon="mdi-fit-to-screen-outline" size="small" @click="resetCamera" />
-      </v-btn-group>
-
-      <v-btn icon="mdi-refresh" variant="text" size="small" @click="refreshGraph" />
+      <div class="d-flex align-center ga-1">
+        <v-btn icon="mdi-minus" variant="text" size="x-small" @click="zoomOut" />
+        <v-btn icon="mdi-plus" variant="text" size="x-small" @click="zoomIn" />
+        <v-btn icon="mdi-fit-to-screen-outline" variant="text" size="x-small" @click="resetCamera" />
+        <v-btn icon="mdi-refresh" variant="text" size="x-small" @click="refreshGraph" />
+      </div>
     </div>
 
-    <!-- Node count -->
-    <div class="d-flex align-center ga-2 px-4 py-1" style="border-bottom: 1px solid rgba(255,255,255,0.04);">
-      <span class="text-caption text-medium-emphasis">
+    <!-- Status bar -->
+    <div class="d-flex align-center ga-3 px-4 py-1 status-bar">
+      <span class="text-caption text-medium-emphasis" style="font-variant-numeric: tabular-nums;">
         {{ nodeCount.toLocaleString() }} nodes &middot; {{ edgeCount.toLocaleString() }} edges
       </span>
-      <v-chip v-if="layoutRunning" size="x-small" variant="tonal" color="warning" class="ml-1">
-        <v-progress-circular indeterminate size="10" width="1" class="mr-1" />
-        laying out
-      </v-chip>
+      <span v-if="layoutRunning" class="layout-indicator">
+        <span class="layout-dot" />
+        converging
+      </span>
+      <v-spacer />
+      <span v-if="focusedLabel" class="text-caption">
+        <span class="text-medium-emphasis">focused:</span>
+        <span class="ml-1 font-weight-medium">{{ focusedLabel }}</span>
+      </span>
     </div>
 
     <!-- Loading -->
-    <div v-if="loading" class="d-flex align-center justify-center flex-grow-1">
+    <div v-if="loading" class="d-flex align-center justify-center flex-grow-1 sigma-canvas">
       <div class="text-center">
-        <v-progress-circular indeterminate color="primary" size="48" class="mb-3" />
-        <div class="text-body-2 text-medium-emphasis">Loading knowledge graph...</div>
+        <v-progress-circular indeterminate color="primary" size="40" width="2" class="mb-3" />
+        <div class="text-caption text-medium-emphasis">Loading graph...</div>
       </div>
     </div>
 
@@ -61,7 +65,7 @@
     <div v-show="!loading" ref="sigmaContainer" class="flex-grow-1 sigma-canvas" />
 
     <!-- Side Panel -->
-    <GraphSidePanel :node="selectedNode" @close="clearSelection" />
+    <GraphSidePanel :node="selectedNode" @close="handleClosePanel" />
   </v-container>
 </template>
 
@@ -74,16 +78,17 @@ import { useGraph } from '@/composables/useGraph'
 import { useSSE } from '@/composables/useSSE'
 import GraphSidePanel from '@/components/GraphSidePanel.vue'
 
+// Muted, Obsidian-inspired palette
 const TYPE_COLORS: Record<string, string> = {
-  person: '#58a6ff',
-  project: '#3fb950',
-  technology: '#bc8cff',
-  concept: '#f0883e',
-  file: '#8b949e',
-  config: '#d29922',
-  error: '#f85149',
-  location: '#3fb950',
-  organization: '#58a6ff',
+  person: '#7f8cff',
+  project: '#6bcb77',
+  technology: '#a78bfa',
+  concept: '#d4a056',
+  file: '#6b7280',
+  config: '#c4983c',
+  error: '#e06060',
+  location: '#6bcb77',
+  organization: '#7f8cff',
 }
 
 const entityTypes = Object.keys(TYPE_COLORS)
@@ -96,13 +101,14 @@ const activeTypes = ref(new Set(entityTypes))
 const layoutRunning = ref(false)
 const nodeCount = ref(0)
 const edgeCount = ref(0)
+const focusedLabel = ref('')
 
 let graph: Graph | null = null
 let renderer: Sigma | null = null
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let fa2Layout: any = null
-let hoveredNode: string | null = null
-const hoveredNeighbors = new Set<string>()
+let focusedNode: string | null = null
+const focusedNeighbors = new Set<string>()
 const searchMatches = new Set<string>()
 
 function isTypeActive(type: string) {
@@ -120,10 +126,24 @@ function toggleType(type: string) {
   renderer?.refresh()
 }
 
+function focusNode(nodeId: string) {
+  focusedNode = nodeId
+  focusedNeighbors.clear()
+  graph!.forEachNeighbor(nodeId, (n) => focusedNeighbors.add(n))
+  focusedLabel.value = graph!.getNodeAttribute(nodeId, 'label') || ''
+  renderer?.refresh()
+}
+
+function unfocusNode() {
+  focusedNode = null
+  focusedNeighbors.clear()
+  focusedLabel.value = ''
+  renderer?.refresh()
+}
+
 function initSigma() {
   if (!sigmaContainer.value || !graphData.value) return
 
-  // Cleanup previous
   if (fa2Layout) {
     fa2Layout.stop()
     fa2Layout.kill()
@@ -137,12 +157,13 @@ function initSigma() {
   graph = new Graph()
 
   for (const node of graphData.value.nodes) {
+    const mc = node.data.mention_count || 1
     graph.addNode(node.data.id, {
       label: node.data.label,
       x: Math.random() * 100,
       y: Math.random() * 100,
-      size: Math.max(3, Math.min(20, Math.sqrt(node.data.mention_count || 1) * 3)),
-      color: TYPE_COLORS[node.data.type] || '#8b949e',
+      size: Math.max(2.5, Math.min(16, Math.sqrt(mc) * 2.5)),
+      color: TYPE_COLORS[node.data.type] || '#6b7280',
       nodeType: node.data.type,
     })
   }
@@ -152,11 +173,11 @@ function initSigma() {
       try {
         graph.addEdge(edge.data.source, edge.data.target, {
           label: edge.data.label,
-          size: Math.max(0.5, (edge.data.confidence || 0.5) * 2),
-          color: 'rgba(48, 54, 61, 0.5)',
+          size: 0.4,
+          color: 'rgba(255, 255, 255, 0.06)',
         })
       } catch {
-        // duplicate edge — skip
+        // duplicate edge
       }
     }
   }
@@ -166,16 +187,18 @@ function initSigma() {
 
   renderer = new Sigma(graph, sigmaContainer.value, {
     renderLabels: true,
-    labelColor: { color: '#c9d1d9' },
-    labelSize: 12,
+    labelColor: { color: 'rgba(255, 255, 255, 0.7)' },
+    labelSize: 11,
     labelFont: '"Inter", system-ui, sans-serif',
-    labelDensity: 0.07,
-    labelGridCellSize: 60,
-    labelRenderedSizeThreshold: 5,
-    defaultNodeColor: '#8b949e',
-    defaultEdgeColor: 'rgba(48, 54, 61, 0.5)',
-    stagePadding: 30,
+    labelWeight: '400',
+    labelDensity: 0.06,
+    labelGridCellSize: 80,
+    labelRenderedSizeThreshold: 6,
+    defaultNodeColor: '#6b7280',
+    defaultEdgeColor: 'rgba(255, 255, 255, 0.06)',
+    stagePadding: 40,
     zIndex: true,
+
     nodeReducer(node, data) {
       const res = { ...data }
       const type = graph!.getNodeAttribute(node, 'nodeType')
@@ -186,51 +209,58 @@ function initSigma() {
         return res
       }
 
-      // Search
+      // Search highlighting
       if (searchMatches.size > 0) {
         if (searchMatches.has(node)) {
           res.highlighted = true
           res.zIndex = 1
+          res.color = lighten(res.color as string, 0.3)
         } else {
-          res.color = '#1a1a2e'
+          res.color = 'rgba(255, 255, 255, 0.03)'
           res.label = ''
         }
         return res
       }
 
-      // Hover
-      if (hoveredNode) {
-        if (node === hoveredNode) {
+      // Click-focus highlighting
+      if (focusedNode) {
+        if (node === focusedNode) {
           res.highlighted = true
           res.zIndex = 2
-        } else if (hoveredNeighbors.has(node)) {
+          res.color = lighten(res.color as string, 0.4)
+          res.size = (res.size as number) * 1.3
+        } else if (focusedNeighbors.has(node)) {
           res.highlighted = true
           res.zIndex = 1
+          res.color = lighten(res.color as string, 0.15)
         } else {
-          res.color = '#0d1117'
+          res.color = 'rgba(255, 255, 255, 0.03)'
           res.label = ''
         }
       }
 
       return res
     },
+
     edgeReducer(edge, data) {
       const res = { ...data }
 
-      if (hoveredNode) {
-        if (graph!.extremities(edge).includes(hoveredNode)) {
-          res.color = '#58a6ff'
-          res.size = 2
+      if (focusedNode) {
+        if (graph!.extremities(edge).includes(focusedNode)) {
+          res.color = 'rgba(255, 255, 255, 0.25)'
+          res.size = 1
           res.zIndex = 1
         } else {
           res.hidden = true
         }
       }
 
-      if (searchMatches.size > 0 && !hoveredNode) {
+      if (searchMatches.size > 0 && !focusedNode) {
         const [src, tgt] = graph!.extremities(edge)
         if (!searchMatches.has(src) && !searchMatches.has(tgt)) {
           res.hidden = true
+        } else {
+          res.color = 'rgba(255, 255, 255, 0.15)'
         }
       }
 
@@ -238,26 +268,23 @@ function initSigma() {
     },
   })
 
-  renderer.on('enterNode', ({ node }) => {
-    hoveredNode = node
-    hoveredNeighbors.clear()
-    graph!.forEachNeighbor(node, (n) => hoveredNeighbors.add(n))
+  // Pointer cursor on node hover (no visual change)
+  renderer.on('enterNode', () => {
     sigmaContainer.value!.style.cursor = 'pointer'
-    renderer!.refresh()
   })
-
   renderer.on('leaveNode', () => {
-    hoveredNode = null
-    hoveredNeighbors.clear()
     sigmaContainer.value!.style.cursor = 'default'
-    renderer!.refresh()
   })
 
+  // Click to focus + open side panel
   renderer.on('clickNode', async ({ node }) => {
+    focusNode(node)
     await fetchNodeDetail(node)
   })
 
+  // Click background to deselect
   renderer.on('clickStage', () => {
+    unfocusNode()
     clearSelection()
   })
 
@@ -285,6 +312,16 @@ function initSigma() {
       layoutRunning.value = false
     }
   }, 8000)
+}
+
+// Lighten a hex color
+function lighten(hex: string, amount: number): string {
+  if (hex.startsWith('rgba')) return hex
+  const h = hex.replace('#', '')
+  const r = Math.min(255, parseInt(h.substring(0, 2), 16) + Math.round(255 * amount))
+  const g = Math.min(255, parseInt(h.substring(2, 4), 16) + Math.round(255 * amount))
+  const b = Math.min(255, parseInt(h.substring(4, 6), 16) + Math.round(255 * amount))
+  return `rgb(${r}, ${g}, ${b})`
 }
 
 // Debounced search
@@ -317,12 +354,16 @@ function resetCamera() {
   renderer?.getCamera().animatedReset({ duration: 400 })
 }
 
+function handleClosePanel() {
+  unfocusNode()
+  clearSelection()
+}
+
 async function refreshGraph() {
   searchQuery.value = ''
   searchMatches.clear()
   activeTypes.value = new Set(entityTypes)
-  hoveredNode = null
-  hoveredNeighbors.clear()
+  unfocusNode()
   clearSelection()
   await fetchGraph()
   await nextTick()
@@ -355,15 +396,67 @@ onUnmounted(() => {
 <style scoped>
 .sigma-canvas {
   width: 100%;
-  background: #0a0e14;
+  background: #101016;
 }
-.type-chip {
-  cursor: pointer;
-  transition: all 150ms ease;
+.toolbar {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  background: rgba(16, 16, 22, 0.6);
+}
+.status-bar {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  background: rgba(16, 16, 22, 0.4);
+}
+.type-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 11px;
   font-weight: 500;
   letter-spacing: 0;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: transparent;
+  color: rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+  transition: all 150ms ease;
+  font-family: inherit;
 }
-.type-chip:hover {
-  transform: scale(1.05);
+.type-pill.active {
+  color: var(--pill-color);
+  border-color: color-mix(in srgb, var(--pill-color) 30%, transparent);
+  background: color-mix(in srgb, var(--pill-color) 8%, transparent);
+}
+.type-pill:hover {
+  border-color: rgba(255, 255, 255, 0.12);
+}
+.type-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--pill-color);
+  opacity: 0.3;
+  transition: opacity 150ms ease;
+}
+.type-pill.active .type-dot {
+  opacity: 1;
+}
+.layout-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.35);
+}
+.layout-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #d4a056;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
 }
 </style>
