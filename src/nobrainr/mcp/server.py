@@ -103,32 +103,60 @@ async def memory_store(
         embed_input = content
     embedding = await embed_text(embed_input)
 
-    # Dedup check: see if this memory should merge with an existing one
+    # Write-path decision: ADD / UPDATE / SUPERSEDE / NOOP
     if settings.extraction_enabled:
         try:
-            from nobrainr.extraction.dedup import check_memory_dedup
-            dedup_result = await check_memory_dedup(content, embedding)
-            if dedup_result and dedup_result.get("should_merge"):
-                target_id = dedup_result["target_id"]
-                merged_content = dedup_result["merged_content"]
+            from nobrainr.extraction.dedup import decide_write_action
+            decision = await decide_write_action(content, embedding)
+            action = decision.get("action", "ADD")
+
+            if action == "NOOP":
+                logger.info("Write path NOOP: %s", decision.get("reason"))
+                return {
+                    "status": "skipped",
+                    "reason": decision.get("reason", "Duplicate"),
+                }
+
+            if action == "UPDATE":
+                target_id = decision["target_id"]
+                merged_content = decision["content"]
                 new_embedding = await embed_text(merged_content)
                 await queries.update_memory(
                     target_id,
                     content=merged_content,
                     embedding=new_embedding,
                     tags=tags,
+                    category=category,
                     metadata=metadata,
                 )
-                logger.info("Merged memory into %s: %s", target_id, dedup_result.get("reason"))
+                logger.info("Write path UPDATE %s: %s", target_id, decision.get("reason"))
                 return {
-                    "status": "merged",
-                    "merged_with": target_id,
-                    "reason": dedup_result.get("reason", ""),
+                    "status": "updated",
+                    "updated_id": target_id,
+                    "reason": decision.get("reason", ""),
                 }
-        except Exception:
-            logger.exception("Dedup check failed, storing as new")
 
-    # Store new memory
+            if action == "SUPERSEDE":
+                target_id = decision["target_id"]
+                new_content = decision["content"] or content
+                new_embedding = await embed_text(new_content)
+                # Archive old memory by moving to _archived category
+                await queries.update_memory(
+                    target_id,
+                    category="_archived",
+                    metadata={"archived_reason": "superseded", "superseded_by": "pending"},
+                )
+                # Store the new version (falls through to normal store below)
+                if metadata is None:
+                    metadata = {}
+                metadata["supersedes"] = target_id
+                logger.info("Write path SUPERSEDE %s: %s", target_id, decision.get("reason"))
+                # Fall through to store new memory below
+
+        except Exception:
+            logger.exception("Write path decision failed, storing as new")
+
+    # Store new memory (ADD or SUPERSEDE fall-through)
     result = await queries.store_memory(
         content=content,
         embedding=embedding,
@@ -157,6 +185,18 @@ async def memory_store(
             asyncio.create_task(_rate_limited_extract(result["id"], content, tags))
         except Exception:
             logger.exception("Failed to start extraction task")
+
+    # For SUPERSEDE, update the archived memory to point to the new one
+    if metadata and metadata.get("supersedes"):
+        old_id = metadata["supersedes"]
+        try:
+            await queries.update_memory(
+                old_id,
+                metadata={"superseded_by": result["id"]},
+            )
+        except Exception:
+            logger.warning("Failed to backlink superseded memory %s", old_id)
+        return {"status": "superseded", "new_id": result["id"], "archived_id": old_id}
 
     return {"status": "stored", **result}
 
