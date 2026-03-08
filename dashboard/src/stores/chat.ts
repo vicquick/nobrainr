@@ -6,13 +6,17 @@ export const useChatStore = defineStore('chat', () => {
   const isOpen = ref(false)
   const messages = ref<ChatMessage[]>([])
   const isStreaming = ref(false)
+  const isThinking = ref(false)
   const currentSources = ref<ChatSources | null>(null)
+  const focusEntityId = ref<string | null>(null)
 
   function toggle() { isOpen.value = !isOpen.value }
   function open() { isOpen.value = true }
   function close() { isOpen.value = false }
 
   function clearSources() { currentSources.value = null }
+  function focusEntity(id: string) { focusEntityId.value = id }
+  function clearFocus() { focusEntityId.value = null }
 
   async function sendMessage(text: string) {
     if (!text.trim() || isStreaming.value) return
@@ -34,6 +38,7 @@ export const useChatStore = defineStore('chat', () => {
     }
     messages.value.push(assistantMsg)
     isStreaming.value = true
+    isThinking.value = true
     currentSources.value = null
 
     const baseUrl = import.meta.env.VITE_API_BASE || ''
@@ -71,7 +76,10 @@ export const useChatStore = defineStore('chat', () => {
           if (!line.startsWith('data: ')) continue
           try {
             const event = JSON.parse(line.slice(6))
-            if (event.type === 'token') {
+            if (event.type === 'thinking') {
+              isThinking.value = true
+            } else if (event.type === 'token') {
+              isThinking.value = false
               assistantMsg.content += event.content
             } else if (event.type === 'sources') {
               assistantMsg.sources = { memories: event.memories, entities: event.entities }
@@ -88,6 +96,7 @@ export const useChatStore = defineStore('chat', () => {
       assistantMsg.content = 'Connection error. Please check your network.'
     } finally {
       isStreaming.value = false
+      isThinking.value = false
     }
   }
 
@@ -97,8 +106,8 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   return {
-    isOpen, messages, isStreaming, currentSources,
-    toggle, open, close, clearSources,
+    isOpen, messages, isStreaming, isThinking, currentSources, focusEntityId,
+    toggle, open, close, clearSources, focusEntity, clearFocus,
     sendMessage, clearHistory,
   }
 })

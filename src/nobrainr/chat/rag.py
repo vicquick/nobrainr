@@ -1,5 +1,6 @@
 """RAG chat pipeline — embed, search, build context, stream from Ollama."""
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -64,7 +65,10 @@ async def stream_chat_response(
         yield _sse("done", {})
         return
 
-    # 3. Embed query
+    # 3. Emit "thinking" immediately so client sees activity
+    yield _sse("thinking", {"status": "searching"})
+
+    # 4. Embed query
     try:
         embedding = await embed_text(clean)
     except Exception:
@@ -72,7 +76,7 @@ async def stream_chat_response(
         yield _sse("error", {"message": "Search temporarily unavailable. Please try again."})
         return
 
-    # 4. Hybrid memory search — fetch more for sources, top-N for LLM context
+    # 5. Hybrid memory search — fetch more for sources, top-N for LLM context
     all_memories = await queries.search_memories(
         embedding=embedding,
         limit=settings.chat_max_source_memories,
@@ -81,17 +85,22 @@ async def stream_chat_response(
     )
     context_memories = all_memories[: settings.chat_max_context_memories]
 
-    # 5. Collect linked entities from all retrieved memories
-    entity_map: dict[str, dict] = {}
-    for mem in all_memories:
+    # 6. Collect linked entities from context memories (parallel, not serial)
+    async def _fetch_entities(mem_id: str) -> list[dict]:
         try:
-            ents = await queries.get_memory_entities(mem["id"])
-            for e in ents:
-                entity_map[e["id"]] = e
+            return await queries.get_memory_entities(mem_id)
         except Exception:
-            pass  # non-critical
+            return []
 
-    # 6. Build context (only top-N memories fed to LLM)
+    entity_results = await asyncio.gather(
+        *[_fetch_entities(m["id"]) for m in context_memories]
+    )
+    entity_map: dict[str, dict] = {}
+    for ents in entity_results:
+        for e in ents:
+            entity_map[e["id"]] = e
+
+    # 7. Build context (only top-N memories fed to LLM)
     context = _build_context(context_memories, list(entity_map.values()))
     llm_messages = [
         {"role": "system", "content": SYSTEM_PROMPT.format(context=context)},
@@ -104,7 +113,7 @@ async def stream_chat_response(
             llm_messages.append({"role": role, "content": content})
     llm_messages.append({"role": "user", "content": clean})
 
-    # 7. Stream from Ollama
+    # 8. Stream from Ollama
     model = settings.chat_model or settings.extraction_model
     client = _get_client()
     payload = {
@@ -123,19 +132,24 @@ async def stream_chat_response(
                 logger.error("Ollama chat error %d: %s", resp.status_code, body[:500])
                 yield _sse("error", {"message": "Generation temporarily unavailable."})
                 return
-            async for line in resp.aiter_lines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    chunk = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                token = chunk.get("message", {}).get("content", "")
-                if token:
-                    yield _sse("token", {"content": token})
-                if chunk.get("done"):
-                    break
+            # Use aiter_bytes for minimal buffering (aiter_lines batches)
+            buf = b""
+            async for chunk in resp.aiter_bytes():
+                buf += chunk
+                while b"\n" in buf:
+                    raw_line, buf = buf.split(b"\n", 1)
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    token = data.get("message", {}).get("content", "")
+                    if token:
+                        yield _sse("token", {"content": token})
+                    if data.get("done"):
+                        break
     except httpx.ReadTimeout:
         yield _sse("error", {"message": "Response timed out. Please try a shorter question."})
         return
@@ -144,13 +158,23 @@ async def stream_chat_response(
         yield _sse("error", {"message": "Generation error. Please try again."})
         return
 
-    # 8. Emit sources (all retrieved, not just LLM context)
+    # 9. Fetch entities from remaining source memories (non-context) for richer sources
+    remaining = [m for m in all_memories[settings.chat_max_context_memories:]]
+    if remaining:
+        extra_results = await asyncio.gather(
+            *[_fetch_entities(m["id"]) for m in remaining]
+        )
+        for ents in extra_results:
+            for e in ents:
+                entity_map[e["id"]] = e
+
+    # 10. Emit sources (all retrieved, not just LLM context)
     source_memories = [
         {"id": m["id"], "summary": m.get("summary"), "content": m["content"][:200]}
         for m in all_memories
     ]
     source_entities = [
-        {"id": e["id"], "name": e["canonical_name"], "entity_type": e["entity_type"]}
+        {"id": e["id"], "name": e.get("canonical_name") or e.get("name"), "entity_type": e["entity_type"]}
         for e in entity_map.values()
     ]
     yield _sse("sources", {"memories": source_memories, "entities": source_entities})
