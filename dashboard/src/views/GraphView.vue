@@ -195,7 +195,7 @@ function initSigma() {
         graph.addEdge(edge.data.source, edge.data.target, {
           label: edge.data.label,
           size: 1,
-          color: 'rgba(255, 255, 255, 0.06)',
+          color: 'rgba(255, 255, 255, 0.015)',
         })
       } catch {
         // duplicate edge
@@ -227,7 +227,7 @@ function initSigma() {
 
     // Defaults
     defaultNodeColor: '#6b7280',
-    defaultEdgeColor: 'rgba(255, 255, 255, 0.06)',
+    defaultEdgeColor: 'rgba(255, 255, 255, 0.015)',
     stagePadding: 40,
     zIndex: true,
     enableNodeHoverHighlighting: false,
