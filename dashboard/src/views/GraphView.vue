@@ -171,7 +171,6 @@ const searchMatches = new Set<string>()
 const hubNodes = new Set<string>()
 const chatFocusedNodes = new Set<string>()
 const chatFocusedNeighbors = new Set<string>()
-let chatHighlightPaused = false  // paused by click-void, resumed on next message
 
 function isTypeActive(type: string) {
   return activeTypes.value.has(type)
@@ -244,6 +243,13 @@ function initSigma() {
     renderer.kill()
     renderer = null
   }
+
+  // Clear stale highlight state — node IDs from previous graph may not exist
+  chatFocusedNodes.clear()
+  chatFocusedNeighbors.clear()
+  focusedNode = null
+  focusedNeighbors.clear()
+  focusedLabel.value = ''
 
   graph = new Graph()
 
@@ -457,13 +463,12 @@ function initSigma() {
     await fetchNodeDetail(node)
   })
 
-  // Click background to deselect — pause conversation highlight, restore full graph
+  // Click background to deselect — clear all highlights, restore full graph
   renderer.on('clickStage', () => {
     unfocusNode()
     clearSelection()
     chatFocusedNodes.clear()
     chatFocusedNeighbors.clear()
-    chatHighlightPaused = true
     renderer?.refresh()
   })
 }
@@ -506,14 +511,15 @@ watch(() => chatStore.focusEntityId, async (entityId) => {
 watch(() => chatStore.currentSources, async (sources) => {
   if (!sources || !graph) return
 
-  // New sources arrived — resume highlight if paused, accumulate entities
-  chatHighlightPaused = false
-
   // Clear single click-focus to avoid conflicts
   focusedNode = null
   focusedNeighbors.clear()
-  focusedLabel.value = ''
   clearSelection()
+
+  // Purge any stale IDs from previous graph reloads
+  for (const id of chatFocusedNodes) {
+    if (!graph.hasNode(id)) chatFocusedNodes.delete(id)
+  }
 
   let added = false
   let firstEntityId: string | null = null
@@ -528,18 +534,26 @@ watch(() => chatStore.currentSources, async (sources) => {
   // Compute neighbors: union of all neighbors of all chat-focused nodes
   chatFocusedNeighbors.clear()
   for (const nodeId of chatFocusedNodes) {
+    if (!graph.hasNode(nodeId)) continue
     graph.forEachNeighbor(nodeId, (n) => {
       if (!chatFocusedNodes.has(n)) chatFocusedNeighbors.add(n)
     })
   }
 
+  // Update status bar
+  focusedLabel.value = chatFocusedNodes.size > 0
+    ? `${chatFocusedNodes.size} chat entities`
+    : ''
+
   if (chatFocusedNodes.size > 0) {
     renderer?.refresh()
     if (added) zoomToNodes(chatFocusedNodes)
-    // Open side panel for the first entity
+    // Open side panel for the first new entity
     if (firstEntityId) {
       await fetchNodeDetail(firstEntityId)
     }
+  } else {
+    renderer?.refresh()
   }
 })
 
@@ -548,7 +562,7 @@ watch(() => chatStore.messages.length, (len) => {
   if (len === 0) {
     chatFocusedNodes.clear()
     chatFocusedNeighbors.clear()
-    chatHighlightPaused = false
+    focusedLabel.value = ''
     renderer?.refresh()
   }
 })
