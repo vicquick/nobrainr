@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     chunk_overlap_chars: int = 300  # overlap between consecutive chunks
     chunk_threshold: int = 4000  # content above this length gets chunked
     chunk_context_window: int = 1  # fetch N adjacent chunks around search hits
+    contextual_embeddings_enabled: bool = True  # prepend LLM-generated context to chunks before embedding
 
     # Reranking
     reranker_enabled: bool = False
