@@ -247,6 +247,40 @@ def import_claude(directory, machine):
     console.print_json(json.dumps(result, indent=2))
 
 
+@main.command("import-documents")
+@click.argument("directory")
+@click.option("--machine", "-m", help="Machine name for provenance")
+@click.option("--category", "-c", default="documentation", help="Category for stored memories")
+@click.option("--tags", help="Comma-separated extra tags")
+@click.option("--no-vision", is_flag=True, help="Skip vision extraction for images/scanned PDFs")
+@click.option("--no-recursive", is_flag=True, help="Don't recurse into subdirectories")
+def import_documents(directory, machine, category, tags, no_vision, no_recursive):
+    """Import documents (PDF, images, DOCX, markdown, text) from a directory."""
+    async def _import():
+        from nobrainr.db.pool import get_pool, close_pool
+        from nobrainr.db.schema import init_schema
+        from nobrainr.importers.documents import import_documents as do_import
+
+        pool = await get_pool()
+        await init_schema(pool)
+        tag_list = [t.strip() for t in tags.split(",")] if tags else None
+        result = await do_import(
+            directory,
+            source_machine=machine,
+            use_vision=not no_vision,
+            category=category,
+            tags=tag_list,
+            recursive=not no_recursive,
+        )
+        await close_pool()
+        return result
+
+    with console.status("Importing documents..."):
+        result = asyncio.run(_import())
+
+    console.print_json(json.dumps(result, indent=2))
+
+
 @main.command("normalize-categories")
 def normalize_categories_cmd():
     """Normalize all memory categories to canonical set."""
