@@ -252,7 +252,11 @@ async def memory_update(
             embed_input = content
         embedding = await embed_text(embed_input)
 
-    return await queries.update_memory(
+    # Snapshot before mutation
+    old_mem = await queries.get_memory(memory_id)
+    old_snapshot = dict(old_mem) if old_mem else None
+
+    result = await queries.update_memory(
         memory_id,
         content=content,
         summary=summary,
@@ -262,6 +266,19 @@ async def memory_update(
         confidence=confidence,
         metadata=metadata,
     )
+
+    # Record version
+    try:
+        await queries.record_memory_version(
+            memory_id,
+            "manual_update",
+            changed_by="mcp",
+            old_snapshot=old_snapshot,
+        )
+    except Exception:
+        pass  # Don't fail the update if versioning fails
+
+    return result
 
 
 # ──────────────────────────────────────────────
@@ -278,10 +295,71 @@ async def memory_delete(memory_id: str) -> dict:
         _validate_uuid(memory_id)
     except ValueError:
         return {"error": "Invalid memory_id format"}
+    # Snapshot before deletion
+    old_mem = await queries.get_memory(memory_id)
+    old_snapshot = dict(old_mem) if old_mem else None
+
+    if old_snapshot:
+        try:
+            await queries.record_memory_version(
+                memory_id,
+                "manual_delete",
+                changed_by="mcp",
+                old_snapshot=old_snapshot,
+            )
+        except Exception:
+            pass
+
     deleted = await queries.delete_memory(memory_id)
     if deleted:
         return {"status": "deleted", "id": memory_id}
     return {"status": "not_found", "id": memory_id}
+
+
+# ──────────────────────────────────────────────
+# Tool: memory_history
+# ──────────────────────────────────────────────
+@mcp.tool()
+async def memory_history(memory_id: str) -> list[dict]:
+    """Get the full version history of a memory (audit trail / time machine).
+
+    Returns all recorded versions ordered newest-first.
+    Each version includes: version number, change_type, content snapshot,
+    tags, category, change_reason, and who made the change.
+
+    Args:
+        memory_id: The UUID of the memory.
+    """
+    try:
+        _validate_uuid(memory_id)
+    except ValueError:
+        return [{"error": "Invalid memory_id format"}]
+    return await queries.get_memory_history(memory_id)
+
+
+# ──────────────────────────────────────────────
+# Tool: memory_restore
+# ──────────────────────────────────────────────
+@mcp.tool()
+async def memory_restore(memory_id: str, version: int) -> dict:
+    """Restore a memory to a previous version from its history.
+
+    This reverts the memory's content, tags, category, and confidence
+    to the state captured in the specified version snapshot. A new
+    version record is created with change_type='restore'.
+
+    Args:
+        memory_id: The UUID of the memory to restore.
+        version: The version number to restore to (from memory_history).
+    """
+    try:
+        _validate_uuid(memory_id)
+    except ValueError:
+        return {"error": "Invalid memory_id format"}
+    result = await queries.restore_memory_version(memory_id, version)
+    if result is None:
+        return {"error": "Version not found or memory does not exist"}
+    return result
 
 
 # ──────────────────────────────────────────────

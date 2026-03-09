@@ -455,6 +455,26 @@ async def api_chat(request: Request) -> StreamingResponse | JSONResponse:
     )
 
 
+async def api_memory_history(request):
+    """GET /api/memories/{memory_id}/history — full version audit trail."""
+    memory_id = request.path_params["memory_id"]
+    history = await queries.get_memory_history(memory_id)
+    return JSONResponse(history)
+
+
+async def api_memory_restore(request):
+    """POST /api/memories/{memory_id}/restore — restore to a previous version."""
+    memory_id = request.path_params["memory_id"]
+    body = await request.json()
+    version = body.get("version")
+    if version is None:
+        return JSONResponse({"error": "version is required"}, status_code=400)
+    result = await queries.restore_memory_version(memory_id, int(version))
+    if result is None:
+        return JSONResponse({"error": "Version not found"}, status_code=404)
+    return JSONResponse(result)
+
+
 api_routes = [
     Route("/api/chat", api_chat, methods=["POST"]),
     Route("/api/graph", api_graph),
@@ -463,6 +483,8 @@ api_routes = [
     Route("/api/memories/{memory_id}", api_memory_update, methods=["POST"]),
     Route("/api/memories/{memory_id}", api_memory_delete, methods=["DELETE"]),
     Route("/api/memories/{memory_id}/feedback", api_memory_feedback, methods=["POST"]),
+    Route("/api/memories/{memory_id}/history", api_memory_history, methods=["GET"]),
+    Route("/api/memories/{memory_id}/restore", api_memory_restore, methods=["POST"]),
     Route("/api/timeline", api_timeline),
     Route("/api/node/{entity_id}", api_node_detail),
     Route("/api/stats", api_stats),

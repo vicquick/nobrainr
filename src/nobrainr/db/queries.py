@@ -51,6 +51,25 @@ async def store_memory(
         )
         result = {"id": str(row["id"]), "created_at": row["created_at"].isoformat()}
         publish("memory_created", {"id": result["id"]})
+
+        # Record version 0 (creation snapshot)
+        try:
+            await conn.execute(
+                """INSERT INTO memory_versions
+                   (memory_id, version, content, summary, tags, category, confidence,
+                    metadata, change_type, changed_by)
+                   VALUES ($1, 0, $2, $3, $4, $5, $6, $7, 'created', 'system')""",
+                row["id"],
+                content,
+                summary,
+                tags or [],
+                category,
+                confidence,
+                _jsonb(metadata),
+            )
+        except Exception:
+            logger.warning("Failed to record version 0 for %s", result["id"])
+
         return result
 
 
@@ -397,6 +416,152 @@ async def delete_memory(memory_id: str) -> bool:
         if deleted:
             publish("memory_deleted", {"id": memory_id})
         return deleted
+
+
+# ──────────────────────────────────────────────
+# Memory versioning (audit trail / time machine)
+# ──────────────────────────────────────────────
+
+async def record_memory_version(
+    memory_id: str,
+    change_type: str,
+    *,
+    change_reason: str | None = None,
+    changed_by: str | None = None,
+    source_memory_id: str | None = None,
+    similarity_score: float | None = None,
+    old_snapshot: dict | None = None,
+) -> int | None:
+    """Snapshot a memory's current state as a version record.
+
+    Call this BEFORE mutating the memory. For 'created' events, pass the
+    new content as old_snapshot since the memory doesn't exist yet.
+
+    Returns the version number, or None if the memory wasn't found.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Get current state (or use provided snapshot for creation)
+        if old_snapshot is not None:
+            mem = old_snapshot
+        else:
+            row = await conn.fetchrow(
+                "SELECT content, summary, tags, category, confidence, metadata "
+                "FROM memories WHERE id = $1",
+                UUID(memory_id),
+            )
+            if not row:
+                return None
+            mem = dict(row)
+
+        # Next version number
+        max_ver = await conn.fetchval(
+            "SELECT COALESCE(MAX(version), -1) FROM memory_versions WHERE memory_id = $1",
+            UUID(memory_id),
+        )
+        version = max_ver + 1
+
+        await conn.execute(
+            """INSERT INTO memory_versions
+               (memory_id, version, content, summary, tags, category, confidence,
+                metadata, change_type, change_reason, changed_by,
+                source_memory_id, similarity_score)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)""",
+            UUID(memory_id),
+            version,
+            mem.get("content", ""),
+            mem.get("summary"),
+            mem.get("tags") or [],
+            mem.get("category"),
+            mem.get("confidence"),
+            json.dumps(mem.get("metadata") or {}),
+            change_type,
+            change_reason,
+            changed_by,
+            UUID(source_memory_id) if source_memory_id else None,
+            similarity_score,
+        )
+        return version
+
+
+async def get_memory_history(memory_id: str) -> list[dict]:
+    """Get full version history for a memory, newest first."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT id, memory_id, version, content, summary, tags, category,
+                      confidence, metadata, change_type, change_reason,
+                      changed_by, source_memory_id, similarity_score,
+                      content_changed, tags_changed, category_changed, created_at
+               FROM memory_versions
+               WHERE memory_id = $1
+               ORDER BY version DESC""",
+            UUID(memory_id),
+        )
+        return [
+            {
+                **dict(r),
+                "id": str(r["id"]),
+                "memory_id": str(r["memory_id"]),
+                "source_memory_id": str(r["source_memory_id"]) if r["source_memory_id"] else None,
+                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+                "metadata": json.loads(r["metadata"]) if r["metadata"] else {},
+            }
+            for r in rows
+        ]
+
+
+async def restore_memory_version(memory_id: str, version: int) -> dict | None:
+    """Restore a memory to a specific version. Records a 'restore' version."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Get the target version snapshot
+        row = await conn.fetchrow(
+            """SELECT content, summary, tags, category, confidence, metadata
+               FROM memory_versions
+               WHERE memory_id = $1 AND version = $2""",
+            UUID(memory_id),
+            version,
+        )
+        if not row:
+            return None
+
+        snapshot = dict(row)
+
+        # Record current state before restoring
+        await record_memory_version(
+            memory_id,
+            "restore",
+            change_reason=f"Restored to version {version}",
+            changed_by="manual",
+        )
+
+        # Apply the snapshot
+        new_embedding = None
+        try:
+            from nobrainr.embeddings.ollama import embed_text
+            new_embedding = await embed_text(snapshot["content"])
+        except Exception:
+            pass
+
+        await conn.execute(
+            """UPDATE memories
+               SET content = $2, summary = $3, tags = $4, category = $5,
+                   confidence = $6, metadata = $7::jsonb,
+                   embedding = COALESCE($8, embedding)
+               WHERE id = $1""",
+            UUID(memory_id),
+            snapshot["content"],
+            snapshot["summary"],
+            snapshot["tags"] or [],
+            snapshot["category"],
+            snapshot["confidence"],
+            json.dumps(json.loads(snapshot["metadata"]) if snapshot["metadata"] else {}),
+            new_embedding,
+        )
+
+        publish("memory_updated", {"id": memory_id, "restored_to_version": version})
+        return {"id": memory_id, "restored_to_version": version, "content": snapshot["content"]}
 
 
 async def query_memories(
