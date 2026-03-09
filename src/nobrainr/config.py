@@ -118,5 +118,17 @@ class Settings(BaseSettings):
     interest_expansion_batch_size: int = 3  # research topics per cycle
     interest_signal_decay_days: int = 30  # signals older than 30 days lose weight
 
+    # Monitoring & Alerts
+    monitoring_enabled: bool = True
+    monitoring_interval_hours: float = 1.0
+    monitoring_email_enabled: bool = False
+    monitoring_smtp_host: str = ""
+    monitoring_smtp_port: int = 587
+    monitoring_smtp_user: str = ""
+    monitoring_smtp_password: str = ""
+    monitoring_smtp_from: str = ""
+    monitoring_smtp_to: str = ""  # comma-separated recipients
+    monitoring_unhealthy_threshold: int = 3  # consecutive unhealthy checks before alerting
+
 
 settings = Settings()
