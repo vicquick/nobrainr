@@ -629,47 +629,75 @@ async def crawl_page(
     extract_markdown: bool = True,
     extract_links: bool = False,
     wait_for_selector: str | None = None,
+    css_selector: str | None = None,
+    target_elements: list[str] | None = None,
+    query: str | None = None,
+    capture_network: bool = False,
+    screenshot: bool = False,
 ) -> dict:
     """Crawl a web page and return its content as clean markdown.
 
     Uses a local Crawl4AI instance with headless Chromium for JS-rendered pages.
+    Content is automatically filtered to remove boilerplate (nav, sidebars, ads).
 
     Args:
         url: The URL to crawl.
         extract_markdown: Return cleaned markdown content (default True).
         extract_links: Include extracted links in response.
         wait_for_selector: CSS selector to wait for before extracting (for JS-heavy pages).
+        css_selector: CSS selector to scope extraction to a specific page region.
+        target_elements: List of CSS selectors to focus content extraction on.
+        query: When set, uses BM25 relevance filtering to return only content matching this query.
+        capture_network: Capture XHR/fetch API calls made by the page (for SPA API discovery).
+        screenshot: Include a base64 screenshot of the page.
     """
-    import httpx
+    from nobrainr.crawler.client import crawl4ai_request
 
-    payload: dict = {
-        "urls": [url],
+    crawler_config: dict = {
         "cache_mode": "bypass",
         "word_count_threshold": 20,
-        "excluded_tags": ["nav", "footer", "header", "aside"],
-        "exclude_external_links": True,
+        "exclude_social_media_links": True,
+        "remove_overlay_elements": True,
     }
+
+    if css_selector:
+        crawler_config["css_selector"] = css_selector
+    if target_elements:
+        crawler_config["target_elements"] = target_elements
     if wait_for_selector:
-        payload["wait_for"] = f"css:{wait_for_selector}"
+        crawler_config["wait_for"] = f"css:{wait_for_selector}"
+    if capture_network:
+        crawler_config["capture_network_requests"] = True
 
-    headers = {"Content-Type": "application/json"}
-    if settings.crawl4ai_api_token:
-        headers["Authorization"] = f"Bearer {settings.crawl4ai_api_token}"
+    # Content filtering: BM25 (query-aware) or Pruning (general noise removal)
+    if query:
+        crawler_config["markdown_generator"] = {
+            "type": "DefaultMarkdownGenerator",
+            "params": {
+                "content_filter": {
+                    "type": "BM25ContentFilter",
+                    "params": {"user_query": query, "bm25_threshold": 1.0},
+                }
+            },
+        }
+    else:
+        crawler_config["markdown_generator"] = {
+            "type": "DefaultMarkdownGenerator",
+            "params": {
+                "content_filter": {
+                    "type": "PruningContentFilter",
+                    "params": {
+                        "threshold": 0.45,
+                        "threshold_type": "dynamic",
+                        "min_word_threshold": 5,
+                    },
+                }
+            },
+        }
 
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(
-                f"{settings.crawl4ai_url}/crawl",
-                json=payload,
-                headers=headers,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-    except Exception as e:
-        return {"error": f"Crawl failed: {e}", "url": url}
-
-    if not data.get("success") or not data.get("results"):
-        return {"error": "Crawl returned no results", "url": url, "raw": str(data)[:500]}
+    data = await crawl4ai_request(url, crawler_config=crawler_config)
+    if "error" in data:
+        return data
 
     result = data["results"][0]
     output: dict = {
@@ -680,7 +708,10 @@ async def crawl_page(
 
     if extract_markdown:
         md = result.get("markdown", {})
-        output["markdown"] = md.get("fit_markdown") or md.get("raw_markdown", "") if isinstance(md, dict) else str(md)
+        if isinstance(md, dict):
+            output["markdown"] = md.get("fit_markdown") or md.get("raw_markdown", "")
+        else:
+            output["markdown"] = str(md)
 
     if extract_links:
         links = result.get("links", {})
@@ -689,7 +720,42 @@ async def crawl_page(
             "external": [link.get("href") for link in links.get("external", [])[:50]],
         }
 
+    if capture_network and result.get("network_requests"):
+        api_calls = [
+            {"method": r.get("method"), "url": r.get("url"), "status": r.get("status")}
+            for r in result["network_requests"]
+            if r.get("event_type") in ("request", "response")
+            and r.get("resource_type") in ("fetch", "xhr", None)
+        ][:50]
+        output["api_calls"] = api_calls
+
+    if screenshot:
+        ss = await _crawl4ai_screenshot(url)
+        if ss:
+            output["screenshot_base64"] = ss
+
     return output
+
+
+async def _crawl4ai_screenshot(url: str) -> str | None:
+    """Capture a page screenshot via Crawl4AI /screenshot endpoint."""
+    import httpx
+
+    headers = {"Content-Type": "application/json"}
+    if settings.crawl4ai_api_token:
+        headers["Authorization"] = f"Bearer {settings.crawl4ai_api_token}"
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                f"{settings.crawl4ai_url}/screenshot",
+                json={"url": url},
+                headers=headers,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("screenshot") or data.get("result", {}).get("screenshot")
+    except Exception:
+        return None
 
 
 # ──────────────────────────────────────────────
@@ -782,6 +848,126 @@ async def crawl_and_store(
         "chars_total": len(content),
         "chunked": chunked,
         "result": store_result,
+    }
+
+
+# ──────────────────────────────────────────────
+# Tool: deep_crawl
+# ──────────────────────────────────────────────
+@mcp.tool()
+async def deep_crawl(
+    url: str,
+    max_pages: int = 10,
+    max_depth: int = 3,
+    strategy: str = "bfs",
+    include_patterns: list[str] | None = None,
+    exclude_patterns: list[str] | None = None,
+    store_results: bool = False,
+    tags: list[str] | None = None,
+    category: str = "documentation",
+    source_machine: str | None = None,
+) -> dict:
+    """Deep crawl a website starting from a URL, following links up to a depth limit.
+
+    Uses Crawl4AI's deep crawl engine (BFS or DFS) to automatically discover
+    and crawl multiple pages from a site. Content is filtered with PruningContentFilter.
+
+    When store_results=True, all crawled pages are stored as chunked memories
+    in the knowledge graph with entity extraction.
+
+    Args:
+        url: Starting URL for the deep crawl.
+        max_pages: Maximum pages to crawl (default 10, max 50).
+        max_depth: Maximum link depth from start URL (default 3).
+        strategy: Crawl strategy — "bfs" (breadth-first) or "dfs" (depth-first).
+        include_patterns: URL regex patterns to include (e.g. ["/docs/.*"]).
+        exclude_patterns: URL regex patterns to exclude (e.g. ["/blog/.*"]).
+        store_results: Store all crawled pages as memories (default False).
+        tags: Tags for stored memories (only used when store_results=True).
+        category: Category for stored memories (default "documentation").
+        source_machine: Machine identifier for stored memories.
+    """
+    from nobrainr.crawler.client import crawl4ai_deep
+
+    max_pages = max(1, min(max_pages, 50))
+    max_depth = max(1, min(max_depth, 5))
+
+    data = await crawl4ai_deep(
+        url,
+        strategy=strategy,
+        max_pages=max_pages,
+        max_depth=max_depth,
+        include_patterns=include_patterns,
+        exclude_patterns=exclude_patterns,
+    )
+
+    if "error" in data:
+        return data
+
+    pages = data.get("pages", [])
+
+    if store_results and pages:
+        from nobrainr.services.memory import store_document_chunked
+
+        stored_count = 0
+        all_tags = list(tags or []) + ["crawled", "deep-crawl"]
+        norm_category = normalize_category(category)
+
+        for page in pages:
+            markdown = page.get("markdown", "")
+            if not markdown or len(markdown.strip()) < 50:
+                continue
+            try:
+                store_result = await store_document_chunked(
+                    content=markdown[:50000],
+                    title=page.get("title", page["url"]),
+                    summary=f"Deep crawl: {page.get('title', page['url'])}"[:200],
+                    tags=all_tags,
+                    category=norm_category,
+                    source_type="crawl",
+                    source_machine=source_machine,
+                    source_ref=page["url"],
+                )
+                if store_result.get("status") in ("stored", "updated"):
+                    stored_count += store_result.get("chunks", 1)
+            except Exception:
+                logger.exception("deep_crawl store failed for %s", page["url"])
+
+        data["stored_chunks"] = stored_count
+
+    # Trim markdown from response to avoid huge payloads (return truncated summaries)
+    for page in pages:
+        md = page.get("markdown", "")
+        page["chars"] = len(md)
+        page["markdown"] = md[:2000] + ("..." if len(md) > 2000 else "")
+
+    return data
+
+
+# ──────────────────────────────────────────────
+# Tool: discover_sitemap
+# ──────────────────────────────────────────────
+@mcp.tool()
+async def discover_sitemap(
+    url: str,
+    max_urls: int = 100,
+) -> dict:
+    """Discover page URLs from a website's sitemap.xml and robots.txt.
+
+    Useful for finding all documentation pages on a site before selective crawling.
+
+    Args:
+        url: Base URL of the website (e.g. "https://docs.example.com").
+        max_urls: Maximum URLs to return (default 100).
+    """
+    from nobrainr.crawler.client import discover_sitemap_urls
+
+    max_urls = max(1, min(max_urls, 500))
+    urls = await discover_sitemap_urls(url, max_urls=max_urls)
+    return {
+        "base_url": url,
+        "urls_found": len(urls),
+        "urls": urls,
     }
 
 

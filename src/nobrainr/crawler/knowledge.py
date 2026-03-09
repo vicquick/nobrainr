@@ -14,9 +14,8 @@ import logging
 from datetime import datetime
 from urllib.parse import urlparse
 
-import httpx
-
 from nobrainr.config import settings
+from nobrainr.crawler.client import crawl4ai_job, crawl4ai_request
 from nobrainr.db import queries
 from nobrainr.db.pool import get_pool
 from nobrainr.services.memory import store_document_chunked
@@ -71,36 +70,49 @@ TRUSTED_DOMAINS = {
 DOC_PATH_PATTERNS = ("/docs/", "/guide/", "/tutorial/", "/api/", "/reference/", "/manual/", "/learn/")
 
 
-async def _crawl_url(url: str, *, extract_links: bool = False) -> dict | None:
-    """Fetch a URL via Crawl4AI and return markdown content + optional links."""
-    headers = {"Content-Type": "application/json"}
-    if settings.crawl4ai_api_token:
-        headers["Authorization"] = f"Bearer {settings.crawl4ai_api_token}"
+async def _crawl_url(
+    url: str,
+    *,
+    extract_links: bool = False,
+    use_async_job: bool = False,
+    query: str | None = None,
+) -> dict | None:
+    """Fetch a URL via Crawl4AI and return markdown content + optional links.
+
+    Args:
+        url: URL to crawl.
+        extract_links: Include discovered links in the output.
+        use_async_job: Use the async /crawl/job API (better for slow pages).
+        query: If set, use BM25 query-aware content filtering instead of pruning.
+    """
+    from nobrainr.crawler.client import bm25_markdown_generator
+
+    crawler_config: dict = {"word_count_threshold": 50}
+
+    # Use BM25 for query-aware filtering, otherwise PruningContentFilter is applied
+    # automatically by the shared client
+    if query:
+        crawler_config["markdown_generator"] = bm25_markdown_generator(query)
 
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(
-                f"{settings.crawl4ai_url}/crawl",
-                json={
-                    "urls": [url],
-                    "cache_mode": "bypass",
-                    "word_count_threshold": 50,
-                    "excluded_tags": ["nav", "footer", "header", "aside"],
-                    "exclude_external_links": True,
-                    "text_mode": True,
-                },
-                headers=headers,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        if use_async_job:
+            data = await crawl4ai_job(url, crawler_config=crawler_config)
+        else:
+            data = await crawl4ai_request(url, crawler_config=crawler_config)
     except Exception as e:
         logger.warning("Knowledge crawl failed for %s: %s", url, e)
         return None
 
-    if not data.get("success") or not data.get("results"):
+    if "error" in data:
+        logger.warning("Knowledge crawl error for %s: %s", url, data["error"])
         return None
 
-    result = data["results"][0]
+    # Extract result — async job wraps in data['result']['results'], sync in data['results']
+    results = data.get("results") or data.get("result", {}).get("results")
+    if not results:
+        return None
+
+    result = results[0]
     if not result.get("success"):
         return None
 
@@ -259,7 +271,7 @@ async def knowledge_crawl() -> dict:
         )
     queued = [(r["url"], r["tags"] or [], r["category"] or "documentation") for r in queued_rows]
 
-    # Fill remaining batch slots from seed list
+    # Fill remaining batch slots from seed list + sitemap discovery
     remaining = settings.knowledge_crawl_batch_size - len(queued)
     seed_candidates = []
     if remaining > 0:
@@ -268,6 +280,25 @@ async def knowledge_crawl() -> dict:
                 seed_candidates.append((url, tags, category))
             if len(seed_candidates) >= remaining:
                 break
+
+    # If seed list is exhausted, try sitemap discovery from seed domains
+    if len(seed_candidates) < remaining and not seed_candidates:
+        try:
+            from nobrainr.crawler.client import discover_sitemap_urls
+
+            seed_domains = {urlparse(u).scheme + "://" + urlparse(u).netloc for u, _, _ in SEED_URLS}
+            for base_url in list(seed_domains)[:3]:  # Check up to 3 domains
+                sm_urls = await discover_sitemap_urls(base_url, max_urls=20)
+                for sm_url in sm_urls:
+                    if not await _is_already_crawled(sm_url):
+                        domain = urlparse(sm_url).netloc
+                        seed_candidates.append((sm_url, ["crawled", "sitemap-discovered", domain], "documentation"))
+                    if len(seed_candidates) >= remaining:
+                        break
+                if len(seed_candidates) >= remaining:
+                    break
+        except Exception:
+            logger.debug("Sitemap discovery failed, using seed list only")
 
     to_crawl = queued + seed_candidates
 
@@ -284,8 +315,8 @@ async def knowledge_crawl() -> dict:
             await _mark_queued_crawled(url)
             continue
 
-        # Crawl with link extraction enabled
-        result = await _crawl_url(url, extract_links=settings.link_discovery_enabled)
+        # Crawl with link extraction enabled; use async job API for scheduler (avoids HTTP timeouts)
+        result = await _crawl_url(url, extract_links=settings.link_discovery_enabled, use_async_job=True)
         if not result:
             crawled += 1
             await _mark_queued_crawled(url, error="crawl_failed")
@@ -370,7 +401,7 @@ async def freshness_recrawl() -> dict:
 
     for mem in stale:
         url = mem["source_ref"]
-        result = await _crawl_url(url)
+        result = await _crawl_url(url, use_async_job=True)
         recrawled += 1
 
         if not result:
