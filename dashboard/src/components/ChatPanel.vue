@@ -2,11 +2,12 @@
   <v-navigation-drawer
     v-model="chatStore.isOpen"
     location="right"
-    :width="mobile ? undefined : 420"
+    :width="mobile ? '100%' : 420"
     temporary
-    scrim="rgba(0,0,0,0.3)"
+    :scrim="mobile ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.3)'"
     class="chat-panel"
     :class="{ 'chat-panel-mobile': mobile }"
+    :touchless="false"
   >
     <div class="d-flex flex-column fill-height">
       <!-- Header -->
@@ -460,6 +461,12 @@ watch(
 .chat-panel-mobile {
   width: 100% !important;
   max-width: 100% !important;
+  min-width: 100% !important;
+}
+/* Ensure mobile drawer fully hides when closed (no residual transform) */
+.chat-panel-mobile:not(.v-navigation-drawer--active) {
+  transform: translateX(100%) !important;
+  visibility: hidden !important;
 }
 /* Tablet: slightly narrower than desktop */
 @media (min-width: 600px) and (max-width: 960px) {
