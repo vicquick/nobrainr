@@ -122,7 +122,6 @@ class Settings(BaseSettings):
     monitoring_enabled: bool = True
     monitoring_interval_hours: float = 1.0
     monitoring_email_enabled: bool = False
-    monitoring_email_digest_hour: int = 8  # UTC hour for daily digest
     monitoring_smtp_host: str = ""
     monitoring_smtp_port: int = 587
     monitoring_smtp_user: str = ""

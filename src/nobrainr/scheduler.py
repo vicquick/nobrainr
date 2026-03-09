@@ -52,8 +52,8 @@ class Scheduler:
             {"name": "maintenance", "interval_hours": settings.maintenance_interval_hours, "type": "sql"},
             {"name": "feedback_integration", "interval_hours": settings.feedback_interval_hours, "type": "sql"},
             {"name": "memory_decay", "interval_hours": settings.decay_interval_hours, "type": "sql"},
-            {"name": "monitor_health", "interval_hours": settings.monitoring_interval_hours, "type": "sql"},
-            {"name": "email_digest", "interval_hours": 24.0, "type": "sql"},
+            {"name": "monitor_health", "interval_hours": settings.monitoring_interval_hours, "type": "system"},
+            {"name": "email_digest", "interval_hours": 24.0, "type": "system"},
         ]
         llm_jobs = [
             {"name": "chatgpt_distill", "interval_hours": settings.chatgpt_distill_interval_hours, "type": "llm"},
