@@ -50,6 +50,7 @@ def _build_context(memories: list[dict], entities: list[dict]) -> str:
 async def stream_chat_response(
     message: str,
     history: list[dict],
+    images: list[str] | None = None,
 ) -> AsyncIterator[str]:
     """Full RAG pipeline: sanitize → embed → search → context → stream."""
     # 1. Sanitize input
@@ -111,7 +112,10 @@ async def stream_chat_response(
         content = sanitize_user_input(h.get("content", ""), settings.chat_max_message_length)
         if content:
             llm_messages.append({"role": role, "content": content})
-    llm_messages.append({"role": "user", "content": clean})
+    user_msg: dict = {"role": "user", "content": clean}
+    if images:
+        user_msg["images"] = images
+    llm_messages.append(user_msg)
 
     # 8. Stream from Ollama
     model = settings.chat_model or settings.extraction_model
