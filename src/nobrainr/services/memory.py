@@ -150,6 +150,108 @@ async def store_memory_with_extraction(
     return {"status": "stored", **result}
 
 
+async def store_document_chunked(
+    content: str,
+    *,
+    title: str | None = None,
+    summary: str | None = None,
+    tags: list[str] | None = None,
+    category: str | None = None,
+    source_type: str = "document",
+    source_machine: str | None = None,
+    source_ref: str | None = None,
+    confidence: float = 0.8,
+    metadata: dict | None = None,
+    max_chars: int | None = None,
+    overlap: int | None = None,
+) -> dict:
+    """Store a long document as chunked memories with linking metadata.
+
+    If the content is shorter than the chunk threshold, stores as a single
+    memory via the normal path.  Otherwise splits into overlapping chunks,
+    stores each one, and links them via metadata.
+
+    Returns:
+        {"status": "stored", "chunks": N, "memory_ids": [...], "document_id": "..."}
+    """
+    from nobrainr.services.chunking import chunk_text
+
+    content = content.strip()
+    if not content:
+        return {"error": "Empty content"}
+
+    # Short content — store as single memory
+    if len(content) <= settings.chunk_threshold:
+        result = await store_memory_with_extraction(
+            content=content,
+            summary=summary or (f"Document: {title}" if title else None),
+            tags=tags,
+            category=category,
+            source_type=source_type,
+            source_machine=source_machine,
+            source_ref=source_ref,
+            confidence=confidence,
+            metadata=metadata,
+        )
+        return {**result, "chunks": 1, "memory_ids": [result.get("id") or result.get("updated_id", "")]}
+
+    # Chunk the content
+    chunks = chunk_text(content, max_chars=max_chars, overlap=overlap)
+    if not chunks:
+        return {"error": "Chunking produced no output"}
+
+    # Generate a document ID to link all chunks
+    import uuid
+    document_id = str(uuid.uuid4())
+
+    memory_ids: list[str] = []
+    stored = 0
+    skipped = 0
+
+    for chunk in chunks:
+        chunk_meta = dict(metadata or {})
+        chunk_meta.update({
+            "document_id": document_id,
+            "chunk_index": chunk.index,
+            "chunk_total": chunk.total,
+            "chunk_offset": chunk.char_offset,
+        })
+        if title:
+            chunk_meta["document_title"] = title
+
+        chunk_summary = title or summary or source_ref or "Document chunk"
+        if chunk.total > 1:
+            chunk_summary = f"{chunk_summary} [{chunk.index + 1}/{chunk.total}]"
+
+        result = await store_memory_with_extraction(
+            content=chunk.text,
+            summary=chunk_summary[:200],
+            tags=tags,
+            category=category,
+            source_type=source_type,
+            source_machine=source_machine,
+            source_ref=source_ref,
+            confidence=confidence,
+            metadata=chunk_meta,
+            skip_dedup=True,  # Don't dedup individual chunks
+        )
+
+        mid = result.get("id") or result.get("updated_id", "")
+        if mid:
+            memory_ids.append(mid)
+            stored += 1
+        else:
+            skipped += 1
+
+    return {
+        "status": "stored",
+        "document_id": document_id,
+        "chunks": stored,
+        "skipped": skipped,
+        "memory_ids": memory_ids,
+    }
+
+
 def _schedule_extraction(memory_id: str, content: str, tags: list[str] | None) -> None:
     """Schedule entity extraction as a background task."""
 
