@@ -6,9 +6,10 @@ you can store learnings with `memory_store`, search past knowledge with `memory_
 and explore the knowledge graph with `entity_search` / `entity_graph`. Everything you
 store is available to every other agent instance connected to this server.
 
-Provides relevance-ranked semantic + hybrid (RRF) search, context-enriched embeddings,
-automatic entity extraction, on-write dedup, and a Vue 3 dashboard with interactive
-graph visualization.
+Provides hybrid search (vector + full-text RRF) by default, context-enriched embeddings,
+chunked document ingestion with overlapping context, optional cross-encoder reranking,
+chunk-aware retrieval, automatic entity extraction, on-write dedup, embedding versioning,
+and a Vue 3 dashboard with interactive graph visualization.
 
 ### Canonical Categories
 Use one of these when storing memories — freeform categories are auto-normalized:
@@ -43,6 +44,10 @@ src/nobrainr/              # Python backend
 │   ├── pool.py            # asyncpg connection pool with pgvector
 │   ├── schema.py          # DDL: memories, entities, entity_memories, entity_relations, etc.
 │   └── queries.py         # All database operations (memory + entity + graph)
+├── services/
+│   ├── memory.py          # store_memory_with_extraction(), store_document_chunked()
+│   ├── chunking.py        # Text chunking with configurable overlap
+│   └── reranker.py        # Cross-encoder reranking via flashrank (optional)
 ├── embeddings/
 │   └── ollama.py          # Ollama API client (embed_text, embed_batch)
 ├── extraction/
@@ -99,14 +104,15 @@ dashboard/                  # Vue 3 frontend (separate build)
 | Tool | Purpose |
 |------|---------|
 | `memory_store` | Store memory with auto-embedding, dedup check, async entity extraction |
-| `memory_search` | Relevance-ranked semantic search (similarity + recency + importance) |
+| `memory_store_document` | Store long documents with chunked ingestion (overlapping chunks, document linking) |
+| `memory_search` | Hybrid search (vector + FTS via RRF) with chunk-aware retrieval and optional reranking |
 | `memory_query` | Structured filter (tags, category, source, machine) |
 | `memory_get` | Retrieve specific memory by ID (tracks access) |
-| `memory_update` | Update memory (re-embeds if content changes) |
+| `memory_update` | Update memory (re-embeds if content changes, versioned) |
 | `memory_delete` | Delete a memory (snapshots before deletion) |
 | `memory_history` | Get full version audit trail for a memory |
 | `memory_restore` | Restore a memory to a previous version |
-| `memory_stats` | Database + knowledge graph statistics |
+| `memory_stats` | Database + knowledge graph + embedding model + chunk statistics |
 | `entity_search` | Semantic search on knowledge graph entities |
 | `entity_graph` | Recursive graph traversal from a named entity |
 | `entity_list` | List entities with optional type filter |
@@ -119,8 +125,50 @@ dashboard/                  # Vue 3 frontend (separate build)
 | `memory_import_chatgpt` | Import ChatGPT export JSON |
 | `memory_import_claude` | Import Claude memory files |
 | `crawl_page` | Crawl a URL and return cleaned markdown content via Crawl4AI |
-| `crawl_and_store` | Crawl a URL and store the content as a memory with entity extraction |
+| `crawl_and_store` | Crawl a URL + chunked ingestion (no more truncation, full content preserved) |
 | `memory_import_documents` | Import documents from a directory (PDF, images, DOCX, markdown) with optional vision OCR |
+
+## Search & Retrieval Pipeline
+
+```
+query → embed(query) → HNSW vector search + FTS keyword search
+                          ↓                    ↓
+                     vector results         FTS results
+                          ↓                    ↓
+                     Reciprocal Rank Fusion (RRF, k=60)
+                          ↓
+                   [optional] cross-encoder reranking (flashrank)
+                          ↓
+                   [optional] chunk context expansion (fetch adjacent chunks)
+                          ↓
+                     final results (with similarity, relevance, rrf_score)
+```
+
+- **Hybrid search** is on by default — every `memory_search` combines vector similarity + full-text matching
+- **Embedding model safeguard** — search only matches memories embedded with the current model (prevents garbage from mixed embeddings during migration)
+- **Context-enriched embeddings** — memories are embedded as `{category}. {tags}. {content}`, not raw text
+- **Chunk-aware retrieval** — when a search hit is part of a chunked document, adjacent chunks are automatically fetched for context continuity
+
+### Chunked Document Ingestion
+
+Long documents (>4000 chars) are automatically split into overlapping chunks:
+- **Max chunk size:** 3000 chars (configurable: `NOBRAINR_CHUNK_MAX_CHARS`)
+- **Overlap:** 300 chars between consecutive chunks (`NOBRAINR_CHUNK_OVERLAP_CHARS`)
+- **Splitting:** Prefers paragraph → line → sentence boundaries
+- **Linking:** All chunks share a `document_id` in metadata with `chunk_index` and `chunk_total`
+- **Dedup skipped:** Individual chunks skip the write-path dedup check
+
+Used by: `memory_store_document`, `crawl_and_store`, `memory_import_documents`, knowledge crawler.
+
+### Embedding Versioning
+
+Each memory and entity tracks which embedding model generated its vector in the `embedding_model` column.
+This enables safe model migration via `nobrainr re-embed --model <new-model>`.
+
+### Reranking (optional)
+
+When `NOBRAINR_RERANKER_ENABLED=true`, search overfetches 3x results and reranks with a cross-encoder
+(flashrank, ONNX, CPU-only, ~100ms for 30 docs). Install with `pip install nobrainr[reranker]`.
 
 ## Memory Versioning (Audit Trail)
 
@@ -294,4 +342,20 @@ uv run ruff check src/
 
 # Test
 uv run pytest
+
+# Install with reranker support
+uv sync --extra reranker
 ```
+
+## Configuration Reference (Retrieval)
+
+| Env Var | Default | Purpose |
+|---------|---------|---------|
+| `NOBRAINR_EMBEDDING_MODEL` | `nomic-embed-text` | Ollama embedding model |
+| `NOBRAINR_EMBEDDING_DIMENSIONS` | `768` | Vector dimensions (must match model) |
+| `NOBRAINR_CHUNK_MAX_CHARS` | `3000` | Max characters per chunk |
+| `NOBRAINR_CHUNK_OVERLAP_CHARS` | `300` | Overlap between consecutive chunks |
+| `NOBRAINR_CHUNK_THRESHOLD` | `4000` | Content above this length gets chunked |
+| `NOBRAINR_CHUNK_CONTEXT_WINDOW` | `1` | Adjacent chunks fetched around search hits |
+| `NOBRAINR_RERANKER_ENABLED` | `false` | Enable cross-encoder reranking |
+| `NOBRAINR_RERANKER_MODEL` | `ms-marco-MiniLM-L-12-v2` | flashrank model name |
