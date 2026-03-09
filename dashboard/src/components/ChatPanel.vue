@@ -39,6 +39,19 @@
           class="message-bubble"
           :class="msg.role"
         >
+          <!-- Inline image preview for user messages.
+               Images are stored as full data URLs (data:image/xxx;base64,...) preserving
+               the original MIME type from the uploaded file. -->
+          <div v-if="msg.images?.length" class="message-images mb-1">
+            <img
+              v-for="(img, idx) in msg.images"
+              :key="idx"
+              :src="img"
+              class="message-image-thumb"
+              @click="openImagePreview(img)"
+            />
+          </div>
+
           <div v-if="chatStore.isThinking && msg === lastAssistantMsg && !msg.content" class="thinking-state">
             <v-progress-circular indeterminate size="14" width="1.5" color="primary" class="mr-2" />
             <span class="text-caption text-medium-emphasis">Searching knowledge base...</span>
@@ -83,8 +96,40 @@
 
       <!-- Input -->
       <div class="chat-input pa-3">
+        <!-- Image preview -->
+        <div v-if="pendingImages.length" class="image-preview-row d-flex ga-2 mb-2">
+          <div v-for="(img, idx) in pendingImages" :key="idx" class="image-preview-item">
+            <img :src="img.dataUrl" class="preview-thumb" />
+            <v-btn
+              icon="mdi-close-circle"
+              size="x-small"
+              variant="text"
+              class="preview-remove"
+              @click="removeImage(idx)"
+            />
+          </div>
+        </div>
+        <!-- Image size error -->
+        <div v-if="imageError" class="text-caption text-error mb-1">{{ imageError }}</div>
         <div class="d-flex align-center ga-2">
+          <v-btn
+            icon="mdi-image-plus"
+            size="small"
+            variant="text"
+            color="grey"
+            :disabled="chatStore.isStreaming"
+            @click="triggerFileInput"
+          />
+          <input
+            ref="fileInput"
+            type="file"
+            accept="image/jpeg,image/png,image/gif,image/webp"
+            multiple
+            class="d-none"
+            @change="onFileSelected"
+          />
           <v-textarea
+            ref="textareaRef"
             v-model="input"
             placeholder="Ask about the knowledge base..."
             variant="outlined"
@@ -95,6 +140,7 @@
             hide-details
             class="flex-grow-1"
             @keydown.enter.exact.prevent="send"
+            @paste="onPaste"
           />
           <v-btn
             :icon="isRecording ? 'mdi-stop' : 'mdi-microphone'"
@@ -111,7 +157,7 @@
             color="primary"
             size="small"
             variant="tonal"
-            :disabled="!input.trim() || chatStore.isStreaming"
+            :disabled="(!input.trim() && !pendingImages.length) || chatStore.isStreaming"
             :loading="chatStore.isStreaming"
             @click="send"
           />
@@ -119,6 +165,13 @@
         <div v-if="micError" class="text-caption text-error mt-1">{{ micError }}</div>
       </div>
     </div>
+    <!-- Full-size image preview dialog -->
+    <v-dialog v-model="showImagePreview" max-width="90vw">
+      <v-card color="#1a1a2e" class="pa-2">
+        <v-btn icon="mdi-close" variant="text" size="small" class="float-right" @click="showImagePreview = false" />
+        <v-img :src="previewImageSrc" max-height="80vh" contain />
+      </v-card>
+    </v-dialog>
   </v-navigation-drawer>
 </template>
 
@@ -134,12 +187,27 @@ const TYPE_COLORS: Record<string, string> = {
   error: '#c46b6b', location: '#6b9e8f', organization: '#7d92b0',
 }
 
+const MAX_IMAGE_SIZE = 10 * 1024 * 1024 // 10 MB
+const MAX_IMAGES = 5
+const ACCEPTED_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
+
+interface PendingImage {
+  dataUrl: string   // for preview display
+  base64: string    // raw base64 without data: prefix (for API)
+}
+
 const chatStore = useChatStore()
 const { mobile } = useDisplay()
 
 const input = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
 const expandedSources = ref(new Set<string>())
+const fileInput = ref<HTMLInputElement | null>(null)
+const textareaRef = ref<InstanceType<any> | null>(null)
+const pendingImages = ref<PendingImage[]>([])
+const imageError = ref('')
+const showImagePreview = ref(false)
+const previewImageSrc = ref('')
 
 // Voice recording state
 const isRecording = ref(false)
@@ -283,10 +351,93 @@ function focusSingleEntity(entityId: string) {
   chatStore.focusEntity(entityId)
 }
 
+function openImagePreview(src: string) {
+  previewImageSrc.value = src
+  showImagePreview.value = true
+}
+
+function triggerFileInput() {
+  fileInput.value?.click()
+}
+
+function processFile(file: File): Promise<PendingImage | null> {
+  return new Promise((resolve) => {
+    if (!ACCEPTED_TYPES.includes(file.type)) {
+      imageError.value = `Unsupported format: ${file.type}. Use JPEG, PNG, GIF, or WebP.`
+      resolve(null)
+      return
+    }
+    if (file.size > MAX_IMAGE_SIZE) {
+      imageError.value = `Image too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Max 10 MB.`
+      resolve(null)
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      const dataUrl = reader.result as string
+      // Strip data:image/...;base64, prefix for API
+      const base64 = dataUrl.replace(/^data:image\/[^;]+;base64,/, '')
+      resolve({ dataUrl, base64 })
+    }
+    reader.onerror = () => resolve(null)
+    reader.readAsDataURL(file)
+  })
+}
+
+async function onFileSelected(event: Event) {
+  imageError.value = ''
+  const target = event.target as HTMLInputElement
+  if (!target.files?.length) return
+  for (const file of Array.from(target.files)) {
+    if (pendingImages.value.length >= MAX_IMAGES) {
+      imageError.value = `Maximum ${MAX_IMAGES} images allowed.`
+      break
+    }
+    const img = await processFile(file)
+    if (img) pendingImages.value.push(img)
+  }
+  // Reset input so same file can be re-selected
+  target.value = ''
+}
+
+async function onPaste(event: ClipboardEvent) {
+  const items = event.clipboardData?.items
+  if (!items) return
+  for (const item of Array.from(items)) {
+    if (item.type.startsWith('image/')) {
+      event.preventDefault()
+      imageError.value = ''
+      if (pendingImages.value.length >= MAX_IMAGES) {
+        imageError.value = `Maximum ${MAX_IMAGES} images allowed.`
+        break
+      }
+      const file = item.getAsFile()
+      if (!file) continue
+      const img = await processFile(file)
+      if (img) pendingImages.value.push(img)
+    }
+  }
+}
+
+function removeImage(idx: number) {
+  pendingImages.value.splice(idx, 1)
+  imageError.value = ''
+}
+
 function send() {
-  if (!input.value.trim() || chatStore.isStreaming) return
-  chatStore.sendMessage(input.value)
+  if ((!input.value.trim() && !pendingImages.value.length) || chatStore.isStreaming) return
+  // Raw base64 for the API, full data URLs (with correct MIME type) for display
+  const apiImages = pendingImages.value.length
+    ? pendingImages.value.map(img => img.base64)
+    : undefined
+  const displayImages = pendingImages.value.length
+    ? pendingImages.value.map(img => img.dataUrl)
+    : undefined
+  const text = input.value.trim() || (apiImages ? 'What is in this image?' : '')
+  chatStore.sendMessage(text, apiImages, displayImages)
   input.value = ''
+  pendingImages.value = []
+  imageError.value = ''
 }
 
 // Auto-scroll on new messages
@@ -419,5 +570,44 @@ watch(
 @keyframes pulse-recording {
   0%, 100% { box-shadow: 0 0 0 0 rgba(244, 67, 54, 0.4); }
   50% { box-shadow: 0 0 0 8px rgba(244, 67, 54, 0); }
+}
+/* Image preview in input area */
+.image-preview-row {
+  flex-wrap: wrap;
+}
+.image-preview-item {
+  position: relative;
+  display: inline-block;
+}
+.preview-thumb {
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.preview-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  background: rgba(18, 18, 26, 0.85) !important;
+}
+/* Image thumbnails inside message bubbles */
+.message-images {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.message-image-thumb {
+  width: 120px;
+  max-height: 120px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.message-image-thumb:hover {
+  opacity: 0.8;
 }
 </style>
