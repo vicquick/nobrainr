@@ -132,6 +132,10 @@ dashboard/                  # Vue 3 frontend (separate build)
 | `deep_crawl` | Multi-page deep crawl (BFS/DFS) with optional store — crawls linked pages from a starting URL |
 | `discover_sitemap` | Discover page URLs from sitemap.xml and robots.txt for targeted crawling |
 | `memory_import_documents` | Import documents from a directory (PDF, images, DOCX, markdown) with optional vision OCR |
+| `distill` | Compress text via local LLM — extract only essential info, 90-99% token savings |
+| `distill_search` | Search memories + auto-compress results into a focused answer |
+| `code_index` | Index a codebase by extracting code symbols (functions, classes, methods) via AST |
+| `code_search` | Search indexed code symbols by name/kind — symbol-level retrieval without reading files |
 
 ## Search & Retrieval Pipeline
 
@@ -228,7 +232,7 @@ Every memory mutation is tracked in the `memory_versions` table. This provides:
 
 ## Scheduler Jobs
 
-The scheduler runs 18 autonomous jobs (3 SQL + 15 LLM). LLM jobs use a configurable
+The scheduler runs 22 autonomous jobs (3 SQL + 2 system + 17 LLM). LLM jobs use a configurable
 semaphore (`NOBRAINR_SCHEDULER_LLM_CONCURRENCY`, default 3) with 1s inter-request delay
 between batch LLM calls for live request coexistence. LLM retry: 5 attempts with
 exponential backoff on empty/malformed JSON responses. Structured labeling jobs use
@@ -265,6 +269,12 @@ exponential backoff on empty/malformed JSON responses. Structured labeling jobs 
 | `maintenance` | 6h | SQL | Recompute importance scores, decay stability |
 | `feedback_integration` | 12h | SQL | Adjust importance based on feedback |
 | `memory_decay` | 24h | SQL | Archive low-value, never-accessed memories >30 days old |
+
+### Self-Improvement (inspired by autoresearch + OpusDelta)
+| Job | Interval | Type | Purpose |
+|-----|----------|------|---------|
+| `system_pulse` | 24h | LLM | Generate daily health transmission — memory stats, growth, search quality, anomalies |
+| `auto_optimize` | 12h | LLM | Analyze search feedback patterns, suggest improvements, store optimization insights |
 
 ### Knowledge Growth Loop
 ```
