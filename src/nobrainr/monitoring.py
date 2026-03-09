@@ -19,8 +19,13 @@ _unhealthy_counts: dict[str, int] = {}
 _previous_containers: set[str] | None = None
 
 
-async def check_docker_health() -> dict:
+async def check_docker_health(*, track_state: bool = True) -> dict:
     """Check Docker container health via subprocess calls.
+
+    Args:
+        track_state: When True (default), track previously-seen containers and
+            detect missing ones.  Set to False for stateless API calls that
+            should not mutate module-level state.
 
     Returns dict with keys: healthy, unhealthy, missing, restarting, oom_killed.
     """
@@ -41,7 +46,10 @@ async def check_docker_health() -> dict:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate()
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+    except asyncio.TimeoutError:
+        logger.warning("docker ps timed out after 10s — skipping container health check")
+        return result
     except FileNotFoundError:
         logger.warning("Docker CLI not found — skipping container health check")
         return result
@@ -77,11 +85,12 @@ async def check_docker_health() -> dict:
             result["healthy"].append(entry)
 
     # Detect missing containers (were running before, now gone)
-    if _previous_containers is not None:
-        missing = _previous_containers - current_containers
-        for name in missing:
-            result["missing"].append({"name": name, "status": "missing", "state": "missing"})
-    _previous_containers = current_containers
+    if track_state:
+        if _previous_containers is not None:
+            missing = _previous_containers - current_containers
+            for name in missing:
+                result["missing"].append({"name": name, "status": "missing", "state": "missing"})
+        _previous_containers = current_containers
 
     # Check for OOMKilled containers
     for container in result["restarting"] + result["unhealthy"]:
@@ -93,9 +102,11 @@ async def check_docker_health() -> dict:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            out, _ = await inspect_proc.communicate()
+            out, _ = await asyncio.wait_for(inspect_proc.communicate(), timeout=10)
             if out and out.decode().strip().lower() == "true":
                 result["oom_killed"].append(container)
+        except asyncio.TimeoutError:
+            logger.warning("docker inspect timed out for container '%s'", container["name"])
         except (FileNotFoundError, OSError):
             pass
 
@@ -166,7 +177,7 @@ async def check_system_resources() -> dict:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await proc.communicate()
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
         if proc.returncode == 0 and stdout:
             line = stdout.decode().strip().split("\n")[0]
             parts = line.split(",")
@@ -184,6 +195,8 @@ async def check_system_resources() -> dict:
                         f"GPU VRAM critical: {used_pct:.1f}% "
                         f"({round(total_mb - used_mb)}MB free)"
                     )
+    except asyncio.TimeoutError:
+        logger.warning("nvidia-smi timed out after 10s")
     except FileNotFoundError:
         pass  # No GPU / nvidia-smi not installed — fine
     except (OSError, ValueError) as e:
@@ -207,7 +220,7 @@ async def monitor_health() -> dict:
     for container in docker["unhealthy"]:
         name = container["name"]
         _unhealthy_counts[name] = _unhealthy_counts.get(name, 0) + 1
-        if _unhealthy_counts[name] >= settings.monitoring_unhealthy_threshold:
+        if _unhealthy_counts[name] == settings.monitoring_unhealthy_threshold:
             anomaly = (
                 f"Container '{name}' unhealthy for {_unhealthy_counts[name]} "
                 f"consecutive checks. Status: {container['status']}"
@@ -316,6 +329,13 @@ async def send_email_digest() -> dict:
         limit=100,
     )
 
+    # Post-filter: query_memories uses tag overlap (&&), so ensure BOTH tags present
+    required_tags = {"monitoring", "alert"}
+    recent_anomalies = [
+        m for m in recent_anomalies
+        if required_tags.issubset(set(m.get("tags") or []))
+    ]
+
     # Filter to last 24 hours
     cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
     recent = []
@@ -389,7 +409,13 @@ async def send_email_digest() -> dict:
 
 
 def _send_smtp(subject: str, body: str) -> None:
-    """Send a plain-text email via SMTP (runs in thread executor)."""
+    """Send a plain-text email via SMTP (runs in thread executor).
+
+    Port handling:
+    - 25: plain SMTP (no TLS)
+    - 465: implicit TLS (SMTP_SSL)
+    - 587: explicit TLS (SMTP + STARTTLS)
+    """
     msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = subject
     msg["From"] = settings.monitoring_smtp_from or settings.monitoring_smtp_user
@@ -399,11 +425,21 @@ def _send_smtp(subject: str, body: str) -> None:
         r.strip() for r in settings.monitoring_smtp_to.split(",") if r.strip()
     ]
 
-    with smtplib.SMTP(settings.monitoring_smtp_host, settings.monitoring_smtp_port) as server:
-        server.ehlo()
-        if settings.monitoring_smtp_port != 25:
-            server.starttls()
+    port = settings.monitoring_smtp_port
+
+    if port == 465:
+        # Implicit TLS
+        with smtplib.SMTP_SSL(settings.monitoring_smtp_host, port) as server:
+            if settings.monitoring_smtp_user and settings.monitoring_smtp_password:
+                server.login(settings.monitoring_smtp_user, settings.monitoring_smtp_password)
+            server.sendmail(msg["From"], recipients, msg.as_string())
+    else:
+        # Port 25 (plain) or 587 (STARTTLS)
+        with smtplib.SMTP(settings.monitoring_smtp_host, port) as server:
             server.ehlo()
-        if settings.monitoring_smtp_user and settings.monitoring_smtp_password:
-            server.login(settings.monitoring_smtp_user, settings.monitoring_smtp_password)
-        server.sendmail(msg["From"], recipients, msg.as_string())
+            if port != 25:
+                server.starttls()
+                server.ehlo()
+            if settings.monitoring_smtp_user and settings.monitoring_smtp_password:
+                server.login(settings.monitoring_smtp_user, settings.monitoring_smtp_password)
+            server.sendmail(msg["From"], recipients, msg.as_string())

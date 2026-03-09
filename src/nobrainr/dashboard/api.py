@@ -431,7 +431,7 @@ async def api_monitoring(request: Request) -> JSONResponse:
     """Current server health: Docker containers + system resources."""
     from nobrainr.monitoring import check_docker_health, check_system_resources
 
-    docker = await check_docker_health()
+    docker = await check_docker_health(track_state=False)
     resources = await check_system_resources()
 
     return JSONResponse({
