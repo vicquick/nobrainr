@@ -39,14 +39,16 @@
           class="message-bubble"
           :class="msg.role"
         >
-          <!-- Inline image preview for user messages -->
+          <!-- Inline image preview for user messages.
+               Images are stored as full data URLs (data:image/xxx;base64,...) preserving
+               the original MIME type from the uploaded file. -->
           <div v-if="msg.images?.length" class="message-images mb-1">
             <img
               v-for="(img, idx) in msg.images"
               :key="idx"
-              :src="'data:image/png;base64,' + img"
+              :src="img"
               class="message-image-thumb"
-              @click="openImagePreview('data:image/png;base64,' + img)"
+              @click="openImagePreview(img)"
             />
           </div>
 
@@ -186,6 +188,7 @@ const TYPE_COLORS: Record<string, string> = {
 }
 
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024 // 10 MB
+const MAX_IMAGES = 5
 const ACCEPTED_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
 
 interface PendingImage {
@@ -386,6 +389,10 @@ async function onFileSelected(event: Event) {
   const target = event.target as HTMLInputElement
   if (!target.files?.length) return
   for (const file of Array.from(target.files)) {
+    if (pendingImages.value.length >= MAX_IMAGES) {
+      imageError.value = `Maximum ${MAX_IMAGES} images allowed.`
+      break
+    }
     const img = await processFile(file)
     if (img) pendingImages.value.push(img)
   }
@@ -400,6 +407,10 @@ async function onPaste(event: ClipboardEvent) {
     if (item.type.startsWith('image/')) {
       event.preventDefault()
       imageError.value = ''
+      if (pendingImages.value.length >= MAX_IMAGES) {
+        imageError.value = `Maximum ${MAX_IMAGES} images allowed.`
+        break
+      }
       const file = item.getAsFile()
       if (!file) continue
       const img = await processFile(file)
@@ -415,11 +426,15 @@ function removeImage(idx: number) {
 
 function send() {
   if ((!input.value.trim() && !pendingImages.value.length) || chatStore.isStreaming) return
-  const images = pendingImages.value.length
+  // Raw base64 for the API, full data URLs (with correct MIME type) for display
+  const apiImages = pendingImages.value.length
     ? pendingImages.value.map(img => img.base64)
     : undefined
-  const text = input.value.trim() || (images ? 'What is in this image?' : '')
-  chatStore.sendMessage(text, images)
+  const displayImages = pendingImages.value.length
+    ? pendingImages.value.map(img => img.dataUrl)
+    : undefined
+  const text = input.value.trim() || (apiImages ? 'What is in this image?' : '')
+  chatStore.sendMessage(text, apiImages, displayImages)
   input.value = ''
   pendingImages.value = []
   imageError.value = ''
