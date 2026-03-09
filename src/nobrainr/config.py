@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     crawl4ai_url: str = "http://crawl4ai:11235"
     crawl4ai_api_token: str = ""
 
+    # Speaches (OpenAI-compatible whisper API)
+    speaches_url: str = "http://speaches:8000"
+    speaches_model: str = "whisper-large-v3"
+
     # Security
     cors_origins: list[str] = ["http://localhost:8420"]
     max_content_length: int = 50000  # 50KB max memory content

@@ -97,6 +97,16 @@
             @keydown.enter.exact.prevent="send"
           />
           <v-btn
+            :icon="isRecording ? 'mdi-stop' : 'mdi-microphone'"
+            :color="isRecording ? 'error' : 'default'"
+            size="small"
+            variant="tonal"
+            :disabled="chatStore.isStreaming || isTranscribing"
+            :loading="isTranscribing"
+            :class="{ 'mic-recording': isRecording }"
+            @click="toggleRecording"
+          />
+          <v-btn
             icon="mdi-send"
             color="primary"
             size="small"
@@ -106,13 +116,14 @@
             @click="send"
           />
         </div>
+        <div v-if="micError" class="text-caption text-error mt-1">{{ micError }}</div>
       </div>
     </div>
   </v-navigation-drawer>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useDisplay } from 'vuetify'
 import { useChatStore } from '@/stores/chat'
 import type { ChatSources } from '@/types'
@@ -129,6 +140,121 @@ const { mobile } = useDisplay()
 const input = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
 const expandedSources = ref(new Set<string>())
+
+// Voice recording state
+const isRecording = ref(false)
+const isTranscribing = ref(false)
+const micError = ref('')
+let mediaRecorder: MediaRecorder | null = null
+let micStream: MediaStream | null = null
+let audioChunks: Blob[] = []
+
+// Cleanup mic resources on unmount
+onBeforeUnmount(() => {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop()
+  }
+  if (micStream) {
+    micStream.getTracks().forEach(t => t.stop())
+    micStream = null
+  }
+  mediaRecorder = null
+})
+
+async function toggleRecording() {
+  if (isRecording.value) {
+    stopRecording()
+  } else {
+    await startRecording()
+  }
+}
+
+async function startRecording() {
+  micError.value = ''
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    micStream = stream
+
+    // Pick a supported mimeType (Safari doesn't support audio/webm)
+    let mimeType = 'audio/webm'
+    if (!MediaRecorder.isTypeSupported('audio/webm')) {
+      if (MediaRecorder.isTypeSupported('audio/mp4')) {
+        mimeType = 'audio/mp4'
+      } else {
+        stream.getTracks().forEach(t => t.stop())
+        micStream = null
+        micError.value = 'Audio recording not supported in this browser'
+        return
+      }
+    }
+
+    mediaRecorder = new MediaRecorder(stream, { mimeType })
+    audioChunks = []
+
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) audioChunks.push(event.data)
+    }
+
+    mediaRecorder.onstop = async () => {
+      // Stop all tracks to release the microphone
+      stream.getTracks().forEach(t => t.stop())
+      micStream = null
+
+      if (audioChunks.length === 0) return
+      const ext = mimeType === 'audio/mp4' ? 'mp4' : 'webm'
+      const blob = new Blob(audioChunks, { type: mimeType })
+      await transcribe(blob, `recording.${ext}`)
+    }
+
+    mediaRecorder.start()
+    isRecording.value = true
+  } catch (err: unknown) {
+    if (err instanceof DOMException && err.name === 'NotAllowedError') {
+      micError.value = 'Microphone permission denied'
+    } else if (err instanceof DOMException && err.name === 'NotFoundError') {
+      micError.value = 'No microphone found'
+    } else {
+      micError.value = 'Could not access microphone'
+    }
+  }
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop()
+  }
+  isRecording.value = false
+}
+
+async function transcribe(blob: Blob, filename = 'recording.webm') {
+  isTranscribing.value = true
+  micError.value = ''
+  try {
+    const formData = new FormData()
+    formData.append('file', blob, filename)
+
+    const baseUrl = import.meta.env.VITE_API_BASE || ''
+    const res = await fetch(`${baseUrl}/api/transcribe`, {
+      method: 'POST',
+      body: formData,
+    })
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Transcription failed' }))
+      micError.value = err.error || 'Transcription failed'
+      return
+    }
+
+    const data = await res.json()
+    if (data.text) {
+      input.value = input.value ? `${input.value} ${data.text}` : data.text
+    }
+  } catch {
+    micError.value = 'Could not reach transcription service'
+  } finally {
+    isTranscribing.value = false
+  }
+}
 
 const lastAssistantMsg = computed(() => {
   const msgs = chatStore.messages
@@ -286,5 +412,12 @@ watch(
 .chat-input {
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.02);
+}
+.mic-recording {
+  animation: pulse-recording 1.2s ease-in-out infinite;
+}
+@keyframes pulse-recording {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(244, 67, 54, 0.4); }
+  50% { box-shadow: 0 0 0 8px rgba(244, 67, 54, 0); }
 }
 </style>
