@@ -806,7 +806,7 @@ async def entity_web_research() -> dict:
         return {"researched": 0, "stored": 0, "ran_at": datetime.now().isoformat()}
 
     from nobrainr.crawler.knowledge import _crawl_url, _is_already_crawled
-    from nobrainr.services.memory import store_memory_with_extraction
+    from nobrainr.services.memory import store_document_chunked
 
     researched = 0
     stored = 0
@@ -843,7 +843,6 @@ async def entity_web_research() -> dict:
             researched += 1
 
             if not result.get("should_research"):
-                # Log that we checked but skipped
                 await queries.log_agent_event(
                     event_type="web_research",
                     description=f"Skipped web research for {entity['name']}: {result.get('reason', '')}",
@@ -871,21 +870,26 @@ async def entity_web_research() -> dict:
                 await _yield_to_live_requests()
                 continue
 
-            # Crawl the URL
-            crawl_result = await _crawl_url(url)
+            # Crawl the URL with BM25 query-aware filtering + async job API
+            crawl_result = await _crawl_url(
+                url,
+                use_async_job=True,
+                query=f"{entity['name']} {entity['entity_type']} documentation",
+            )
             if not crawl_result:
                 await _yield_to_live_requests()
                 continue
 
-            markdown = crawl_result["markdown"][:8000]
+            markdown = crawl_result["markdown"][:50000]
             if len(markdown.strip()) < 100:
                 await _yield_to_live_requests()
                 continue
 
-            # Store the research
+            # Store via chunked ingestion (handles long pages properly)
             tags = ["crawled", "entity-research", entity["entity_type"], entity["canonical_name"]]
-            store_result = await store_memory_with_extraction(
+            store_result = await store_document_chunked(
                 content=markdown,
+                title=crawl_result.get("title", url),
                 summary=f"Research: {entity['name']} — {crawl_result['title']}"[:200],
                 source_type="crawl",
                 source_machine=settings.source_machine or "unknown",
@@ -896,11 +900,11 @@ async def entity_web_research() -> dict:
                 metadata={"researched_entity": entity["name"], "entity_id": entity["id"]},
             )
 
-            if store_result.get("status") in ("stored", "merged"):
-                stored += 1
+            if store_result.get("status") in ("stored", "updated"):
+                stored += store_result.get("chunks", 1)
                 logger.info(
-                    "Entity research stored: %s → %s (%s)",
-                    entity["name"], url, crawl_result["title"],
+                    "Entity research stored: %s → %s (%s, %d chunks)",
+                    entity["name"], url, crawl_result["title"], store_result.get("chunks", 1),
                 )
 
             # Log the research event (for cooldown tracking)
@@ -966,7 +970,7 @@ async def interest_expansion() -> dict:
         return {"researched": 0, "stored": 0, "ran_at": datetime.now().isoformat()}
 
     from nobrainr.crawler.knowledge import _crawl_url, _is_already_crawled
-    from nobrainr.services.memory import store_memory_with_extraction
+    from nobrainr.services.memory import store_document_chunked
 
     researched = 0
     stored = 0
@@ -1013,21 +1017,26 @@ async def interest_expansion() -> dict:
                 await _yield_to_live_requests()
                 continue
 
-            # Crawl it
-            crawl_result = await _crawl_url(url)
+            # Crawl with BM25 query-aware filtering + async job API
+            crawl_result = await _crawl_url(
+                url,
+                use_async_job=True,
+                query=topic,
+            )
             if not crawl_result:
                 await _yield_to_live_requests()
                 continue
 
-            markdown = crawl_result["markdown"][:8000]
+            markdown = crawl_result["markdown"][:50000]
             if len(markdown.strip()) < 100:
                 await _yield_to_live_requests()
                 continue
 
             refined = result.get("refined_topic", topic)
             tags = ["crawled", "interest-research", refined.lower().replace(" ", "-")]
-            store_result = await store_memory_with_extraction(
+            store_result = await store_document_chunked(
                 content=markdown,
+                title=crawl_result.get("title", url),
                 summary=f"Interest research: {refined} — {crawl_result['title']}"[:200],
                 source_type="crawl",
                 source_machine=settings.source_machine or "unknown",
@@ -1038,9 +1047,9 @@ async def interest_expansion() -> dict:
                 metadata={"interest_topic": topic, "interest_score": score},
             )
 
-            if store_result.get("status") in ("stored", "merged"):
-                stored += 1
-                logger.info("Interest research stored: %s → %s", topic, url)
+            if store_result.get("status") in ("stored", "updated"):
+                stored += store_result.get("chunks", 1)
+                logger.info("Interest research stored: %s → %s (%d chunks)", topic, url, store_result.get("chunks", 1))
 
             # Log for cooldown
             await queries.log_agent_event(
