@@ -97,6 +97,16 @@
             @keydown.enter.exact.prevent="send"
           />
           <v-btn
+            :icon="isRecording ? 'mdi-stop' : 'mdi-microphone'"
+            :color="isRecording ? 'error' : 'default'"
+            size="small"
+            variant="tonal"
+            :disabled="chatStore.isStreaming || isTranscribing"
+            :loading="isTranscribing"
+            :class="{ 'mic-recording': isRecording }"
+            @click="toggleRecording"
+          />
+          <v-btn
             icon="mdi-send"
             color="primary"
             size="small"
@@ -106,6 +116,7 @@
             @click="send"
           />
         </div>
+        <div v-if="micError" class="text-caption text-error mt-1">{{ micError }}</div>
       </div>
     </div>
   </v-navigation-drawer>
@@ -129,6 +140,91 @@ const { mobile } = useDisplay()
 const input = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
 const expandedSources = ref(new Set<string>())
+
+// Voice recording state
+const isRecording = ref(false)
+const isTranscribing = ref(false)
+const micError = ref('')
+let mediaRecorder: MediaRecorder | null = null
+let audioChunks: Blob[] = []
+
+async function toggleRecording() {
+  if (isRecording.value) {
+    stopRecording()
+  } else {
+    await startRecording()
+  }
+}
+
+async function startRecording() {
+  micError.value = ''
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' })
+    audioChunks = []
+
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) audioChunks.push(event.data)
+    }
+
+    mediaRecorder.onstop = async () => {
+      // Stop all tracks to release the microphone
+      stream.getTracks().forEach(t => t.stop())
+
+      if (audioChunks.length === 0) return
+      const blob = new Blob(audioChunks, { type: 'audio/webm' })
+      await transcribe(blob)
+    }
+
+    mediaRecorder.start()
+    isRecording.value = true
+  } catch (err: unknown) {
+    if (err instanceof DOMException && err.name === 'NotAllowedError') {
+      micError.value = 'Microphone permission denied'
+    } else if (err instanceof DOMException && err.name === 'NotFoundError') {
+      micError.value = 'No microphone found'
+    } else {
+      micError.value = 'Could not access microphone'
+    }
+  }
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop()
+  }
+  isRecording.value = false
+}
+
+async function transcribe(blob: Blob) {
+  isTranscribing.value = true
+  micError.value = ''
+  try {
+    const formData = new FormData()
+    formData.append('file', blob, 'recording.webm')
+
+    const baseUrl = import.meta.env.VITE_API_BASE || ''
+    const res = await fetch(`${baseUrl}/api/transcribe`, {
+      method: 'POST',
+      body: formData,
+    })
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Transcription failed' }))
+      micError.value = err.error || 'Transcription failed'
+      return
+    }
+
+    const data = await res.json()
+    if (data.text) {
+      input.value = input.value ? `${input.value} ${data.text}` : data.text
+    }
+  } catch {
+    micError.value = 'Could not reach transcription service'
+  } finally {
+    isTranscribing.value = false
+  }
+}
 
 const lastAssistantMsg = computed(() => {
   const msgs = chatStore.messages
@@ -286,5 +382,12 @@ watch(
 .chat-input {
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.02);
+}
+.mic-recording {
+  animation: pulse-recording 1.2s ease-in-out infinite;
+}
+@keyframes pulse-recording {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(244, 67, 54, 0.4); }
+  50% { box-shadow: 0 0 0 8px rgba(244, 67, 54, 0); }
 }
 </style>
