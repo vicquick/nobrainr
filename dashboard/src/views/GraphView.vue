@@ -60,12 +60,13 @@
       </div>
     </div>
 
-    <!-- Mobile overlay for entity panel -->
-    <v-dialog v-if="mobile && !!selectedNode" v-model="showMobilePanel" fullscreen transition="dialog-right-transition">
-      <v-card color="#12121a">
+    <!-- Mobile bottom sheet for entity panel -->
+    <v-bottom-sheet v-if="mobile" v-model="showMobilePanel" :scrim="false">
+      <v-card color="#12121a" class="mobile-entity-sheet" rounded="t-xl">
+        <div class="sheet-handle" />
         <GraphSidePanel :node="selectedNode" @close="handleClosePanel" />
       </v-card>
-    </v-dialog>
+    </v-bottom-sheet>
   </v-container>
 </template>
 
@@ -702,6 +703,18 @@ onUnmounted(() => {
 @media (max-width: 480px) {
   .toolbar :deep(.v-text-field) { display: none; }
   .type-pill { padding: 2px 6px; font-size: 10px; }
+}
+/* Mobile bottom sheet entity panel */
+.mobile-entity-sheet {
+  max-height: 70vh;
+  overflow-y: auto;
+}
+.sheet-handle {
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.2);
+  margin: 8px auto 0;
 }
 .toolbar {
   width: 100%;
