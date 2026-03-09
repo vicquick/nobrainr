@@ -281,6 +281,259 @@ def import_documents(directory, machine, category, tags, no_vision, no_recursive
     console.print_json(json.dumps(result, indent=2))
 
 
+@main.command("re-embed")
+@click.option("--model", "-m", default=None, help="Embedding model (default: from config)")
+@click.option("--dimensions", "-d", type=int, default=None, help="Vector dimensions (default: from config)")
+@click.option("--batch-size", "-b", default=32, help="Texts per embedding batch")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
+def re_embed(model, dimensions, batch_size, yes):
+    """Migrate to a new embedding model. Re-embeds all memories and entities."""
+    from nobrainr.config import settings
+
+    embed_model = model or settings.embedding_model
+    embed_dims = dimensions or settings.embedding_dimensions
+
+    async def _run():
+        import numpy as np
+        import httpx
+        from nobrainr.db.pool import get_pool, close_pool
+
+        pool = await get_pool()
+
+        # Count records
+        async with pool.acquire() as conn:
+            mem_count = await conn.fetchval("SELECT count(*) FROM memories")
+            ent_count = await conn.fetchval("SELECT count(*) FROM entities")
+
+        console.print("\n[bold]Embedding Migration[/]")
+        console.print(f"  Model:      [cyan]{embed_model}[/]")
+        console.print(f"  Dimensions: [cyan]{embed_dims}[/]")
+        console.print(f"  Memories:   [yellow]{mem_count}[/]")
+        console.print(f"  Entities:   [yellow]{ent_count}[/]")
+
+        if not yes:
+            click.confirm(
+                f"\nThis will re-embed {mem_count} memories and {ent_count} entities. Continue?",
+                abort=True,
+            )
+
+        async with pool.acquire() as conn:
+            # 1. Drop HNSW indexes (can't alter vector dimensions with index)
+            console.print("\n[bold]1/6[/] Dropping HNSW indexes...")
+            await conn.execute("DROP INDEX IF EXISTS idx_memories_embedding_hnsw")
+            await conn.execute("DROP INDEX IF EXISTS idx_entities_embedding_hnsw")
+
+            # 2. NULL out embeddings so ALTER TYPE succeeds
+            console.print("[bold]2/6[/] Clearing old embeddings...")
+            await conn.execute("UPDATE memories SET embedding = NULL")
+            await conn.execute("UPDATE entities SET embedding = NULL")
+
+            # 3. ALTER vector columns to new dimensions
+            console.print(f"[bold]3/6[/] Altering vector columns to {embed_dims}d...")
+            await conn.execute(
+                f"ALTER TABLE memories ALTER COLUMN embedding TYPE vector({embed_dims})"
+            )
+            await conn.execute(
+                f"ALTER TABLE entities ALTER COLUMN embedding TYPE vector({embed_dims})"
+            )
+
+            # 4. Recreate memory_relevance function with new dimensions
+            # Drop all overloads (different vector dimensions create separate functions)
+            await conn.execute("""
+                DO $$ DECLARE r RECORD;
+                BEGIN
+                    FOR r IN SELECT oid::regprocedure::text AS sig
+                             FROM pg_proc WHERE proname = 'memory_relevance'
+                    LOOP
+                        EXECUTE 'DROP FUNCTION IF EXISTS ' || r.sig || ' CASCADE';
+                    END LOOP;
+                END $$;
+            """)
+            await conn.execute(f"""
+                CREATE OR REPLACE FUNCTION memory_relevance(
+                    query_embedding vector({embed_dims}),
+                    mem_embedding vector({embed_dims}),
+                    mem_created_at timestamptz,
+                    mem_importance real,
+                    mem_stability real,
+                    mem_access_count integer DEFAULT 0,
+                    current_ts timestamptz DEFAULT now(),
+                    mem_quality_score real DEFAULT NULL
+                ) RETURNS real AS $$
+                DECLARE
+                    cosine_sim real;
+                    recency_boost real;
+                    quality real;
+                BEGIN
+                    cosine_sim := 1.0 - (query_embedding <=> mem_embedding);
+                    recency_boost := EXP(-0.00385 * EXTRACT(EPOCH FROM (current_ts - mem_created_at)) / 86400.0);
+                    quality := COALESCE(mem_quality_score, 0.5);
+                    RETURN (0.65 * cosine_sim)
+                         + (0.15 * quality)
+                         + (0.10 * COALESCE(mem_importance, 0.5))
+                         + (0.10 * recency_boost);
+                END;
+                $$ LANGUAGE plpgsql STABLE;
+            """)
+
+        # 5. Re-embed memories
+        console.print(f"[bold]4/6[/] Re-embedding {mem_count} memories...")
+        async with pool.acquire() as conn:
+            memories = await conn.fetch(
+                "SELECT id, content, category, tags FROM memories ORDER BY created_at"
+            )
+
+        embed_client = httpx.AsyncClient(
+            base_url=settings.ollama_url, timeout=300.0
+        )
+
+        async def _embed_batch(texts_batch):
+            """Embed with retry on transient errors."""
+            # Filter empty strings (replace with placeholder)
+            safe_texts = [t if t.strip() else "empty" for t in texts_batch]
+            for attempt in range(5):
+                try:
+                    resp = await embed_client.post(
+                        "/api/embed",
+                        json={"model": embed_model, "input": safe_texts, "keep_alive": "24h"},
+                    )
+                    if resp.status_code == 400:
+                        body = resp.text[:500]
+                        console.print(f"  [yellow]Batch 400: {body}[/]")
+                        console.print("  [yellow]Falling back to individual...[/]")
+                        results = []
+                        for idx, t in enumerate(safe_texts):
+                            r = await embed_client.post(
+                                "/api/embed",
+                                json={"model": embed_model, "input": t[:2000], "keep_alive": "24h"},
+                            )
+                            if r.status_code != 200:
+                                console.print(f"    [red]Item {idx} failed ({r.status_code}): {r.text[:200]}[/]")
+                                console.print(f"    [red]Text preview: {repr(t[:100])}[/]")
+                                # Use zero vector as fallback
+                                results.append([0.0] * embed_dims)
+                                continue
+                            results.append(r.json()["embeddings"][0])
+                        return results
+                    resp.raise_for_status()
+                    return resp.json()["embeddings"]
+                except (httpx.ReadTimeout, httpx.ConnectError) as exc:
+                    wait = 2 ** attempt
+                    console.print(f"  [yellow]Retry {attempt + 1}/5: {exc}[/]")
+                    await asyncio.sleep(wait)
+            raise RuntimeError("Embedding failed after 5 retries")
+
+        for i in range(0, len(memories), batch_size):
+            batch = memories[i : i + batch_size]
+            texts = []
+            for m in batch:
+                # Context-enriched embedding (matches services/memory.py)
+                parts = []
+                if m["category"]:
+                    parts.append(m["category"])
+                if m["tags"]:
+                    parts.append(", ".join(m["tags"]))
+                embed_input = ". ".join(parts) + ". " + m["content"] if parts else m["content"]
+                texts.append(embed_input[:2000])
+
+            embeddings = await _embed_batch(texts)
+
+            async with pool.acquire() as conn:
+                for m, emb in zip(batch, embeddings):
+                    await conn.execute(
+                        "UPDATE memories SET embedding = $1 WHERE id = $2",
+                        np.array(emb, dtype=np.float32),
+                        m["id"],
+                    )
+
+            done = min(i + batch_size, len(memories))
+            console.print(f"  [green]{done}/{len(memories)}[/]")
+
+        # 6. Re-embed entities
+        console.print(f"[bold]5/6[/] Re-embedding {ent_count} entities...")
+        async with pool.acquire() as conn:
+            entities = await conn.fetch(
+                "SELECT id, name, entity_type, description FROM entities ORDER BY created_at"
+            )
+
+        for i in range(0, len(entities), batch_size):
+            batch = entities[i : i + batch_size]
+            texts = [
+                f"{e['entity_type']}: {e['name']} - {e['description'] or e['name']}"
+                for e in batch
+            ]
+
+            embeddings = await _embed_batch(texts)
+
+            async with pool.acquire() as conn:
+                for e, emb in zip(batch, embeddings):
+                    await conn.execute(
+                        "UPDATE entities SET embedding = $1 WHERE id = $2",
+                        np.array(emb, dtype=np.float32),
+                        e["id"],
+                    )
+
+            done = min(i + batch_size, len(entities))
+            console.print(f"  [green]{done}/{len(entities)}[/]")
+
+        await embed_client.aclose()
+
+        # 7. Recreate HNSW indexes
+        console.print("[bold]6/6[/] Rebuilding HNSW indexes...")
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                CREATE INDEX idx_memories_embedding_hnsw
+                ON memories USING hnsw (embedding vector_cosine_ops)
+                WITH (m = 24, ef_construction = 128)
+            """)
+            await conn.execute("""
+                CREATE INDEX idx_entities_embedding_hnsw
+                ON entities USING hnsw (embedding vector_cosine_ops)
+                WITH (m = 24, ef_construction = 128)
+            """)
+
+        await close_pool()
+        console.print(f"\n[bold green]Migration complete![/] {embed_model} ({embed_dims}d)")
+
+    asyncio.run(_run())
+
+
+@main.command("import-github")
+@click.argument("owner", default="vicquick")
+@click.option("--repos", help="Comma-separated repo names (default: all)")
+@click.option("--machine", "-m", help="Machine name for provenance")
+@click.option("--no-commits", is_flag=True, help="Skip commit history")
+@click.option("--no-issues", is_flag=True, help="Skip issues/PRs")
+@click.option("--no-structure", is_flag=True, help="Skip code structure/config files")
+@click.option("--no-closed", is_flag=True, help="Skip closed issues/PRs")
+def import_github_cmd(owner, repos, machine, no_commits, no_issues, no_structure, no_closed):
+    """Import knowledge from GitHub repos (commits, issues, code structure)."""
+    async def _import():
+        from nobrainr.db.pool import get_pool, close_pool
+        from nobrainr.db.schema import init_schema
+        from nobrainr.importers.github import import_github
+
+        pool = await get_pool()
+        await init_schema(pool)
+        repo_list = [r.strip() for r in repos.split(",")] if repos else None
+        result = await import_github(
+            owner,
+            repos=repo_list,
+            source_machine=machine,
+            include_commits=not no_commits,
+            include_issues=not no_issues,
+            include_code_structure=not no_structure,
+            include_closed_issues=not no_closed,
+        )
+        await close_pool()
+        return result
+
+    with console.status("Importing GitHub repositories..."):
+        result = asyncio.run(_import())
+
+    console.print_json(json.dumps(result, indent=2))
+
+
 @main.command("normalize-categories")
 def normalize_categories_cmd():
     """Normalize all memory categories to canonical set."""

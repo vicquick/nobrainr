@@ -329,11 +329,11 @@ async def get_memory(memory_id: str) -> dict | None:
 
 async def _set_provenance(conn, *, changed_by: str, change_type: str = "", change_reason: str = ""):
     """Set session variables for the versioning trigger to read."""
-    await conn.execute("SET LOCAL nobrainr.changed_by = $1", changed_by)
+    await conn.execute("SELECT set_config('nobrainr.changed_by', $1, true)", changed_by)
     if change_type:
-        await conn.execute("SET LOCAL nobrainr.change_type = $1", change_type)
+        await conn.execute("SELECT set_config('nobrainr.change_type', $1, true)", change_type)
     if change_reason:
-        await conn.execute("SET LOCAL nobrainr.change_reason = $1", change_reason)
+        await conn.execute("SELECT set_config('nobrainr.change_reason', $1, true)", change_reason)
 
 
 async def update_memory(
