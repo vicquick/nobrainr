@@ -113,9 +113,13 @@ async def memory_search(
     category: str | None = None,
     source_type: str | None = None,
     source_machine: str | None = None,
-    hybrid: bool = False,
+    hybrid: bool = True,
 ) -> list[dict]:
     """Semantic search across all memories, ranked by relevance (similarity + recency + importance).
+
+    Uses hybrid search by default: combines vector similarity with full-text
+    keyword matching via Reciprocal Rank Fusion (RRF) for best recall.
+    Set hybrid=False for pure vector search only.
 
     Args:
         query: Natural language search query (e.g. "How did we fix the Docker networking issue?").
@@ -125,7 +129,7 @@ async def memory_search(
         category: Filter to specific category.
         source_type: Filter by source ("chatgpt", "claude", "manual", "agent").
         source_machine: Filter to specific host.
-        hybrid: Also apply text search on the query for hybrid results.
+        hybrid: Combine vector + full-text search via RRF (default True).
     """
     limit = max(1, min(limit, 100))
     threshold = max(0.0, min(threshold, 1.0))
