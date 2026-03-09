@@ -215,6 +215,44 @@ CREATE INDEX IF NOT EXISTS idx_memory_outcomes_memory
 DROP TABLE IF EXISTS memory_relations;
 
 -- ──────────────────────────────────────────────
+-- Memory versions (full audit trail / time machine)
+-- ──────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS memory_versions (
+    id              uuid DEFAULT uuidv7() PRIMARY KEY,
+    memory_id       uuid NOT NULL,  -- no FK: memory may be deleted
+    version         int NOT NULL,
+    -- Full snapshot at this version
+    content         text NOT NULL,
+    summary         text,
+    tags            text[] DEFAULT '{{}}'::text[],
+    category        text,
+    confidence      real,
+    metadata        jsonb,
+    -- What happened to create this version
+    change_type     text NOT NULL,  -- created, dedup_update, dedup_supersede, manual_update, manual_delete, consolidation, auto_summarize, quality_score, decay_archive, restore
+    change_reason   text,           -- LLM reasoning or human explanation
+    -- Provenance
+    changed_by      text,           -- 'agent', 'scheduler:<job>', 'manual', 'mcp'
+    source_memory_id uuid,          -- for merges: the incoming memory that triggered change
+    similarity_score real,          -- for dedup: cosine similarity that matched
+    -- Quick-scan flags
+    content_changed  boolean DEFAULT false,
+    tags_changed     boolean DEFAULT false,
+    category_changed boolean DEFAULT false,
+    created_at      timestamptz DEFAULT now() NOT NULL,
+    UNIQUE(memory_id, version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_versions_memory
+    ON memory_versions (memory_id, version DESC);
+
+CREATE INDEX IF NOT EXISTS idx_memory_versions_time
+    ON memory_versions (created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_memory_versions_type
+    ON memory_versions (change_type);
+
+-- ──────────────────────────────────────────────
 -- Functions
 -- ──────────────────────────────────────────────
 
