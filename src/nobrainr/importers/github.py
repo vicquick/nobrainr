@@ -41,16 +41,16 @@ async def _load_existing_refs() -> set[str]:
     return _existing_refs
 
 
-async def _store_if_new(**kwargs) -> bool:
+async def _store_if_new(skip_dedup: bool = False, **kwargs) -> bool:
     """Store a memory only if source_ref doesn't already exist. Returns True if stored."""
     source_ref = kwargs.get("source_ref", "")
     if not source_ref:
-        await store_memory_with_extraction(**kwargs)
+        await store_memory_with_extraction(skip_dedup=skip_dedup, **kwargs)
         return True
     refs = await _load_existing_refs()
     if source_ref in refs:
         return False
-    await store_memory_with_extraction(**kwargs)
+    await store_memory_with_extraction(skip_dedup=skip_dedup, **kwargs)
     refs.add(source_ref)
     return True
 
@@ -225,84 +225,108 @@ async def _import_commits(
     owner: str, repo: str, default_branch: str,
     source_machine: str | None, sem: asyncio.Semaphore,
 ) -> int:
-    """Fetch all commits and group by week for storage."""
+    """Fetch ALL commits from ALL branches. Each commit → 1 memory."""
     stored = 0
 
-    # Fetch commits via REST (no jq, paginated)
-    commits_raw = await _gh_paginated(f"repos/{owner}/{repo}/commits?sha={default_branch}&per_page=100")
+    # Fetch all branches
+    branches_data = await _gh_paginated(f"repos/{owner}/{repo}/branches?per_page=100")
+    branch_names = [b.get("name", "") for b in branches_data if isinstance(b, dict) and b.get("name")]
+    if not branch_names:
+        branch_names = [default_branch]
 
-    if not commits_raw:
+    logger.info("  Fetching commits from %d branches for %s/%s", len(branch_names), owner, repo)
+
+    # Collect commits from all branches, dedup by full SHA
+    # Track which branches each commit appears on
+    seen_shas: dict[str, list[str]] = {}
+    commits = []
+    for branch in branch_names:
+        branch_commits = await _gh_paginated(f"repos/{owner}/{repo}/commits?sha={branch}&per_page=100")
+        new_in_branch = 0
+        for c in branch_commits:
+            if not isinstance(c, dict):
+                continue
+            full_sha = c.get("sha", "")
+            if not full_sha:
+                continue
+            if full_sha in seen_shas:
+                seen_shas[full_sha].append(branch)
+                continue
+            seen_shas[full_sha] = [branch]
+            commit_obj = c.get("commit", {})
+            if not isinstance(commit_obj, dict):
+                continue
+            author_obj = commit_obj.get("author", {}) or {}
+            committer_obj = commit_obj.get("committer", {}) or {}
+            commits.append({
+                "sha": full_sha,
+                "sha_short": full_sha[:8],
+                "message": commit_obj.get("message", ""),
+                "date": author_obj.get("date", ""),
+                "author": author_obj.get("name", c.get("author", {}).get("login", "") if isinstance(c.get("author"), dict) else ""),
+                "committer": committer_obj.get("name", ""),
+                "first_branch": branch,
+            })
+            new_in_branch += 1
+        if new_in_branch > 0:
+            logger.info("    Branch %s: %d new commits", branch, new_in_branch)
+
+    if not commits:
         logger.info("  No commits found for %s/%s", owner, repo)
         return 0
 
-    # Parse commit data from REST response
-    commits = []
-    for c in commits_raw:
-        if not isinstance(c, dict):
-            continue
-        commit_obj = c.get("commit", {})
-        if not isinstance(commit_obj, dict):
-            continue
-        author_obj = commit_obj.get("author", {}) or {}
-        commits.append({
-            "sha": c.get("sha", "")[:8],
-            "message": commit_obj.get("message", ""),
-            "date": author_obj.get("date", ""),
-            "author": author_obj.get("name", c.get("author", {}).get("login", "") if isinstance(c.get("author"), dict) else ""),
-        })
+    logger.info("  Found %d unique commits across %d branches for %s/%s", len(commits), len(branch_names), owner, repo)
 
-    if not commits:
-        return 0
-
-    logger.info("  Found %d commits for %s/%s", len(commits), owner, repo)
-
-    # Group commits by ISO week
-    weekly: dict[str, list[dict]] = defaultdict(list)
+    # Store EACH commit as its own memory
     for c in commits:
-        date_str = c.get("date", "")
-        if not date_str:
-            continue
-        try:
-            dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-            week_key = f"{dt.isocalendar()[0]}-W{dt.isocalendar()[1]:02d}"
-        except (ValueError, TypeError):
-            week_key = "unknown"
-        weekly[week_key].append(c)
+        sha = c["sha"]
+        sha_short = c["sha_short"]
+        message = c["message"]
+        date = c["date"][:10] if c["date"] else "unknown"
+        author = c["author"]
+        branches = seen_shas.get(sha, [c["first_branch"]])
+        branch_str = ", ".join(branches[:5])
+        if len(branches) > 5:
+            branch_str += f" (+{len(branches) - 5} more)"
 
-    # Store each week as a memory
-    for week, week_commits in sorted(weekly.items()):
-        lines = [f"## Commits: {owner}/{repo} — {week}\n"]
-        for c in week_commits[:50]:
-            sha = c.get("sha", "")
-            msg = c.get("message", "").split("\n")[0][:200]  # First line only
-            author = c.get("author", "")
-            date = c.get("date", "")[:10]
-            lines.append(f"- `{sha}` {date} ({author}): {msg}")
+        # Full commit message — title + body
+        msg_lines = message.split("\n")
+        title = msg_lines[0][:300]
+        body = "\n".join(msg_lines[1:]).strip()
 
-        if len(week_commits) > 50:
-            lines.append(f"\n[... {len(week_commits) - 50} more commits]")
+        content = (
+            f"## Commit: {owner}/{repo} `{sha_short}`\n\n"
+            f"**Date:** {date}\n"
+            f"**Author:** {author}\n"
+            f"**Branch(es):** {branch_str}\n\n"
+            f"### {title}\n"
+        )
+        if body:
+            content += f"\n{body[:3000]}\n"
 
-        content = "\n".join(lines)
-        if len(content) < 50:
+        if len(content) < 30:
             continue
 
         async with sem:
             try:
                 if await _store_if_new(
+                    skip_dedup=True,  # Each commit has unique SHA, no dedup needed
                     content=content,
-                    summary=f"Commits {owner}/{repo} {week}: {len(week_commits)} commits",
+                    summary=f"Commit {sha_short} ({date}): {title[:120]}",
                     category="architecture",
-                    tags=["github", "commits", repo, week],
+                    tags=["github", "commit", repo, c["first_branch"]],
                     source_type="github",
                     source_machine=source_machine,
-                    source_ref=f"github:{owner}/{repo}/commits/{week}",
+                    source_ref=f"github:{owner}/{repo}/commit/{sha_short}",
                     confidence=0.75,
                 ):
                     stored += 1
+                    if stored % 25 == 0:
+                        logger.info("  ... stored %d commits so far for %s/%s", stored, owner, repo)
             except Exception:
-                logger.exception("Failed to store commits for %s/%s week %s", owner, repo, week)
+                logger.exception("Failed to store commit %s for %s/%s", sha_short, owner, repo)
 
-    logger.info("  Stored %d weekly commit summaries for %s/%s", stored, owner, repo)
+    logger.info("  Stored %d individual commit memories for %s/%s", stored, owner, repo)
     return stored
 
 

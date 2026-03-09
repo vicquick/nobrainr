@@ -161,7 +161,7 @@ def _schedule_extraction(memory_id: str, content: str, tags: list[str] | None) -
                 await process_memory(memory_id, content, tags)
             except Exception:
                 logger.exception("Extraction failed for %s", memory_id)
-            await asyncio.sleep(30)
+            await asyncio.sleep(1)  # Brief cooldown between extractions
 
     try:
         asyncio.create_task(_run())
