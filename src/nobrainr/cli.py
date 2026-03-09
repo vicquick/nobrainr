@@ -556,5 +556,159 @@ def normalize_categories_cmd():
     console.print(f"[bold green]Done![/] Updated {count} memories.")
 
 
+@main.command("rechunk")
+@click.option("--dry-run", is_flag=True, help="Show what would be rechunked without making changes")
+@click.option("--source-type", "-s", help="Only rechunk memories of this source type")
+@click.option("--batch-size", "-b", default=10, help="Process N memories per batch")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
+def rechunk_cmd(dry_run, source_type, batch_size, yes):
+    """Rechunk oversized memories that were stored before chunked ingestion.
+
+    Finds all memories longer than chunk_threshold that don't have chunk_index
+    metadata, splits them into proper overlapping chunks, stores the chunks,
+    and deletes the original oversized memory.
+    """
+    async def _rechunk():
+        from nobrainr.db.pool import get_pool, close_pool
+        from nobrainr.db.schema import init_schema
+        from nobrainr.db import queries as q
+        from nobrainr.services.memory import store_document_chunked
+        from nobrainr.config import settings
+
+        pool = await get_pool()
+        await init_schema(pool)
+
+        # Find oversized memories without chunk metadata
+        where = "WHERE length(content) > $1 AND (metadata->>'chunk_index') IS NULL"
+        params = [settings.chunk_threshold]
+        if source_type:
+            where += " AND source_type = $2"
+            params.append(source_type)
+
+        async with pool.acquire() as conn:
+            count = await conn.fetchval(
+                f"SELECT count(*) FROM memories {where}", *params
+            )
+            if count == 0:
+                console.print("[green]No oversized memories found. Everything is properly chunked![/]")
+                await close_pool()
+                return {"processed": 0, "chunks_created": 0, "errors": 0}
+
+            by_type = await conn.fetch(
+                f"""SELECT source_type, count(*) as cnt,
+                           max(length(content)) as max_len
+                    FROM memories {where}
+                    GROUP BY source_type ORDER BY cnt DESC""",
+                *params,
+            )
+
+        console.print(f"\n[bold]Found {count} oversized memories to rechunk:[/]")
+        table = Table()
+        table.add_column("Source Type", style="cyan")
+        table.add_column("Count", justify="right")
+        table.add_column("Max Size", justify="right")
+        for row in by_type:
+            table.add_row(row["source_type"], str(row["cnt"]), f"{row['max_len']:,}")
+        console.print(table)
+
+        if dry_run:
+            console.print("\n[yellow]Dry run — no changes made.[/]")
+            await close_pool()
+            return {"processed": 0, "chunks_created": 0, "errors": 0}
+
+        if not yes:
+            click.confirm(
+                f"\nThis will rechunk {count} memories (delete originals, create chunks). Continue?",
+                abort=True,
+            )
+
+        processed = 0
+        chunks_created = 0
+        errors = 0
+        offset = 0
+
+        limit_param = f"${len(params) + 1}"
+
+        while True:
+            async with pool.acquire() as conn:
+                # Always fetch from offset 0 because we delete as we go
+                memories = await conn.fetch(
+                    f"""SELECT id, content, summary, source_type, source_machine,
+                               source_ref, tags, category, confidence,
+                               metadata::text as meta_json, length(content) as content_len
+                        FROM memories {where}
+                        ORDER BY created_at
+                        LIMIT {limit_param}""",
+                    *params, batch_size,
+                )
+
+            if not memories:
+                break
+
+            for mem in memories:
+                mem_id = str(mem["id"])
+                content = mem["content"]
+                meta = json.loads(mem["meta_json"]) if mem["meta_json"] else {}
+                summary = mem["summary"]
+                title = meta.get("document_title") or meta.get("file_path") or summary
+
+                console.print(
+                    f"  [{processed + 1}/{count}] [cyan]{mem['source_type']}[/] "
+                    f"({mem['content_len']:,} chars) {(title or '')[:60]}"
+                )
+
+                try:
+                    # Preserve original metadata but remove any stale fields
+                    preserved_meta = {k: v for k, v in meta.items()
+                                      if k not in ("document_id", "chunk_index",
+                                                    "chunk_total", "chunk_offset")}
+                    preserved_meta["rechunked_from"] = mem_id
+
+                    result = await store_document_chunked(
+                        content=content,
+                        title=title,
+                        summary=summary,
+                        tags=list(mem["tags"]) if mem["tags"] else None,
+                        category=mem["category"],
+                        source_type=mem["source_type"],
+                        source_machine=mem["source_machine"],
+                        source_ref=mem["source_ref"],
+                        confidence=float(mem["confidence"]),
+                        metadata=preserved_meta,
+                    )
+
+                    n_chunks = result.get("chunks", 0)
+                    chunks_created += n_chunks
+                    console.print(f"    → [green]{n_chunks} chunks created[/]")
+
+                    # Delete the original oversized memory
+                    await q.delete_memory(
+                        mem_id,
+                        _changed_by="cli:rechunk",
+                        _change_type="rechunk_replace",
+                        _change_reason=f"Replaced by {n_chunks} chunks (document_id={result.get('document_id', '?')})",
+                    )
+
+                    processed += 1
+
+                except Exception as e:
+                    console.print(f"    → [red]ERROR: {e}[/]")
+                    errors += 1
+                    # Skip this memory on next iteration
+                    offset += 1
+
+        await close_pool()
+        return {"processed": processed, "chunks_created": chunks_created, "errors": errors}
+
+    console.print("[bold]Starting rechunk migration...[/]")
+    result = asyncio.run(_rechunk())
+    console.print(
+        f"\n[bold green]Done![/] "
+        f"Processed: {result['processed']}, "
+        f"Chunks created: {result['chunks_created']}, "
+        f"Errors: {result['errors']}"
+    )
+
+
 if __name__ == "__main__":
     main()
