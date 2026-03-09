@@ -127,11 +127,11 @@ async def auto_summarize() -> dict:
             )
             summary = result.get("summary", "").strip()
             if summary:
-                await queries.record_memory_version(
-                    mem["id"], "auto_summarize",
-                    changed_by="scheduler:auto_summarize",
+                await queries.update_memory(
+                    mem["id"], summary=summary,
+                    _changed_by="scheduler:auto_summarize",
+                    _change_type="auto_summarize",
                 )
-                await queries.update_memory(mem["id"], summary=summary)
                 count += 1
         except Exception:
             logger.exception("auto_summarize failed for memory %s", mem["id"][:8])
@@ -173,31 +173,20 @@ async def consolidation() -> dict:
             id_b = str(pair["id_b"])
 
             if result.get("should_merge") and result.get("merged_content"):
-                # Snapshot both before mutation
-                old_a = await queries.get_memory(id_a)
-                old_b = await queries.get_memory(id_b)
-                # Update the winner with merged content, re-embed
+                # Triggers snapshot old state automatically
                 merged_content = result["merged_content"]
                 embedding = await embed_text(merged_content)
                 await queries.update_memory(
                     id_a, content=merged_content, embedding=embedding,
+                    _changed_by="scheduler:consolidation",
+                    _change_type="consolidation",
+                    _change_reason=result.get("reason", "Merged with " + id_b),
                 )
-                await queries.record_memory_version(
-                    id_a, "consolidation",
-                    change_reason=result.get("reason", "Scheduler consolidation merge"),
-                    changed_by="scheduler:consolidation",
-                    source_memory_id=id_b,
-                    similarity_score=pair.get("similarity"),
-                    old_snapshot=dict(old_a) if old_a else None,
-                )
-                # Soft-delete the loser by archiving
-                await queries.update_memory(id_b, category="_archived")
-                await queries.record_memory_version(
-                    id_b, "consolidation",
-                    change_reason=f"Archived: merged into {id_a}",
-                    changed_by="scheduler:consolidation",
-                    source_memory_id=id_a,
-                    old_snapshot=dict(old_b) if old_b else None,
+                await queries.update_memory(
+                    id_b, category="_archived",
+                    _changed_by="scheduler:consolidation",
+                    _change_type="consolidation",
+                    _change_reason=f"Archived: merged into {id_a}",
                 )
                 merged += 1
             else:

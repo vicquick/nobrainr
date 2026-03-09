@@ -76,10 +76,8 @@ async def store_memory_with_extraction(
             if action == "UPDATE":
                 target_id = decision["target_id"]
                 merged_content = decision["content"]
-                # Snapshot before mutation
-                old_mem = await queries.get_memory(target_id)
-                old_snapshot = dict(old_mem) if old_mem else None
                 new_embedding = await embed_text(merged_content)
+                # Trigger snapshots old state automatically
                 await queries.update_memory(
                     target_id,
                     content=merged_content,
@@ -87,14 +85,9 @@ async def store_memory_with_extraction(
                     tags=tags,
                     category=category,
                     metadata=metadata,
-                )
-                await queries.record_memory_version(
-                    target_id,
-                    "dedup_update",
-                    change_reason=decision.get("reason", ""),
-                    changed_by="mcp",
-                    similarity_score=decision.get("similarity"),
-                    old_snapshot=old_snapshot,
+                    _changed_by="mcp",
+                    _change_type="dedup_update",
+                    _change_reason=decision.get("reason", ""),
                 )
                 logger.info("Write path UPDATE %s: %s", target_id, decision.get("reason"))
                 return {
@@ -105,22 +98,14 @@ async def store_memory_with_extraction(
 
             if action == "SUPERSEDE":
                 target_id = decision["target_id"]
-                # Snapshot before archiving
-                old_mem = await queries.get_memory(target_id)
-                old_snapshot = dict(old_mem) if old_mem else None
-                # Archive old memory
+                # Trigger snapshots old state automatically
                 await queries.update_memory(
                     target_id,
                     category="_archived",
                     metadata={"archived_reason": "superseded", "superseded_by": "pending"},
-                )
-                await queries.record_memory_version(
-                    target_id,
-                    "dedup_supersede",
-                    change_reason=decision.get("reason", ""),
-                    changed_by="mcp",
-                    similarity_score=decision.get("similarity"),
-                    old_snapshot=old_snapshot,
+                    _changed_by="mcp",
+                    _change_type="dedup_supersede",
+                    _change_reason=decision.get("reason", ""),
                 )
                 if metadata is None:
                     metadata = {}

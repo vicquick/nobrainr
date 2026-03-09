@@ -275,6 +275,133 @@ CREATE TRIGGER trg_entities_updated_at
     BEFORE UPDATE ON entities
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
+-- ──────────────────────────────────────────────
+-- Memory versioning triggers (automatic audit trail)
+-- ──────────────────────────────────────────────
+
+-- Version 0: snapshot on INSERT
+CREATE OR REPLACE FUNCTION memory_version_on_insert()
+RETURNS TRIGGER AS $$
+BEGIN
+    INSERT INTO memory_versions (
+        memory_id, version, content, summary, tags, category,
+        confidence, metadata, change_type, changed_by
+    ) VALUES (
+        NEW.id, 0, NEW.content, NEW.summary, NEW.tags, NEW.category,
+        NEW.confidence, NEW.metadata,
+        'created',
+        COALESCE(current_setting('nobrainr.changed_by', true), 'system')
+    );
+    RETURN NEW;
+EXCEPTION WHEN OTHERS THEN
+    -- Never block a memory INSERT because of versioning failure
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Snapshot OLD state before UPDATE or DELETE
+CREATE OR REPLACE FUNCTION memory_version_on_change()
+RETURNS TRIGGER AS $$
+DECLARE
+    next_ver int;
+BEGIN
+    SELECT COALESCE(MAX(version), -1) + 1 INTO next_ver
+    FROM memory_versions WHERE memory_id = OLD.id;
+
+    INSERT INTO memory_versions (
+        memory_id, version, content, summary, tags, category,
+        confidence, metadata, change_type, change_reason, changed_by,
+        content_changed, tags_changed, category_changed
+    ) VALUES (
+        OLD.id, next_ver, OLD.content, OLD.summary, OLD.tags, OLD.category,
+        OLD.confidence, OLD.metadata,
+        COALESCE(current_setting('nobrainr.change_type', true), 'unknown'),
+        current_setting('nobrainr.change_reason', true),
+        COALESCE(current_setting('nobrainr.changed_by', true), 'unknown'),
+        CASE WHEN TG_OP = 'UPDATE' THEN OLD.content IS DISTINCT FROM NEW.content ELSE false END,
+        CASE WHEN TG_OP = 'UPDATE' THEN OLD.tags IS DISTINCT FROM NEW.tags ELSE false END,
+        CASE WHEN TG_OP = 'UPDATE' THEN OLD.category IS DISTINCT FROM NEW.category ELSE false END
+    );
+
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    END IF;
+    RETURN NEW;
+EXCEPTION WHEN OTHERS THEN
+    -- Never block a mutation because of versioning failure
+    IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_memory_version_insert ON memories;
+CREATE TRIGGER trg_memory_version_insert
+    AFTER INSERT ON memories
+    FOR EACH ROW EXECUTE FUNCTION memory_version_on_insert();
+
+DROP TRIGGER IF EXISTS trg_memory_version_change ON memories;
+CREATE TRIGGER trg_memory_version_change
+    BEFORE UPDATE OR DELETE ON memories
+    FOR EACH ROW EXECUTE FUNCTION memory_version_on_change();
+
+-- ──────────────────────────────────────────────
+-- Generic audit log (entities + entity_relations)
+-- ──────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS audit_log (
+    id              bigserial PRIMARY KEY,
+    table_name      text NOT NULL,
+    row_id          text NOT NULL,
+    operation       text NOT NULL CHECK (operation IN ('INSERT','UPDATE','DELETE')),
+    old_data        jsonb,
+    new_data        jsonb,
+    changed_by      text,
+    change_reason   text,
+    transaction_id  bigint DEFAULT txid_current(),
+    created_at      timestamptz DEFAULT clock_timestamp()
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_log_table_row
+    ON audit_log (table_name, row_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_time
+    ON audit_log (created_at DESC);
+
+CREATE OR REPLACE FUNCTION audit_trigger_func()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        INSERT INTO audit_log (table_name, row_id, operation, old_data, changed_by)
+        VALUES (TG_TABLE_NAME, OLD.id::text, 'DELETE',
+                to_jsonb(OLD) - 'embedding',
+                current_setting('nobrainr.changed_by', true));
+        RETURN OLD;
+    ELSIF TG_OP = 'UPDATE' THEN
+        IF OLD IS NOT DISTINCT FROM NEW THEN RETURN NEW; END IF;
+        INSERT INTO audit_log (table_name, row_id, operation, old_data, new_data, changed_by)
+        VALUES (TG_TABLE_NAME, NEW.id::text, 'UPDATE',
+                to_jsonb(OLD) - 'embedding',
+                to_jsonb(NEW) - 'embedding',
+                current_setting('nobrainr.changed_by', true));
+        RETURN NEW;
+    ELSIF TG_OP = 'INSERT' THEN
+        INSERT INTO audit_log (table_name, row_id, operation, new_data, changed_by)
+        VALUES (TG_TABLE_NAME, NEW.id::text, 'INSERT',
+                to_jsonb(NEW) - 'embedding',
+                current_setting('nobrainr.changed_by', true));
+        RETURN NEW;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_audit_entities ON entities;
+CREATE TRIGGER trg_audit_entities
+    AFTER INSERT OR UPDATE OR DELETE ON entities
+    FOR EACH ROW EXECUTE FUNCTION audit_trigger_func();
+
+DROP TRIGGER IF EXISTS trg_audit_entity_relations ON entity_relations;
+CREATE TRIGGER trg_audit_entity_relations
+    AFTER INSERT OR UPDATE OR DELETE ON entity_relations
+    FOR EACH ROW EXECUTE FUNCTION audit_trigger_func();
+
 -- Composite relevance scoring function (v3: quality-based, no access-count dependency)
 CREATE OR REPLACE FUNCTION memory_relevance(
     query_embedding vector({settings.embedding_dimensions}),

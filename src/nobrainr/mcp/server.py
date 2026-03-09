@@ -252,11 +252,8 @@ async def memory_update(
             embed_input = content
         embedding = await embed_text(embed_input)
 
-    # Snapshot before mutation
-    old_mem = await queries.get_memory(memory_id)
-    old_snapshot = dict(old_mem) if old_mem else None
-
-    result = await queries.update_memory(
+    # Trigger snapshots old state automatically
+    return await queries.update_memory(
         memory_id,
         content=content,
         summary=summary,
@@ -265,20 +262,9 @@ async def memory_update(
         category=category,
         confidence=confidence,
         metadata=metadata,
+        _changed_by="mcp",
+        _change_type="manual_update",
     )
-
-    # Record version
-    try:
-        await queries.record_memory_version(
-            memory_id,
-            "manual_update",
-            changed_by="mcp",
-            old_snapshot=old_snapshot,
-        )
-    except Exception:
-        pass  # Don't fail the update if versioning fails
-
-    return result
 
 
 # ──────────────────────────────────────────────
@@ -295,22 +281,12 @@ async def memory_delete(memory_id: str) -> dict:
         _validate_uuid(memory_id)
     except ValueError:
         return {"error": "Invalid memory_id format"}
-    # Snapshot before deletion
-    old_mem = await queries.get_memory(memory_id)
-    old_snapshot = dict(old_mem) if old_mem else None
-
-    if old_snapshot:
-        try:
-            await queries.record_memory_version(
-                memory_id,
-                "manual_delete",
-                changed_by="mcp",
-                old_snapshot=old_snapshot,
-            )
-        except Exception:
-            pass
-
-    deleted = await queries.delete_memory(memory_id)
+    # Trigger snapshots old state automatically before deletion
+    deleted = await queries.delete_memory(
+        memory_id,
+        _changed_by="mcp",
+        _change_type="manual_delete",
+    )
     if deleted:
         return {"status": "deleted", "id": memory_id}
     return {"status": "not_found", "id": memory_id}
