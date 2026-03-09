@@ -36,6 +36,7 @@
     <div class="d-flex align-center ga-3 px-3 py-0 status-bar">
       <span class="text-caption text-medium-emphasis" style="font-variant-numeric: tabular-nums; font-size: 10px;">
         {{ nodeCount.toLocaleString() }} nodes · {{ edgeCount.toLocaleString() }} edges · {{ communityCount }} clusters
+        <span v-if="graphStale" class="ml-2" style="color: #c4a46a;">· updated available</span>
       </span>
       <v-spacer />
       <span v-if="focusedLabel" class="text-caption" style="font-size: 10px;">
@@ -45,7 +46,7 @@
     </div>
 
     <!-- Canvas + Entity Side Panel -->
-    <div class="graph-area" :style="panelOpen ? { paddingRight: '420px' } : {}">
+    <div class="graph-area" :class="{ 'panel-open': panelOpen }">
       <div ref="sigmaContainer" class="sigma-canvas" />
       <!-- Loading overlay (on top of canvas so container always has dimensions) -->
       <div v-if="loading" class="loading-overlay">
@@ -127,6 +128,7 @@ function drawLabelWithBg(
   const font = settings.labelFont
   const weight = settings.labelWeight
   const color = data.labelColor || 'rgba(255, 255, 255, 0.7)'
+  const bgColor = data.labelBgColor || 'rgba(10, 10, 14, 0.8)'
 
   context.font = `${weight} ${size}px ${font}`
   const textWidth = context.measureText(data.label).width
@@ -137,7 +139,7 @@ function drawLabelWithBg(
   const px = 4, r = 3
   const rx = x - px, ry = y - size + 1
   const rw = textWidth + px * 2, rh = size + 3
-  context.fillStyle = 'rgba(10, 10, 14, 0.8)'
+  context.fillStyle = bgColor
   context.beginPath()
   context.moveTo(rx + r, ry)
   context.lineTo(rx + rw - r, ry)
@@ -340,7 +342,8 @@ function initSigma() {
           res.zIndex = 2
           res.size = (res.size as number) * 1.4
           res.forceLabel = true
-          res.labelColor = '#ffffff'
+          res.labelColor = '#000000'
+          res.labelBgColor = 'rgba(255, 255, 255, 0.92)'
         } else if (focusedNeighbors.has(node)) {
           res.zIndex = 1
           res.forceLabel = true
@@ -359,7 +362,8 @@ function initSigma() {
           res.zIndex = 2
           res.size = (res.size as number) * 1.4
           res.forceLabel = true
-          res.labelColor = '#ffffff'
+          res.labelColor = '#000000'
+          res.labelBgColor = 'rgba(255, 255, 255, 0.92)'
         } else if (chatFocusedNeighbors.has(node)) {
           res.zIndex = 1
           res.forceLabel = true
@@ -387,10 +391,11 @@ function initSigma() {
         return res
       }
 
-      // Hover: show label
+      // Hover: show label with high contrast
       if (hoveredNode === node) {
         res.forceLabel = true
-        res.labelColor = '#ffffff'
+        res.labelColor = '#000000'
+        res.labelBgColor = 'rgba(255, 255, 255, 0.92)'
       }
 
       return res
@@ -590,6 +595,7 @@ async function refreshGraph() {
   chatFocusedNodes.clear()
   chatFocusedNeighbors.clear()
   activeTypes.value = new Set(entityTypes)
+  graphStale.value = false
   unfocusNode()
   clearSelection()
   await fetchGraph()
@@ -600,14 +606,11 @@ async function refreshGraph() {
   })
 }
 
-useSSE(async (evt) => {
+// SSE: don't rebuild the graph while the user is looking at it — just track staleness
+const graphStale = ref(false)
+useSSE((evt) => {
   if (['memory_created', 'memory_deleted'].includes(evt.type)) {
-    await fetchGraph()
-    await nextTick()
-    requestAnimationFrame(() => {
-      initSigma()
-      loading.value = false
-    })
+    graphStale.value = true
   }
 })
 
@@ -651,6 +654,7 @@ onUnmounted(() => {
 
 <style scoped>
 .graph-area {
+  --panel-width: 420px;
   flex: 1;
   width: 100%;
   position: relative;
@@ -658,6 +662,9 @@ onUnmounted(() => {
   box-sizing: border-box;
   transition: padding-right 250ms ease;
   overflow: hidden;
+}
+.graph-area.panel-open {
+  padding-right: var(--panel-width);
 }
 .sigma-canvas {
   width: 100%;
@@ -678,14 +685,23 @@ onUnmounted(() => {
   right: 0;
   top: 0;
   bottom: 0;
-  width: 420px;
+  width: var(--panel-width);
   background: #12121a;
   border-left: 1px solid rgba(255, 255, 255, 0.08);
   overflow-y: auto;
   z-index: 5;
 }
+/* Tablet: narrower panel */
+@media (min-width: 600px) and (max-width: 960px) {
+  .graph-area { --panel-width: 340px; }
+}
 @media (max-width: 960px) {
   .graph-area { transition: none; }
+}
+/* Small mobile: hide search field, show only pills + buttons */
+@media (max-width: 480px) {
+  .toolbar :deep(.v-text-field) { display: none; }
+  .type-pill { padding: 2px 6px; font-size: 10px; }
 }
 .toolbar {
   width: 100%;

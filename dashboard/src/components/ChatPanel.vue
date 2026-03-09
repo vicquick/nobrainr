@@ -459,6 +459,13 @@ watch(
 }
 .chat-panel-mobile {
   width: 100% !important;
+  max-width: 100% !important;
+}
+/* Tablet: slightly narrower than desktop */
+@media (min-width: 600px) and (max-width: 960px) {
+  .chat-panel:not(.chat-panel-mobile) {
+    width: 380px !important;
+  }
 }
 .chat-header {
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
