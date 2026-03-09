@@ -51,25 +51,7 @@ async def store_memory(
         )
         result = {"id": str(row["id"]), "created_at": row["created_at"].isoformat()}
         publish("memory_created", {"id": result["id"]})
-
-        # Record version 0 (creation snapshot)
-        try:
-            await conn.execute(
-                """INSERT INTO memory_versions
-                   (memory_id, version, content, summary, tags, category, confidence,
-                    metadata, change_type, changed_by)
-                   VALUES ($1, 0, $2, $3, $4, $5, $6, $7, 'created', 'system')""",
-                row["id"],
-                content,
-                summary,
-                tags or [],
-                category,
-                confidence,
-                _jsonb(metadata),
-            )
-        except Exception:
-            logger.warning("Failed to record version 0 for %s", result["id"])
-
+        # Version 0 is recorded automatically by the trg_memory_version_insert trigger
         return result
 
 
@@ -345,6 +327,15 @@ async def get_memory(memory_id: str) -> dict | None:
         return None
 
 
+async def _set_provenance(conn, *, changed_by: str, change_type: str = "", change_reason: str = ""):
+    """Set session variables for the versioning trigger to read."""
+    await conn.execute("SET LOCAL nobrainr.changed_by = $1", changed_by)
+    if change_type:
+        await conn.execute("SET LOCAL nobrainr.change_type = $1", change_type)
+    if change_reason:
+        await conn.execute("SET LOCAL nobrainr.change_reason = $1", change_reason)
+
+
 async def update_memory(
     memory_id: str,
     *,
@@ -355,6 +346,9 @@ async def update_memory(
     category: str | None = None,
     confidence: float | None = None,
     metadata: dict | None = None,
+    _changed_by: str | None = None,
+    _change_type: str | None = None,
+    _change_reason: str | None = None,
 ) -> dict | None:
     pool = await get_pool()
     sets = []
@@ -390,28 +384,50 @@ async def update_memory(
     set_clause = ", ".join(sets)
 
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            f"""
-            UPDATE memories SET {set_clause}
-            WHERE id = ${idx}
-            RETURNING id, content, summary, source_type, source_machine,
-                      tags, category, confidence, metadata, created_at, updated_at
-            """,
-            *params,
-        )
+        async with conn.transaction():
+            if _changed_by:
+                await _set_provenance(
+                    conn,
+                    changed_by=_changed_by,
+                    change_type=_change_type or "",
+                    change_reason=_change_reason or "",
+                )
+            row = await conn.fetchrow(
+                f"""
+                UPDATE memories SET {set_clause}
+                WHERE id = ${idx}
+                RETURNING id, content, summary, source_type, source_machine,
+                          tags, category, confidence, metadata, created_at, updated_at
+                """,
+                *params,
+            )
         result = _row_to_dict(row) if row else None
         if result:
             publish("memory_updated", {"id": memory_id})
         return result
 
 
-async def delete_memory(memory_id: str) -> bool:
+async def delete_memory(
+    memory_id: str,
+    *,
+    _changed_by: str | None = None,
+    _change_type: str | None = None,
+    _change_reason: str | None = None,
+) -> bool:
     pool = await get_pool()
     async with pool.acquire() as conn:
-        result = await conn.execute(
-            "DELETE FROM memories WHERE id = $1",
-            UUID(memory_id),
-        )
+        async with conn.transaction():
+            if _changed_by:
+                await _set_provenance(
+                    conn,
+                    changed_by=_changed_by,
+                    change_type=_change_type or "manual_delete",
+                    change_reason=_change_reason or "",
+                )
+            result = await conn.execute(
+                "DELETE FROM memories WHERE id = $1",
+                UUID(memory_id),
+            )
         deleted = result == "DELETE 1"
         if deleted:
             publish("memory_deleted", {"id": memory_id})
@@ -512,7 +528,11 @@ async def get_memory_history(memory_id: str) -> list[dict]:
 
 
 async def restore_memory_version(memory_id: str, version: int) -> dict | None:
-    """Restore a memory to a specific version. Records a 'restore' version."""
+    """Restore a memory to a specific version.
+
+    The BEFORE UPDATE trigger automatically snapshots the current state
+    before the restore overwrites it.
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
         # Get the target version snapshot
@@ -528,15 +548,7 @@ async def restore_memory_version(memory_id: str, version: int) -> dict | None:
 
         snapshot = dict(row)
 
-        # Record current state before restoring
-        await record_memory_version(
-            memory_id,
-            "restore",
-            change_reason=f"Restored to version {version}",
-            changed_by="manual",
-        )
-
-        # Apply the snapshot
+        # Re-embed the restored content
         new_embedding = None
         try:
             from nobrainr.embeddings.ollama import embed_text
@@ -544,21 +556,29 @@ async def restore_memory_version(memory_id: str, version: int) -> dict | None:
         except Exception:
             pass
 
-        await conn.execute(
-            """UPDATE memories
-               SET content = $2, summary = $3, tags = $4, category = $5,
-                   confidence = $6, metadata = $7::jsonb,
-                   embedding = COALESCE($8, embedding)
-               WHERE id = $1""",
-            UUID(memory_id),
-            snapshot["content"],
-            snapshot["summary"],
-            snapshot["tags"] or [],
-            snapshot["category"],
-            snapshot["confidence"],
-            json.dumps(json.loads(snapshot["metadata"]) if snapshot["metadata"] else {}),
-            new_embedding,
-        )
+        # Apply the snapshot — trigger records the pre-restore state automatically
+        async with conn.transaction():
+            await _set_provenance(
+                conn,
+                changed_by="manual",
+                change_type="restore",
+                change_reason=f"Restored to version {version}",
+            )
+            await conn.execute(
+                """UPDATE memories
+                   SET content = $2, summary = $3, tags = $4, category = $5,
+                       confidence = $6, metadata = $7::jsonb,
+                       embedding = COALESCE($8, embedding)
+                   WHERE id = $1""",
+                UUID(memory_id),
+                snapshot["content"],
+                snapshot["summary"],
+                snapshot["tags"] or [],
+                snapshot["category"],
+                snapshot["confidence"],
+                json.dumps(json.loads(snapshot["metadata"]) if snapshot["metadata"] else {}),
+                new_embedding,
+            )
 
         publish("memory_updated", {"id": memory_id, "restored_to_version": version})
         return {"id": memory_id, "restored_to_version": version, "content": snapshot["content"]}
@@ -948,21 +968,28 @@ async def archive_stale_memories(limit: int = 50) -> int:
     """Archive low-value, never-accessed memories older than 30 days."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        result = await conn.execute("""
-            UPDATE memories
-            SET category = '_archived'
-            WHERE id IN (
-                SELECT id FROM memories
-                WHERE stability < 0.3
-                  AND importance < 0.2
-                  AND access_count = 0
-                  AND category != '_archived'
-                  AND source_type NOT IN ('synthesis', 'insight', 'agent_learning')
-                  AND created_at < now() - interval '30 days'
-                ORDER BY importance ASC, stability ASC
-                LIMIT $1
+        async with conn.transaction():
+            await _set_provenance(
+                conn,
+                changed_by="scheduler:memory_decay",
+                change_type="decay_archive",
+                change_reason="Low-value, never-accessed, >30 days old",
             )
-        """, limit)
+            result = await conn.execute("""
+                UPDATE memories
+                SET category = '_archived'
+                WHERE id IN (
+                    SELECT id FROM memories
+                    WHERE stability < 0.3
+                      AND importance < 0.2
+                      AND access_count = 0
+                      AND category != '_archived'
+                      AND source_type NOT IN ('synthesis', 'insight', 'agent_learning')
+                      AND created_at < now() - interval '30 days'
+                    ORDER BY importance ASC, stability ASC
+                    LIMIT $1
+                )
+            """, limit)
         count = int(result.split()[-1])
         return count
 
