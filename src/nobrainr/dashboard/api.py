@@ -4,6 +4,7 @@ import base64
 import logging
 import time
 from collections import defaultdict
+from datetime import datetime, timezone
 from uuid import UUID
 
 import httpx
@@ -426,6 +427,20 @@ async def api_tags(request: Request) -> JSONResponse:
     return JSONResponse(tags)
 
 
+async def api_monitoring(request: Request) -> JSONResponse:
+    """Current server health: Docker containers + system resources."""
+    from nobrainr.monitoring import check_docker_health, check_system_resources
+
+    docker = await check_docker_health(track_state=False)
+    resources = await check_system_resources()
+
+    return JSONResponse({
+        "docker": docker,
+        "resources": resources,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+
 async def api_chat(request: Request) -> StreamingResponse | JSONResponse:
     """RAG chatbot — streams SSE tokens from Ollama with memory context."""
     if not settings.chat_enabled:
@@ -601,4 +616,5 @@ api_routes = [
     Route("/api/categories", api_categories),
     Route("/api/tags", api_tags),
     Route("/api/events", api_events),
+    Route("/api/monitoring", api_monitoring),
 ]

@@ -52,6 +52,8 @@ class Scheduler:
             {"name": "maintenance", "interval_hours": settings.maintenance_interval_hours, "type": "sql"},
             {"name": "feedback_integration", "interval_hours": settings.feedback_interval_hours, "type": "sql"},
             {"name": "memory_decay", "interval_hours": settings.decay_interval_hours, "type": "sql"},
+            {"name": "monitor_health", "interval_hours": settings.monitoring_interval_hours, "type": "system"},
+            {"name": "email_digest", "interval_hours": 24.0, "type": "system"},
         ]
         llm_jobs = [
             {"name": "chatgpt_distill", "interval_hours": settings.chatgpt_distill_interval_hours, "type": "llm"},
@@ -102,6 +104,29 @@ class Scheduler:
             ),
         ]
 
+        # Monitoring jobs (non-LLM, subprocess-based)
+        if settings.monitoring_enabled:
+            from nobrainr import scheduler_jobs as sj
+
+            self._tasks.append(
+                asyncio.create_task(
+                    self._run_periodic(
+                        "monitor_health",
+                        sj.monitor_health,
+                        settings.monitoring_interval_hours * 3600,
+                    )
+                )
+            )
+            self._tasks.append(
+                asyncio.create_task(
+                    self._run_periodic(
+                        "email_digest",
+                        sj.send_email_digest,
+                        24.0 * 3600,  # once per day
+                    )
+                )
+            )
+
         # LLM-powered jobs (import here to avoid circular imports at module level)
         from nobrainr import scheduler_jobs
 
@@ -147,10 +172,15 @@ class Scheduler:
                 )
             )
 
+        sql_count = 3 + (2 if settings.monitoring_enabled else 0)
         logger.info(
-            "Scheduler started with %d LLM jobs + 3 SQL jobs. "
+            "Scheduler started with %d LLM jobs + %d SQL jobs. "
+            "monitoring=%s (%.1fh), "
             "knowledge_crawl=%.1fh, entity_research=%.1fh, freshness=%.1fh, interest=%.1fh",
             len(llm_jobs),
+            sql_count,
+            "enabled" if settings.monitoring_enabled else "disabled",
+            settings.monitoring_interval_hours,
             settings.knowledge_crawl_interval_hours,
             settings.entity_research_interval_hours,
             settings.freshness_interval_hours,
