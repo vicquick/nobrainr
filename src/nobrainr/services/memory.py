@@ -1,7 +1,7 @@
 """Shared memory storage service — used by MCP tools, scheduler, and crawler.
 
 Provides store_memory_with_extraction() which handles:
-  1. Context-enriched embedding
+  1. Context-enriched embedding (with optional contextual prefix)
   2. Mem0-style write path (ADD/UPDATE/SUPERSEDE/NOOP)
   3. Storage via queries.store_memory()
   4. Fire-and-forget entity extraction
@@ -15,6 +15,54 @@ from nobrainr.db import queries
 from nobrainr.embeddings.ollama import embed_text
 
 logger = logging.getLogger("nobrainr")
+
+CONTEXTUAL_PREFIX_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "context": {
+            "type": "string",
+            "description": "A short 1-2 sentence context that situates the chunk within the document, max 30 words",
+        },
+    },
+    "required": ["context"],
+}
+
+
+async def _generate_chunk_context(
+    document_summary: str,
+    chunk_text: str,
+) -> str:
+    """Generate a contextual prefix for a chunk using the LLM.
+
+    Returns a short 1-2 sentence context that situates the chunk within
+    its source document, improving embedding quality by 35-49% (Anthropic research).
+    """
+    try:
+        from nobrainr.extraction.llm import ollama_chat
+
+        result = await ollama_chat(
+            system=(
+                "You are a retrieval optimization assistant. Given a document summary "
+                "and a chunk from that document, write a very short context (1-2 sentences, "
+                "max 30 words) that situates this chunk within the document. Focus on WHO, "
+                "WHAT, and WHERE this information belongs. Be factual and concise."
+            ),
+            user=(
+                f"Document: {document_summary[:500]}\n\n"
+                f"Chunk: {chunk_text[:1000]}\n\n"
+                "Write a short context to situate this chunk."
+            ),
+            schema=CONTEXTUAL_PREFIX_SCHEMA,
+            model=settings.scheduler_llm_model,
+            timeout=30.0,
+            think=False,
+        )
+        ctx = result.get("context", "").strip()
+        if ctx and len(ctx) > 5:
+            return ctx
+    except Exception:
+        logger.debug("Contextual prefix generation failed, using empty prefix")
+    return ""
 
 # Rate-limit extraction: 1 at a time with 30s cooldown
 _extraction_semaphore = asyncio.Semaphore(1)
@@ -32,6 +80,7 @@ async def store_memory_with_extraction(
     confidence: float = 1.0,
     metadata: dict | None = None,
     skip_dedup: bool = False,
+    contextual_prefix: str | None = None,
 ) -> dict:
     """Store a memory with embedding, write-path decision, and async entity extraction.
 
@@ -44,13 +93,21 @@ async def store_memory_with_extraction(
       - SUPERSEDE: archive old, store new
       - NOOP: exact duplicate, skip
 
+    Args:
+        contextual_prefix: Optional LLM-generated context that situates this
+            memory within its source document. Prepended to the embedding input
+            (NOT stored as content) for better retrieval. See Anthropic's
+            contextual retrieval research (35-49% improvement).
+
     Returns:
         {"status": "stored"|"updated"|"superseded"|"skipped", ...}
     """
     confidence = max(0.0, min(confidence, 1.0))
 
-    # Context-enriched embedding
+    # Context-enriched embedding (with optional contextual prefix)
     embed_parts = []
+    if contextual_prefix:
+        embed_parts.append(contextual_prefix)
     if category:
         embed_parts.append(category)
     if tags:
@@ -204,6 +261,19 @@ async def store_document_chunked(
     import uuid
     document_id = str(uuid.uuid4())
 
+    # Generate contextual prefixes for multi-chunk documents (Anthropic contextual retrieval)
+    # This improves embedding quality by 35-49% for chunked content
+    contextual_prefixes: dict[int, str] = {}
+    if settings.contextual_embeddings_enabled and len(chunks) > 1:
+        doc_summary = f"{title or source_ref or 'Document'}. {content[:500]}"
+        for chunk in chunks:
+            try:
+                prefix = await _generate_chunk_context(doc_summary, chunk.text)
+                if prefix:
+                    contextual_prefixes[chunk.index] = prefix
+            except Exception:
+                pass  # Fall back to no prefix for this chunk
+
     memory_ids: list[str] = []
     stored = 0
     skipped = 0
@@ -218,6 +288,9 @@ async def store_document_chunked(
         })
         if title:
             chunk_meta["document_title"] = title
+        ctx_prefix = contextual_prefixes.get(chunk.index, "")
+        if ctx_prefix:
+            chunk_meta["contextual_prefix"] = ctx_prefix
 
         chunk_summary = title or summary or source_ref or "Document chunk"
         if chunk.total > 1:
@@ -234,6 +307,7 @@ async def store_document_chunked(
             confidence=confidence,
             metadata=chunk_meta,
             skip_dedup=True,  # Don't dedup individual chunks
+            contextual_prefix=ctx_prefix,
         )
 
         mid = result.get("id") or result.get("updated_id", "")
