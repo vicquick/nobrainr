@@ -1079,10 +1079,11 @@ async def get_potential_contradictions(limit: int = 5) -> list[dict]:
 
 async def set_extraction_status(memory_id: str, status: str) -> None:
     pool = await get_pool()
+    mid = memory_id if isinstance(memory_id, UUID) else UUID(memory_id)
     async with pool.acquire() as conn:
         await conn.execute(
             "UPDATE memories SET extraction_status = $1 WHERE id = $2",
-            status, UUID(memory_id),
+            status, mid,
         )
 
 
