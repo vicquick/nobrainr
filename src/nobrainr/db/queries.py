@@ -29,13 +29,16 @@ async def store_memory(
     confidence: float = 1.0,
     metadata: dict | None = None,
 ) -> dict:
+    from nobrainr.config import settings
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
             INSERT INTO memories (content, summary, embedding, source_type, source_machine,
-                                  source_ref, tags, category, confidence, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+                                  source_ref, tags, category, confidence, metadata,
+                                  embedding_model)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)
             RETURNING id, created_at
             """,
             content,
@@ -48,6 +51,7 @@ async def store_memory(
             category,
             confidence,
             _jsonb(metadata),
+            settings.embedding_model,
         )
         result = {"id": str(row["id"]), "created_at": row["created_at"].isoformat()}
         publish("memory_created", {"id": result["id"]})
@@ -1133,16 +1137,18 @@ async def find_or_create_entity(
             return str(row["id"])
 
         # Create new
+        from nobrainr.config import settings as _settings
+
         vec = np.array(embedding, dtype=np.float32) if embedding else None
         row = await conn.fetchrow(
             """
-            INSERT INTO entities (name, entity_type, canonical_name, description, embedding)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO entities (name, entity_type, canonical_name, description, embedding, embedding_model)
+            VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (canonical_name, entity_type) DO UPDATE
                 SET mention_count = entities.mention_count + 1
             RETURNING id
             """,
-            name, entity_type, canonical, description, vec,
+            name, entity_type, canonical, description, vec, _settings.embedding_model,
         )
         return str(row["id"])
 

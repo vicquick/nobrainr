@@ -42,6 +42,10 @@ ALTER TABLE memories ADD COLUMN IF NOT EXISTS quality_specificity smallint;
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS quality_actionability smallint;
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS quality_self_containment smallint;
 
+-- v4: Embedding versioning — track which model generated each embedding
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS embedding_model text DEFAULT '{settings.embedding_model}';
+ALTER TABLE entities ADD COLUMN IF NOT EXISTS embedding_model text DEFAULT '{settings.embedding_model}';
+
 -- HNSW index for fast approximate nearest neighbor search
 CREATE INDEX IF NOT EXISTS idx_memories_embedding_hnsw
     ON memories USING hnsw (embedding vector_cosine_ops)
