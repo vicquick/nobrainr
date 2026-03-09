@@ -123,7 +123,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useDisplay } from 'vuetify'
 import { useChatStore } from '@/stores/chat'
 import type { ChatSources } from '@/types'
@@ -146,7 +146,20 @@ const isRecording = ref(false)
 const isTranscribing = ref(false)
 const micError = ref('')
 let mediaRecorder: MediaRecorder | null = null
+let micStream: MediaStream | null = null
 let audioChunks: Blob[] = []
+
+// Cleanup mic resources on unmount
+onBeforeUnmount(() => {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop()
+  }
+  if (micStream) {
+    micStream.getTracks().forEach(t => t.stop())
+    micStream = null
+  }
+  mediaRecorder = null
+})
 
 async function toggleRecording() {
   if (isRecording.value) {
@@ -160,7 +173,22 @@ async function startRecording() {
   micError.value = ''
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-    mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' })
+    micStream = stream
+
+    // Pick a supported mimeType (Safari doesn't support audio/webm)
+    let mimeType = 'audio/webm'
+    if (!MediaRecorder.isTypeSupported('audio/webm')) {
+      if (MediaRecorder.isTypeSupported('audio/mp4')) {
+        mimeType = 'audio/mp4'
+      } else {
+        stream.getTracks().forEach(t => t.stop())
+        micStream = null
+        micError.value = 'Audio recording not supported in this browser'
+        return
+      }
+    }
+
+    mediaRecorder = new MediaRecorder(stream, { mimeType })
     audioChunks = []
 
     mediaRecorder.ondataavailable = (event) => {
@@ -170,10 +198,12 @@ async function startRecording() {
     mediaRecorder.onstop = async () => {
       // Stop all tracks to release the microphone
       stream.getTracks().forEach(t => t.stop())
+      micStream = null
 
       if (audioChunks.length === 0) return
-      const blob = new Blob(audioChunks, { type: 'audio/webm' })
-      await transcribe(blob)
+      const ext = mimeType === 'audio/mp4' ? 'mp4' : 'webm'
+      const blob = new Blob(audioChunks, { type: mimeType })
+      await transcribe(blob, `recording.${ext}`)
     }
 
     mediaRecorder.start()
@@ -196,12 +226,12 @@ function stopRecording() {
   isRecording.value = false
 }
 
-async function transcribe(blob: Blob) {
+async function transcribe(blob: Blob, filename = 'recording.webm') {
   isTranscribing.value = true
   micError.value = ''
   try {
     const formData = new FormData()
-    formData.append('file', blob, 'recording.webm')
+    formData.append('file', blob, filename)
 
     const baseUrl = import.meta.env.VITE_API_BASE || ''
     const res = await fetch(`${baseUrl}/api/transcribe`, {
