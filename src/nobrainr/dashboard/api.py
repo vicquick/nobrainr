@@ -454,10 +454,18 @@ async def api_chat(request: Request) -> StreamingResponse | JSONResponse:
         history = []
     history = history[-settings.chat_max_history_length:]
 
+    # Optional base64-encoded images for multimodal (vision) support
+    images_raw = body.get("images")
+    images: list[str] | None = None
+    if isinstance(images_raw, list):
+        images = [img for img in images_raw if isinstance(img, str) and img]
+        if not images:
+            images = None
+
     from nobrainr.chat.rag import stream_chat_response
 
     return StreamingResponse(
-        stream_chat_response(message, history),
+        stream_chat_response(message, history, images=images),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
