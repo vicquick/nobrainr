@@ -905,6 +905,44 @@ async def memory_import_website(
     return await import_website_content(str(resolved), source_machine=source_machine, website_name=website_name)
 
 
+@mcp.tool()
+async def memory_import_documents(
+    directory: str,
+    source_machine: str | None = None,
+    use_vision: bool = True,
+    category: str = "documentation",
+    tags: list[str] | None = None,
+    recursive: bool = True,
+) -> dict:
+    """Import documents from a directory (PDF, images, DOCX, markdown, text).
+
+    Extracts text from all supported file types. For scanned PDFs and images,
+    uses gemma3 vision to OCR/extract content. All content is stored with
+    entity extraction for the knowledge graph.
+
+    Args:
+        directory: Path to directory containing documents.
+        source_machine: Machine identifier for provenance.
+        use_vision: Use gemma3 vision for scanned PDFs and image files (default: True).
+        category: Category for stored memories (default: "documentation").
+        tags: Additional tags to apply (always includes "imported", "document").
+        recursive: Search subdirectories (default: True).
+    """
+    from pathlib import Path as P
+    resolved = P(directory).resolve()
+    if not resolved.is_dir():
+        return {"error": f"Directory not found: {directory}"}
+    from nobrainr.importers.documents import import_documents
+    return await import_documents(
+        str(resolved),
+        source_machine=source_machine,
+        use_vision=use_vision,
+        category=category,
+        tags=tags,
+        recursive=recursive,
+    )
+
+
 # ──────────────────────────────────────────────
 # Entry points
 # ──────────────────────────────────────────────

@@ -60,7 +60,8 @@ src/nobrainr/              # Python backend
 ├── scheduler_jobs.py      # 9 autonomous learning jobs (see Scheduler Jobs section)
 └── importers/
     ├── chatgpt.py         # ChatGPT conversations.json parser
-    └── claude.py          # Claude .claude/ directory scanner
+    ├── claude.py          # Claude .claude/ directory scanner
+    └── documents.py       # Universal document importer (PDF, images, DOCX, text) with vision OCR
 
 dashboard/                  # Vue 3 frontend (separate build)
 ├── Dockerfile             # node:20-alpine build → nginx:alpine serve
@@ -119,6 +120,7 @@ dashboard/                  # Vue 3 frontend (separate build)
 | `memory_import_claude` | Import Claude memory files |
 | `crawl_page` | Crawl a URL and return cleaned markdown content via Crawl4AI |
 | `crawl_and_store` | Crawl a URL and store the content as a memory with entity extraction |
+| `memory_import_documents` | Import documents from a directory (PDF, images, DOCX, markdown) with optional vision OCR |
 
 ## Memory Versioning (Audit Trail)
 
