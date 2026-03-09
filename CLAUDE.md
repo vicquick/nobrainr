@@ -91,6 +91,8 @@ dashboard/                  # Vue 3 frontend (separate build)
 - `/api/entities` — List entities (query: type, limit, offset)
 - `/api/recall` — Fast text-only search (PostgreSQL FTS, no embedding)
 - `/api/categories`, `/api/tags` — Filter values
+- `/api/memories/{id}/history` — GET full version audit trail
+- `/api/memories/{id}/restore` — POST restore to a previous version (body: `{"version": N}`)
 
 ## MCP Tools
 | Tool | Purpose |
@@ -100,7 +102,9 @@ dashboard/                  # Vue 3 frontend (separate build)
 | `memory_query` | Structured filter (tags, category, source, machine) |
 | `memory_get` | Retrieve specific memory by ID (tracks access) |
 | `memory_update` | Update memory (re-embeds if content changes) |
-| `memory_delete` | Delete a memory |
+| `memory_delete` | Delete a memory (snapshots before deletion) |
+| `memory_history` | Get full version audit trail for a memory |
+| `memory_restore` | Restore a memory to a previous version |
 | `memory_stats` | Database + knowledge graph statistics |
 | `entity_search` | Semantic search on knowledge graph entities |
 | `entity_graph` | Recursive graph traversal from a named entity |
@@ -115,6 +119,31 @@ dashboard/                  # Vue 3 frontend (separate build)
 | `memory_import_claude` | Import Claude memory files |
 | `crawl_page` | Crawl a URL and return cleaned markdown content via Crawl4AI |
 | `crawl_and_store` | Crawl a URL and store the content as a memory with entity extraction |
+
+## Memory Versioning (Audit Trail)
+
+Every memory mutation is tracked in the `memory_versions` table. This provides:
+- **Full audit trail**: who changed what, when, and why
+- **Point-in-time restore**: revert any memory to a previous version
+- **Corruption recovery**: if an LLM-driven job corrupts a memory, the pre-mutation state is always recoverable
+
+### What Gets Versioned
+| Mutation | change_type | changed_by |
+|----------|-------------|------------|
+| New memory created | `created` | `system` |
+| Dedup merges new info into existing | `dedup_update` | `mcp` |
+| Dedup replaces outdated memory | `dedup_supersede` | `mcp` |
+| Manual update via MCP tool | `manual_update` | `mcp` |
+| Manual delete via MCP tool | `manual_delete` | `mcp` |
+| Scheduler consolidation merge | `consolidation` | `scheduler:consolidation` |
+| Scheduler auto-summarize | `auto_summarize` | `scheduler:auto_summarize` |
+| Restore to previous version | `restore` | `manual` |
+
+### How It Works
+- **Snapshot-on-write**: Before any mutation, the memory's current state (content, tags, category, confidence, metadata) is captured
+- **Version numbers**: Sequential per-memory (0 = creation, 1 = first change, etc.)
+- **Provenance**: `source_memory_id` and `similarity_score` track dedup/consolidation origins
+- **No data loss**: Even deleted memories retain their version history
 
 ## Client Connection
 
