@@ -17,10 +17,14 @@ from nobrainr.events import subscribe
 
 log = logging.getLogger(__name__)
 
-# Simple in-memory rate limiter for chat
+# Simple in-memory rate limiters
 _chat_rate: dict[str, list[float]] = defaultdict(list)
 _CHAT_RATE_LIMIT = 10  # requests per minute
 _CHAT_RATE_WINDOW = 60.0  # seconds
+
+_transcribe_rate: dict[str, list[float]] = defaultdict(list)
+_TRANSCRIBE_RATE_LIMIT = 10  # requests per minute
+_TRANSCRIBE_RATE_WINDOW = 60.0  # seconds
 
 
 def _valid_uuid(value: str) -> bool:
@@ -481,46 +485,64 @@ async def api_memory_restore(request):
 
 async def api_transcribe(request: Request) -> JSONResponse:
     """Proxy audio to Speaches (OpenAI-compatible whisper API) for transcription."""
+    # Rate limit by IP
+    ip = request.client.host if request.client else "unknown"
+    now = time.monotonic()
+    _transcribe_rate[ip] = [t for t in _transcribe_rate[ip] if now - t < _TRANSCRIBE_RATE_WINDOW]
+    if len(_transcribe_rate[ip]) >= _TRANSCRIBE_RATE_LIMIT:
+        return JSONResponse({"error": "Rate limit exceeded. Try again in a minute."}, status_code=429)
+    _transcribe_rate[ip].append(now)
+
     content_type = request.headers.get("content-type", "")
     if "multipart/form-data" not in content_type:
         return JSONResponse({"error": "Multipart form data required"}, status_code=400)
 
     # Parse the multipart form
-    form = await request.form()
-    audio_file = form.get("file")
-    if audio_file is None:
-        return JSONResponse({"error": "No audio file provided"}, status_code=400)
-
-    audio_bytes = await audio_file.read()  # type: ignore[union-attr]
-    if not audio_bytes:
-        return JSONResponse({"error": "Empty audio file"}, status_code=400)
-
-    filename = getattr(audio_file, "filename", "audio.webm") or "audio.webm"
-
+    form = await request.form(max_part_size=10 * 1024 * 1024)
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{settings.speaches_url}/v1/audio/transcriptions",
-                files={"file": (filename, audio_bytes, "audio/webm")},
-                data={"model": "whisper-large-v3", "response_format": "json"},
-            )
-        if resp.status_code != 200:
-            log.warning("Speaches transcription failed: %s %s", resp.status_code, resp.text[:200])
+        audio_file = form.get("file")
+        if audio_file is None:
+            return JSONResponse({"error": "No audio file provided"}, status_code=400)
+
+        audio_bytes = await audio_file.read()  # type: ignore[union-attr]
+        if not audio_bytes:
+            return JSONResponse({"error": "Empty audio file"}, status_code=400)
+
+        filename = getattr(audio_file, "filename", "audio.webm") or "audio.webm"
+        file_content_type = getattr(audio_file, "content_type", "audio/webm") or "audio/webm"
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    f"{settings.speaches_url}/v1/audio/transcriptions",
+                    files={"file": (filename, audio_bytes, file_content_type)},
+                    data={"model": settings.speaches_model, "response_format": "json"},
+                )
+            if resp.status_code != 200:
+                log.warning("Speaches transcription failed: %s %s", resp.status_code, resp.text[:200])
+                return JSONResponse(
+                    {"error": "Transcription service error"},
+                    status_code=502,
+                )
+            result = resp.json()
+            return JSONResponse({"text": result.get("text", "")})
+        except httpx.TimeoutException:
+            log.warning("Speaches transcription timed out at %s", settings.speaches_url)
             return JSONResponse(
-                {"error": "Transcription service error"},
-                status_code=502,
+                {"error": "Transcription timed out"},
+                status_code=504,
             )
-        result = resp.json()
-        return JSONResponse({"text": result.get("text", "")})
-    except httpx.ConnectError:
-        log.error("Cannot connect to Speaches at %s", settings.speaches_url)
-        return JSONResponse(
-            {"error": "Transcription service unavailable"},
-            status_code=503,
-        )
-    except Exception:
-        log.exception("Transcription proxy error")
-        return JSONResponse({"error": "Transcription failed"}, status_code=500)
+        except httpx.ConnectError:
+            log.error("Cannot connect to Speaches at %s", settings.speaches_url)
+            return JSONResponse(
+                {"error": "Transcription service unavailable"},
+                status_code=503,
+            )
+        except Exception:
+            log.exception("Transcription proxy error")
+            return JSONResponse({"error": "Transcription failed"}, status_code=500)
+    finally:
+        await form.close()
 
 
 api_routes = [
