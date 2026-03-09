@@ -434,11 +434,166 @@ async def _import_issues_prs(
     return stored
 
 
+# Directories to skip when selecting source files for import
+_SKIP_DIRS = frozenset({
+    "node_modules", ".git", "dist", "build", "out", ".next", ".nuxt",
+    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    "vendor", "venv", ".venv", "env", ".env", ".tox",
+    "coverage", ".coverage", "htmlcov", ".nyc_output",
+    "migrations", "alembic", "static", "public/assets",
+    ".idea", ".vscode", ".devcontainer",
+    "test_data", "fixtures", "snapshots", "__snapshots__",
+})
+
+# Source file extensions worth importing (actual code, not configs)
+_SOURCE_EXTENSIONS = frozenset({
+    "py", "ts", "tsx", "js", "jsx", "vue", "svelte",
+    "rs", "go", "java", "kt", "rb", "ex", "exs",
+    "sql", "graphql", "gql", "proto",
+})
+
+# Priority patterns — files matching these are imported first
+_PRIORITY_PATTERNS = [
+    # Entry points & main files
+    "main.py", "app.py", "server.py", "cli.py", "index.ts", "main.ts",
+    "App.vue", "App.tsx", "App.svelte",
+    # Core logic
+    "/models", "/schemas", "/services", "/routes", "/routers",
+    "/views", "/components", "/composables", "/stores", "/plugins",
+    "/api/", "/db/", "/core/", "/utils/", "/lib/",
+    "/extraction/", "/importers/", "/embeddings/", "/scheduler",
+    # Config as code
+    "config.py", "config.ts", "settings.py",
+]
+
+
+def _score_source_file(path: str) -> int:
+    """Score a source file's importance for import (higher = more important)."""
+    score = 0
+    # Priority patterns
+    for pattern in _PRIORITY_PATTERNS:
+        if pattern in path:
+            score += 10
+    # Prefer shorter paths (closer to root = more important)
+    depth = path.count("/")
+    score -= depth * 2
+    # Test files are lower priority
+    basename = path.rsplit("/", 1)[-1] if "/" in path else path
+    if basename.startswith("test_") or basename.endswith("_test.py") or "/tests/" in path:
+        score -= 15
+    # __init__.py is low value
+    if basename == "__init__.py":
+        score -= 20
+    return score
+
+
+async def _import_source_files(
+    owner: str, repo: str, default_branch: str,
+    tree_items: list, source_machine: str | None,
+    sem: asyncio.Semaphore, max_files: int = 40,
+) -> int:
+    """Import actual source code files for deep codebase understanding."""
+    stored = 0
+
+    # Filter to source files, skip noise directories
+    candidates = []
+    for item in tree_items:
+        if item.get("type") != "blob":
+            continue
+        path = item.get("path", "")
+        if not path:
+            continue
+
+        # Skip files in noise directories
+        parts = path.split("/")
+        if any(part in _SKIP_DIRS for part in parts):
+            continue
+
+        # Only source code extensions
+        ext = path.rsplit(".", 1)[-1] if "." in path else ""
+        if ext not in _SOURCE_EXTENSIONS:
+            continue
+
+        # Skip very large files (>100KB likely generated/vendor)
+        size = item.get("size", 0)
+        if size > 100_000:
+            continue
+
+        candidates.append((path, _score_source_file(path), size))
+
+    if not candidates:
+        logger.info("  No source files to import for %s/%s", owner, repo)
+        return 0
+
+    # Sort by score descending, take top N
+    candidates.sort(key=lambda x: -x[1])
+    selected = candidates[:max_files]
+
+    logger.info(
+        "  Selected %d/%d source files for import from %s/%s",
+        len(selected), len(candidates), owner, repo,
+    )
+
+    for path, _score, _size in selected:
+        # Fetch file content
+        file_raw = await _gh([
+            "api", f"repos/{owner}/{repo}/contents/{path}?ref={default_branch}",
+            "-H", "Accept: application/vnd.github+json",
+        ], timeout=15)
+        if not file_raw.strip():
+            continue
+
+        try:
+            file_json = json.loads(file_raw)
+            file_b64 = file_json.get("content", "")
+            decoded = base64.b64decode(file_b64).decode("utf-8", errors="replace")
+        except Exception:
+            continue
+
+        # Skip trivial files (<30 chars) or huge files
+        if len(decoded) < 30:
+            continue
+        if len(decoded) > 8000:
+            decoded = decoded[:8000] + "\n\n# [... truncated at 8000 chars]"
+
+        ext = path.rsplit(".", 1)[-1] if "." in path else "unknown"
+        basename = path.rsplit("/", 1)[-1] if "/" in path else path
+
+        content = (
+            f"## Source Code: {owner}/{repo}/{path}\n\n"
+            f"**Language:** {ext} | **Branch:** {default_branch}\n\n"
+            f"```{ext}\n{decoded}\n```"
+        )
+
+        async with sem:
+            try:
+                if await _store_if_new(
+                    skip_dedup=True,
+                    content=content,
+                    summary=f"Source: {owner}/{repo}/{path}",
+                    category="architecture",
+                    tags=["github", "source-code", repo, ext, basename],
+                    source_type="github",
+                    source_machine=source_machine,
+                    source_ref=f"github:{owner}/{repo}/source/{path}",
+                    confidence=0.9,
+                ):
+                    stored += 1
+                    if stored % 10 == 0:
+                        logger.info("    ... imported %d source files for %s/%s", stored, owner, repo)
+            except Exception:
+                logger.exception("Failed to store source %s for %s/%s", path, owner, repo)
+
+    logger.info("  Stored %d source file memories for %s/%s", stored, owner, repo)
+    return stored
+
+
 async def _import_code_structure(
     owner: str, repo: str, default_branch: str,
     source_machine: str | None, sem: asyncio.Semaphore,
+    include_source: bool = False,
 ) -> int:
-    """Import file tree and key config files to capture codebase architecture."""
+    """Import file tree, key config files, and optionally source code."""
     stored = 0
 
     # Get file tree (recursive) — pass recursive as query param, not -f
@@ -561,6 +716,13 @@ async def _import_code_structure(
             except Exception:
                 logger.exception("Failed to store config %s for %s/%s", filepath, owner, repo)
 
+    # Import actual source code files
+    if include_source:
+        source_count = await _import_source_files(
+            owner, repo, default_branch, tree_items, source_machine, sem,
+        )
+        stored += source_count
+
     logger.info("  Stored %d structure memories for %s/%s", stored, owner, repo)
     return stored
 
@@ -573,6 +735,7 @@ async def import_github(
     include_commits: bool = True,
     include_issues: bool = True,
     include_code_structure: bool = True,
+    include_source_code: bool = True,
     include_closed_issues: bool = True,
     concurrency: int = 2,
 ) -> dict:
@@ -585,6 +748,7 @@ async def import_github(
         include_commits: Import commit history.
         include_issues: Import issues and PRs.
         include_code_structure: Import file tree and key config files.
+        include_source_code: Import actual source code files (*.py, *.ts, etc.).
         include_closed_issues: Include closed issues/PRs.
         concurrency: Max concurrent store operations.
 
@@ -648,9 +812,12 @@ async def import_github(
                 count = await _import_commits(owner, name, default_branch, source_machine, sem)
                 total_commits += count
 
-            # 3. Code structure + config files
-            if include_code_structure:
-                count = await _import_code_structure(owner, name, default_branch, source_machine, sem)
+            # 3. Code structure + config files + optional source code
+            if include_code_structure or include_source_code:
+                count = await _import_code_structure(
+                    owner, name, default_branch, source_machine, sem,
+                    include_source=include_source_code,
+                )
                 total_structure += count
 
             # 4. Issues/PRs
@@ -672,10 +839,11 @@ async def import_github(
         "total_memories": total_all,
         "errors": errors,
         "owner": owner,
+        "include_source_code": include_source_code,
     }
 
     logger.info(
-        "GitHub import complete: %d repos → %d overview, %d commits, %d structure, %d issues/PRs (%d errors)",
+        "GitHub import complete: %d repos → %d overview, %d commits, %d structure (incl. source), %d issues/PRs (%d errors)",
         total_repos, total_overview, total_commits, total_structure, total_issues, errors,
     )
 
