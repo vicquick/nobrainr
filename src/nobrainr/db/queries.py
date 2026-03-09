@@ -125,9 +125,15 @@ async def search_memories(
         )
 
     # Standard vector search with threshold in SQL WHERE
-    conditions = ["embedding IS NOT NULL"]
-    params: list = [vec, threshold, limit]
-    idx = 4
+    # Only search memories embedded with the current model to avoid cross-model garbage
+    from nobrainr.config import settings as _settings
+
+    conditions = [
+        "embedding IS NOT NULL",
+        f"(embedding_model IS NULL OR embedding_model = ${4})",
+    ]
+    params: list = [vec, threshold, limit, _settings.embedding_model]
+    idx = 5
 
     if tags:
         conditions.append(f"tags && ${idx}::text[]")
@@ -153,7 +159,7 @@ async def search_memories(
             f"""
             SELECT id, content, summary, source_type, source_machine, tags, category,
                    confidence, metadata, created_at, updated_at, importance, stability,
-                   access_count, last_accessed_at, quality_score,
+                   access_count, last_accessed_at, quality_score, embedding_model,
                    1 - (embedding <=> $1) AS similarity,
                    memory_relevance($1, embedding, created_at, importance, stability, access_count, now(), quality_score) AS relevance
             FROM memories
@@ -226,28 +232,31 @@ async def _hybrid_search_rrf(
     rrf_k: int = 60,
 ) -> list[dict]:
     """Hybrid search using Reciprocal Rank Fusion of vector + full-text results."""
+    from nobrainr.config import settings as _settings
+
     overfetch = max(limit * 3, 20)
 
     async with pool.acquire() as conn:
-        # 1) Vector search: $1=embedding, $2=threshold, $3=overfetch, filters from $4+
+        # 1) Vector search: $1=embedding, $2=threshold, $3=overfetch, $4=model, filters from $5+
         vec_extra, vec_fparams, _ = _build_filter_clause(
-            4, tags, category, source_type, source_machine,
+            5, tags, category, source_type, source_machine,
         )
         vec_rows = await conn.fetch(
             f"""
             SELECT id, content, summary, source_type, source_machine, tags, category,
                    confidence, metadata, created_at, updated_at, importance, stability,
-                   access_count, last_accessed_at, quality_score,
+                   access_count, last_accessed_at, quality_score, embedding_model,
                    1 - (embedding <=> $1) AS similarity,
                    memory_relevance($1, embedding, created_at, importance, stability, access_count, now(), quality_score) AS relevance
             FROM memories
             WHERE embedding IS NOT NULL
+              AND (embedding_model IS NULL OR embedding_model = $4)
               AND 1 - (embedding <=> $1) >= $2
               {vec_extra}
             ORDER BY memory_relevance($1, embedding, created_at, importance, stability, access_count, now(), quality_score) DESC
             LIMIT $3
             """,
-            embedding, threshold, overfetch, *vec_fparams,
+            embedding, threshold, overfetch, _settings.embedding_model, *vec_fparams,
         )
 
         # 2) Full-text search: $1=query, $2=overfetch, filters from $3+
@@ -258,7 +267,7 @@ async def _hybrid_search_rrf(
             f"""
             SELECT id, content, summary, source_type, source_machine, tags, category,
                    confidence, metadata, created_at, updated_at, importance, stability,
-                   access_count, last_accessed_at, quality_score,
+                   access_count, last_accessed_at, quality_score, embedding_model,
                    ts_rank(to_tsvector('english', content), plainto_tsquery('english', $1)) AS fts_rank
             FROM memories
             WHERE to_tsvector('english', content) @@ plainto_tsquery('english', $1)
@@ -1794,6 +1803,16 @@ async def get_stats() -> dict:
         top_tags = await conn.fetch(
             "SELECT unnest(tags) as tag, count(*) as cnt FROM memories GROUP BY tag ORDER BY cnt DESC LIMIT 20"
         )
+        by_embedding_model = await conn.fetch(
+            """SELECT COALESCE(embedding_model, 'unknown') AS model, count(*) AS cnt
+               FROM memories GROUP BY embedding_model ORDER BY cnt DESC"""
+        )
+        chunk_stats = await conn.fetchrow(
+            """SELECT
+                 count(DISTINCT metadata->>'document_id') FILTER (WHERE metadata->>'document_id' IS NOT NULL) AS documents,
+                 count(*) FILTER (WHERE metadata->>'chunk_index' IS NOT NULL) AS total_chunks
+               FROM memories"""
+        )
 
         return {
             "total_memories": counts["total_memories"],
@@ -1806,6 +1825,9 @@ async def get_stats() -> dict:
             "by_category": [dict(r) for r in by_category],
             "by_machine": [dict(r) for r in by_machine],
             "top_tags": [dict(r) for r in top_tags],
+            "by_embedding_model": [dict(r) for r in by_embedding_model],
+            "chunked_documents": chunk_stats["documents"],
+            "total_chunks": chunk_stats["total_chunks"],
         }
 
 
@@ -1962,6 +1984,82 @@ async def store_raw_conversation(
 # ──────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────
+
+async def expand_chunk_context(
+    results: list[dict],
+    window: int = 1,
+) -> list[dict]:
+    """Expand search results with adjacent chunks for context continuity.
+
+    For each result that is a chunk (has document_id + chunk_index in metadata),
+    fetch *window* chunks before and after it. Adjacent chunks are nested under
+    a ``chunk_context`` key on the original result dict.
+
+    Non-chunk results are returned unchanged.
+    """
+    if window < 1 or not results:
+        return results
+
+    # Collect (document_id, chunk_indices_needed) for all chunk results
+    needed: dict[str, set[int]] = {}  # document_id -> set of indices
+    chunk_results: list[dict] = []
+
+    for r in results:
+        meta = r.get("metadata") or {}
+        doc_id = meta.get("document_id")
+        idx = meta.get("chunk_index")
+        total = meta.get("chunk_total", 0)
+        if doc_id is not None and idx is not None:
+            chunk_results.append(r)
+            for offset in range(-window, window + 1):
+                neighbor = idx + offset
+                if 0 <= neighbor < total and neighbor != idx:
+                    needed.setdefault(doc_id, set()).add(neighbor)
+
+    if not needed:
+        return results
+
+    # Batch-fetch all needed adjacent chunks
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        fetched: dict[str, dict[int, dict]] = {}  # doc_id -> {chunk_index -> row}
+        for doc_id, indices in needed.items():
+            rows = await conn.fetch(
+                """
+                SELECT id, content, summary, source_type, source_machine, tags, category,
+                       confidence, metadata, created_at, updated_at
+                FROM memories
+                WHERE metadata->>'document_id' = $1
+                  AND (metadata->>'chunk_index')::int = ANY($2::int[])
+                ORDER BY (metadata->>'chunk_index')::int
+                """,
+                doc_id, list(indices),
+            )
+            fetched[doc_id] = {}
+            for row in rows:
+                d = _row_to_dict(row)
+                ci = (d.get("metadata") or {}).get("chunk_index")
+                if ci is not None:
+                    fetched[doc_id][ci] = d
+
+    # Attach context to chunk results
+    for r in chunk_results:
+        meta = r.get("metadata") or {}
+        doc_id = meta["document_id"]
+        idx = meta["chunk_index"]
+        context = []
+        for offset in range(-window, window + 1):
+            neighbor = idx + offset
+            if neighbor == idx:
+                continue
+            chunk_data = fetched.get(doc_id, {}).get(neighbor)
+            if chunk_data:
+                context.append(chunk_data)
+        if context:
+            r["chunk_context"] = sorted(context, key=lambda c: (c.get("metadata") or {}).get("chunk_index", 0))
+
+    return results
+
 
 def _row_to_dict(row) -> dict:
     d = dict(row)

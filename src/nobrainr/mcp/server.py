@@ -134,9 +134,13 @@ async def memory_search(
     limit = max(1, min(limit, 100))
     threshold = max(0.0, min(threshold, 1.0))
     embedding = await embed_text(query)
+
+    # Overfetch if reranking is enabled, so reranker has candidates to work with
+    fetch_limit = limit * 3 if settings.reranker_enabled else limit
+
     results = await queries.search_memories(
         embedding=embedding,
-        limit=limit,
+        limit=fetch_limit,
         threshold=threshold,
         tags=tags,
         category=category,
@@ -145,7 +149,23 @@ async def memory_search(
         text_query=query if hybrid else None,
     )
 
-    # Record interest signal for the search query (Phase 5)
+    # Rerank with cross-encoder if enabled
+    if settings.reranker_enabled and len(results) > 1:
+        try:
+            from nobrainr.services.reranker import rerank
+            results = await rerank(query, results, limit=limit)
+        except Exception:
+            import logging
+            logging.getLogger("nobrainr").exception("Reranker failed, using original ranking")
+            results = results[:limit]
+    else:
+        results = results[:limit]
+
+    # Expand chunk context: fetch adjacent chunks for continuity
+    if settings.chunk_context_window > 0:
+        results = await queries.expand_chunk_context(results, window=settings.chunk_context_window)
+
+    # Record interest signal for the search query
     if settings.interest_tracking_enabled and query and len(query) > 5:
         try:
             await queries.record_interest_signal(
@@ -155,7 +175,7 @@ async def memory_search(
                 source_machine=source_machine,
             )
         except Exception:
-            pass  # Don't fail the search for interest tracking
+            pass
 
     return results
 

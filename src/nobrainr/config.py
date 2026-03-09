@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     chunk_max_chars: int = 3000  # max chars per chunk
     chunk_overlap_chars: int = 300  # overlap between consecutive chunks
     chunk_threshold: int = 4000  # content above this length gets chunked
+    chunk_context_window: int = 1  # fetch N adjacent chunks around search hits
+
+    # Reranking
+    reranker_enabled: bool = False
+    reranker_model: str = "ms-marco-MiniLM-L-12-v2"
 
     # Security
     cors_origins: list[str] = ["http://localhost:8420"]
