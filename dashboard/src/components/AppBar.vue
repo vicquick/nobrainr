@@ -77,7 +77,7 @@ const navLinks = [
 
 <style scoped>
 .app-bar-glass {
-  backdrop-filter: blur(12px) saturate(180%);
+  background: rgb(var(--v-theme-surface));
   border-bottom: 1px solid rgba(255, 255, 255, 0.04) !important;
 }
 .stat-chip {

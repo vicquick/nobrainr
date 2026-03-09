@@ -129,6 +129,11 @@ class Settings(BaseSettings):
     interest_expansion_batch_size: int = 3  # research topics per cycle
     interest_signal_decay_days: int = 30  # signals older than 30 days lose weight
 
+    # System pulse (autonomous health transmissions)
+    system_pulse_interval_hours: float = 24.0
+    # Auto-optimize (search quality self-improvement)
+    auto_optimize_interval_hours: float = 12.0
+
     # Monitoring & Alerts
     monitoring_enabled: bool = True
     monitoring_interval_hours: float = 1.0

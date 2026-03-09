@@ -1268,6 +1268,175 @@ async def memory_import_github(
 
 
 # ──────────────────────────────────────────────
+# Tool: distill (compress text via local LLM)
+# ──────────────────────────────────────────────
+@mcp.tool()
+async def distill(
+    text: str,
+    question: str,
+    max_input_chars: int = 50000,
+) -> dict:
+    """Compress text using the local LLM, extracting only essential information.
+
+    Inspired by samuelfaj/distill. Pipe any large output (logs, search results,
+    crawled pages, code) through this tool with a specific question to get a
+    compressed answer that saves 90-99% of tokens.
+
+    Examples:
+        distill(text=<git diff output>, question="what changed?")
+        distill(text=<error log>, question="what errors occurred?")
+        distill(text=<long document>, question="summarize the key decisions")
+
+    Args:
+        text: Raw text to compress.
+        question: What to extract (e.g. "what errors?", "summarize key points").
+        max_input_chars: Max input length before truncation (default 50000).
+    """
+    from nobrainr.services.distill import distill_text
+
+    if not text or not text.strip():
+        return {"error": "Empty text provided"}
+    if not question or not question.strip():
+        return {"error": "Empty question provided"}
+
+    return await distill_text(text, question, max_input_chars=max_input_chars)
+
+
+# ──────────────────────────────────────────────
+# Tool: distill_search (compressed memory search)
+# ──────────────────────────────────────────────
+@mcp.tool()
+async def distill_search(
+    query: str,
+    question: str | None = None,
+    limit: int = 20,
+    threshold: float = 0.3,
+    tags: list[str] | None = None,
+    category: str | None = None,
+) -> dict:
+    """Search memories and return a distilled/compressed answer.
+
+    Like memory_search but runs results through the local LLM to compress
+    them into a focused answer. Returns ~90% fewer tokens than raw results.
+
+    Use this when you need information from memory but don't need to see
+    every individual memory — just the answer to your question.
+
+    Args:
+        query: Search query (also used as the distill question if question is None).
+        question: Specific question to answer from results (defaults to query).
+        limit: How many memories to search through (default 20, more = better coverage).
+        threshold: Similarity threshold (default 0.3).
+        tags: Filter by tags.
+        category: Filter by category.
+    """
+    from nobrainr.services.distill import distill_memories
+
+    embedding = await embed_text(query)
+    results = await queries.search_memories(
+        embedding=embedding,
+        query_text=query,
+        limit=limit,
+        threshold=threshold,
+        tags=tags,
+        category=category,
+        hybrid=True,
+    )
+
+    distill_q = question or query
+    result = await distill_memories(results, distill_q)
+    result["search_query"] = query
+    return result
+
+
+# ──────────────────────────────────────────────
+# Tool: code_index (AST-based code symbol indexing)
+# ──────────────────────────────────────────────
+@mcp.tool()
+async def code_index(
+    directory: str,
+    tags: list[str] | None = None,
+    source_machine: str | None = None,
+    extensions: list[str] | None = None,
+) -> dict:
+    """Index a codebase by extracting code symbols (functions, classes, methods).
+
+    Uses AST parsing to extract symbols with their signatures, docstrings,
+    and line numbers. Stores each symbol as a memory for future retrieval.
+    Inspired by jcodemunch-mcp — enables 99% token savings for code exploration.
+
+    Args:
+        directory: Path to the code directory to index.
+        tags: Additional tags (always includes "code", "indexed").
+        source_machine: Machine identifier.
+        extensions: File extensions to index (default: [".py"]).
+    """
+    from nobrainr.services.code_index import index_directory
+
+    from pathlib import Path
+    resolved = Path(directory).resolve()
+    if not resolved.is_dir():
+        return {"error": f"Directory not found: {directory}"}
+
+    return await index_directory(
+        str(resolved),
+        tags=tags,
+        source_machine=source_machine,
+        extensions=extensions,
+    )
+
+
+# ──────────────────────────────────────────────
+# Tool: code_search (symbol-level code retrieval)
+# ──────────────────────────────────────────────
+@mcp.tool()
+async def code_search(
+    query: str,
+    kind: str | None = None,
+    limit: int = 10,
+) -> list[dict]:
+    """Search indexed code symbols by name, kind, or semantic query.
+
+    Returns symbol signatures, docstrings, and locations — NOT full source code.
+    Use this to find functions/classes without reading entire files.
+
+    Args:
+        query: Symbol name or description to search for.
+        kind: Filter by symbol kind ("function", "class", "method").
+        limit: Max results (default 10).
+    """
+    embedding = await embed_text(query)
+    tags_filter = ["code", "indexed"]
+    if kind:
+        tags_filter.append(f"kind:{kind}")
+
+    results = await queries.search_memories(
+        embedding=embedding,
+        query_text=query,
+        limit=limit,
+        threshold=0.3,
+        tags=tags_filter if kind else ["code", "indexed"],
+        hybrid=True,
+    )
+
+    # Format results to show symbol info compactly
+    symbols = []
+    for mem in results:
+        meta = mem.get("metadata", {}) or {}
+        symbols.append({
+            "symbol": meta.get("qualified_name", mem.get("summary", "")),
+            "kind": meta.get("kind", "unknown"),
+            "file": meta.get("file_path", ""),
+            "line": meta.get("line_number", 0),
+            "signature": meta.get("signature", ""),
+            "docstring": meta.get("docstring", "")[:200],
+            "memory_id": mem.get("id", ""),
+        })
+
+    return symbols
+
+
+# ──────────────────────────────────────────────
 # Entry points
 # ──────────────────────────────────────────────
 

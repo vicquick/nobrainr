@@ -162,7 +162,7 @@ onMounted(async () => {
   font-weight: 600;
   font-size: 0.82rem;
   padding: 4px 14px;
-  border-radius: 20px;
+  border-radius: 8px;
   white-space: nowrap;
 }
 .timeline-line {

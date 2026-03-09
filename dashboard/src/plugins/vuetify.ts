@@ -9,20 +9,22 @@ export default createVuetify({
       dark: {
         dark: true,
         colors: {
-          background: '#0a0e14',
-          surface: '#131820',
-          'surface-bright': '#1a2130',
-          'surface-variant': '#1e2736',
-          'on-surface': '#e6edf3',
-          'on-background': '#e6edf3',
+          // Void Space palette (Uncodixfy-approved)
+          background: '#0d1117',
+          surface: '#161b22',
+          'surface-bright': '#1c2129',
+          'surface-variant': '#21262d',
+          'on-surface': '#c9d1d9',
+          'on-background': '#c9d1d9',
           primary: '#58a6ff',
           'primary-darken-1': '#388bfd',
-          secondary: '#bc8cff',
-          'secondary-darken-1': '#a371f7',
+          secondary: '#79c0ff',
+          'secondary-darken-1': '#58a6ff',
           success: '#3fb950',
           error: '#f85149',
           warning: '#d29922',
           info: '#58a6ff',
+          accent: '#f78166',
         },
         variables: {
           'border-color': '#ffffff',
@@ -39,22 +41,23 @@ export default createVuetify({
     },
   },
   defaults: {
+    // Uncodixfy: no oversized rounded corners, no pill shapes
     VCard: {
-      rounded: 'lg',
+      rounded: 'md',
       variant: 'flat',
       color: 'surface',
     },
     VBtn: {
-      rounded: 'lg',
+      rounded: 'md',
       variant: 'flat',
     },
     VChip: {
-      rounded: 'lg',
+      rounded: 'md',
     },
     VTextField: {
       variant: 'solo-filled',
       density: 'compact',
-      rounded: 'lg',
+      rounded: 'md',
       flat: true,
       bgColor: 'surface-bright',
       hideDetails: true,
@@ -62,7 +65,7 @@ export default createVuetify({
     VTextarea: {
       variant: 'solo-filled',
       density: 'compact',
-      rounded: 'lg',
+      rounded: 'md',
       flat: true,
       bgColor: 'surface-bright',
       hideDetails: true,
@@ -70,7 +73,7 @@ export default createVuetify({
     VSelect: {
       variant: 'solo-filled',
       density: 'compact',
-      rounded: 'lg',
+      rounded: 'md',
       flat: true,
       bgColor: 'surface-bright',
       hideDetails: true,
