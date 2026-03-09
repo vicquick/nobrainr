@@ -19,7 +19,7 @@ import httpx
 from nobrainr.config import settings
 from nobrainr.db import queries
 from nobrainr.db.pool import get_pool
-from nobrainr.services.memory import store_memory_with_extraction
+from nobrainr.services.memory import store_document_chunked
 
 logger = logging.getLogger("nobrainr")
 
@@ -55,7 +55,7 @@ SEED_URLS = [
     ("https://www.buildingsmart.org/standards/bsi-standards/industry-foundation-classes/", ["ifc", "bim", "standards"], "business"),
 ]
 
-MAX_CONTENT_CHARS = 8000  # Don't store huge pages
+MAX_CONTENT_CHARS = 50000  # Cap at 50k chars, chunking handles the rest
 
 # Domains we trust for automatic link discovery (avoid crawling the entire web)
 TRUSTED_DOMAINS = {
@@ -299,11 +299,12 @@ async def knowledge_crawl() -> dict:
             await asyncio.sleep(settings.knowledge_crawl_delay)
             continue
 
-        # Store via shared service (handles embedding + dedup + entity extraction)
+        # Store via chunked ingestion (handles embedding + overlap + entity extraction)
         try:
             all_tags = list(tags) + ["crawled", "knowledge-base"]
-            store_result = await store_memory_with_extraction(
+            store_result = await store_document_chunked(
                 content=markdown,
+                title=result.get("title", url),
                 summary=f"Crawled: {result['title']}"[:200],
                 source_type="crawl",
                 source_machine=settings.source_machine or "unknown",
@@ -312,9 +313,9 @@ async def knowledge_crawl() -> dict:
                 category=category,
                 confidence=0.8,
             )
-            if store_result.get("status") in ("stored", "merged"):
-                stored += 1
-            logger.info("Knowledge crawl stored: %s (%d chars)", result["title"], len(markdown))
+            if store_result.get("status") in ("stored", "updated"):
+                stored += store_result.get("chunks", 1)
+            logger.info("Knowledge crawl stored: %s (%d chars, %d chunks)", result["title"], len(markdown), store_result.get("chunks", 1))
         except Exception:
             logger.exception("Knowledge crawl store failed for %s", url)
 

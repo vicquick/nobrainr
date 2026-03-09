@@ -16,7 +16,7 @@ import logging
 from pathlib import Path
 
 from nobrainr.config import settings
-from nobrainr.services.memory import store_memory_with_extraction
+from nobrainr.services.memory import store_document_chunked
 
 logger = logging.getLogger("nobrainr.import.documents")
 
@@ -28,8 +28,6 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", "
 
 ALL_EXTENSIONS = TEXT_EXTENSIONS | DOCX_EXTENSIONS | PDF_EXTENSIONS | IMAGE_EXTENSIONS
 
-# Chunk size for splitting large documents into separate memories
-MAX_MEMORY_CHARS = 6000
 # Minimum content length to bother storing
 MIN_CONTENT_CHARS = 30
 # Max chars to send to vision model per page
@@ -162,36 +160,6 @@ async def _extract_image_vision(path: Path) -> str:
     )
 
 
-def _chunk_text(text: str, title: str, max_chars: int = MAX_MEMORY_CHARS) -> list[str]:
-    """Split long text into chunks, each prefixed with title."""
-    if len(text) <= max_chars:
-        return [f"{title}\n\n{text}"]
-
-    chunks = []
-    remaining = text
-    part = 1
-    while remaining:
-        # Try to split at paragraph boundary
-        chunk = remaining[:max_chars]
-        if len(remaining) > max_chars:
-            # Find last paragraph break within limit
-            last_para = chunk.rfind("\n\n")
-            if last_para > max_chars // 3:
-                chunk = remaining[:last_para]
-            else:
-                # Fall back to line break
-                last_line = chunk.rfind("\n")
-                if last_line > max_chars // 3:
-                    chunk = remaining[:last_line]
-
-        chunk_title = f"{title} (part {part})" if part > 1 else title
-        chunks.append(f"{chunk_title}\n\n{chunk.strip()}")
-        remaining = remaining[len(chunk):].strip()
-        part += 1
-
-    return chunks
-
-
 async def import_documents(
     directory: str,
     *,
@@ -279,9 +247,6 @@ async def import_documents(
             if used_vision:
                 vision_used += 1
 
-            # Chunk large documents
-            chunks = _chunk_text(text.strip(), title)
-
             # Determine file-type-specific tags
             file_tags = list(base_tags)
             if ext in PDF_EXTENSIONS:
@@ -293,29 +258,29 @@ async def import_documents(
             if used_vision:
                 file_tags.append("vision-extracted")
 
-            # Store each chunk
-            for chunk in chunks:
-                async with sem:
-                    try:
-                        await store_memory_with_extraction(
-                            content=chunk,
-                            summary=f"Document: {title}"[:200],
-                            category=category,
-                            tags=file_tags,
-                            source_type="document",
-                            source_machine=source_machine,
-                            source_ref=rel_path,
-                            confidence=0.7 if used_vision else 0.8,
-                            metadata={
-                                "file_path": rel_path,
-                                "file_type": ext.lstrip("."),
-                                "vision_extracted": used_vision,
-                            },
-                        )
-                        chunks_stored += 1
-                    except Exception:
-                        logger.exception("Failed to store chunk from %s", file_path.name)
-                        errors += 1
+            # Store via chunked ingestion (handles short + long content)
+            async with sem:
+                try:
+                    result = await store_document_chunked(
+                        content=text.strip(),
+                        title=title,
+                        summary=f"Document: {title}"[:200],
+                        category=category,
+                        tags=file_tags,
+                        source_type="document",
+                        source_machine=source_machine,
+                        source_ref=rel_path,
+                        confidence=0.7 if used_vision else 0.8,
+                        metadata={
+                            "file_path": rel_path,
+                            "file_type": ext.lstrip("."),
+                            "vision_extracted": used_vision,
+                        },
+                    )
+                    chunks_stored += result.get("chunks", 1)
+                except Exception:
+                    logger.exception("Failed to store document %s", file_path.name)
+                    errors += 1
 
             imported += 1
 

@@ -677,20 +677,28 @@ async def crawl_and_store(
     tags: list[str] | None = None,
     category: str = "documentation",
     source_machine: str | None = None,
-    max_content_chars: int = 10000,
+    max_content_chars: int = 50000,
+    chunked: bool = True,
 ) -> dict:
     """Crawl a web page and store its content as a memory in nobrainr.
 
     Fetches the page via Crawl4AI, extracts clean markdown, and stores it
     with embedding + entity extraction for the knowledge graph.
 
+    Long pages are automatically split into overlapping chunks so no content
+    is lost.  Set chunked=False to store as a single memory (truncated to
+    max_content_chars).
+
     Args:
         url: The URL to crawl and store.
         tags: Tags for the stored memory.
         category: Memory category (default "documentation").
         source_machine: Which machine initiated this crawl.
-        max_content_chars: Max chars to store (default 10000, avoids huge pages).
+        max_content_chars: Max chars to keep from the page (default 50000).
+        chunked: Split long content into overlapping chunks (default True).
     """
+    from nobrainr.services.memory import store_document_chunked
+
     # First crawl
     crawl_result = await crawl_page(url)
     if "error" in crawl_result:
@@ -703,19 +711,33 @@ async def crawl_and_store(
     title = crawl_result.get("title", url)
     content = markdown[:max_content_chars]
 
-    # Store as memory
     all_tags = list(tags or []) + ["crawled"]
-    store_result = await memory_store(
-        content=content,
-        summary=f"Crawled: {title}"[:200],
-        tags=all_tags,
-        category=normalize_category(category),
-        source_type="crawl",
-        source_machine=source_machine,
-        source_ref=url,
-    )
+    norm_category = normalize_category(category)
 
-    # Record interest signal for the crawled domain/topic (Phase 5)
+    if chunked:
+        store_result = await store_document_chunked(
+            content=content,
+            title=title,
+            summary=f"Crawled: {title}"[:200],
+            tags=all_tags,
+            category=norm_category,
+            source_type="crawl",
+            source_machine=source_machine,
+            source_ref=url,
+        )
+    else:
+        # Legacy single-memory mode (truncates)
+        store_result = await memory_store(
+            content=content[:settings.chunk_threshold],
+            summary=f"Crawled: {title}"[:200],
+            tags=all_tags,
+            category=norm_category,
+            source_type="crawl",
+            source_machine=source_machine,
+            source_ref=url,
+        )
+
+    # Record interest signal for the crawled domain/topic
     if settings.interest_tracking_enabled:
         try:
             from urllib.parse import urlparse
@@ -723,7 +745,7 @@ async def crawl_and_store(
             await queries.record_interest_signal(
                 topic=domain,
                 signal_type="crawl",
-                strength=2.0,  # manual crawls signal stronger interest
+                strength=2.0,
                 source_machine=source_machine,
                 metadata={"url": url, "title": title},
             )
@@ -733,9 +755,61 @@ async def crawl_and_store(
     return {
         "url": url,
         "title": title,
-        "chars_stored": len(content),
-        "memory": store_result,
+        "chars_total": len(content),
+        "chunked": chunked,
+        "result": store_result,
     }
+
+
+# ──────────────────────────────────────────────
+# Tool: memory_store_document (chunked ingestion)
+# ──────────────────────────────────────────────
+@mcp.tool()
+async def memory_store_document(
+    content: str,
+    title: str | None = None,
+    tags: list[str] | None = None,
+    category: str = "documentation",
+    source_type: str = "document",
+    source_machine: str | None = None,
+    source_ref: str | None = None,
+    confidence: float = 0.8,
+) -> dict:
+    """Store a long document as chunked memories with overlapping context.
+
+    For content shorter than the chunk threshold (~4000 chars), stores as a
+    single memory.  For longer content, splits into overlapping chunks that
+    preserve context at boundaries, links them via a shared document_id in
+    metadata, and runs entity extraction on each chunk.
+
+    Use this for architecture docs, ADRs, meeting notes, specs, or any text
+    too long for a single memory_store call.
+
+    Args:
+        content: The full document text.
+        title: Document title (used in chunk summaries and metadata).
+        tags: Tags for all chunks.
+        category: Category for all chunks (default "documentation").
+        source_type: Source type (default "document").
+        source_machine: Which machine generated this.
+        source_ref: Reference (file path, URL, etc.).
+        confidence: Confidence score (default 0.8).
+    """
+    from nobrainr.services.memory import store_document_chunked
+
+    if len(content) > settings.max_content_length * 5:
+        return {"error": f"Content too large ({len(content)} chars, max {settings.max_content_length * 5})"}
+
+    return await store_document_chunked(
+        content=content,
+        title=title,
+        tags=tags,
+        category=normalize_category(category),
+        source_type=source_type,
+        source_machine=source_machine,
+        source_ref=source_ref,
+        confidence=confidence,
+    )
 
 
 # ──────────────────────────────────────────────
