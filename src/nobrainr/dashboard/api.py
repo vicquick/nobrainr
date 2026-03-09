@@ -1,9 +1,11 @@
 """API endpoints — pure JSON responses + SSE stream."""
 
+import logging
 import time
 from collections import defaultdict
 from uuid import UUID
 
+import httpx
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
@@ -12,6 +14,8 @@ from nobrainr.config import settings
 from nobrainr.db import queries
 from nobrainr.embeddings.ollama import embed_text
 from nobrainr.events import subscribe
+
+log = logging.getLogger(__name__)
 
 # Simple in-memory rate limiter for chat
 _chat_rate: dict[str, list[float]] = defaultdict(list)
@@ -475,7 +479,52 @@ async def api_memory_restore(request):
     return JSONResponse(result)
 
 
+async def api_transcribe(request: Request) -> JSONResponse:
+    """Proxy audio to Speaches (OpenAI-compatible whisper API) for transcription."""
+    content_type = request.headers.get("content-type", "")
+    if "multipart/form-data" not in content_type:
+        return JSONResponse({"error": "Multipart form data required"}, status_code=400)
+
+    # Parse the multipart form
+    form = await request.form()
+    audio_file = form.get("file")
+    if audio_file is None:
+        return JSONResponse({"error": "No audio file provided"}, status_code=400)
+
+    audio_bytes = await audio_file.read()  # type: ignore[union-attr]
+    if not audio_bytes:
+        return JSONResponse({"error": "Empty audio file"}, status_code=400)
+
+    filename = getattr(audio_file, "filename", "audio.webm") or "audio.webm"
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{settings.speaches_url}/v1/audio/transcriptions",
+                files={"file": (filename, audio_bytes, "audio/webm")},
+                data={"model": "whisper-large-v3", "response_format": "json"},
+            )
+        if resp.status_code != 200:
+            log.warning("Speaches transcription failed: %s %s", resp.status_code, resp.text[:200])
+            return JSONResponse(
+                {"error": "Transcription service error"},
+                status_code=502,
+            )
+        result = resp.json()
+        return JSONResponse({"text": result.get("text", "")})
+    except httpx.ConnectError:
+        log.error("Cannot connect to Speaches at %s", settings.speaches_url)
+        return JSONResponse(
+            {"error": "Transcription service unavailable"},
+            status_code=503,
+        )
+    except Exception:
+        log.exception("Transcription proxy error")
+        return JSONResponse({"error": "Transcription failed"}, status_code=500)
+
+
 api_routes = [
+    Route("/api/transcribe", api_transcribe, methods=["POST"]),
     Route("/api/chat", api_chat, methods=["POST"]),
     Route("/api/graph", api_graph),
     Route("/api/memories", api_memories),
