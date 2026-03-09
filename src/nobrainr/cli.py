@@ -441,8 +441,9 @@ def re_embed(model, dimensions, batch_size, yes):
             async with pool.acquire() as conn:
                 for m, emb in zip(batch, embeddings):
                     await conn.execute(
-                        "UPDATE memories SET embedding = $1 WHERE id = $2",
+                        "UPDATE memories SET embedding = $1, embedding_model = $2 WHERE id = $3",
                         np.array(emb, dtype=np.float32),
+                        embed_model,
                         m["id"],
                     )
 
@@ -468,8 +469,9 @@ def re_embed(model, dimensions, batch_size, yes):
             async with pool.acquire() as conn:
                 for e, emb in zip(batch, embeddings):
                     await conn.execute(
-                        "UPDATE entities SET embedding = $1 WHERE id = $2",
+                        "UPDATE entities SET embedding = $1, embedding_model = $2 WHERE id = $3",
                         np.array(emb, dtype=np.float32),
+                        embed_model,
                         e["id"],
                     )
 
