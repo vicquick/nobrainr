@@ -56,6 +56,9 @@ src/nobrainr/              # Python backend
 │   ├── dedup.py           # Memory dedup (vector + LLM merge decision)
 │   ├── llm.py             # Shared Ollama chat helper
 │   └── pipeline.py        # Full pipeline: extract → dedup → store → link
+├── crawler/
+│   ├── client.py          # Shared Crawl4AI HTTP client (crawl4ai_request, crawl4ai_job, crawl4ai_deep, discover_sitemap_urls, bm25_markdown_generator)
+│   └── knowledge.py       # Scheduled knowledge crawler (seed URLs, link discovery, freshness)
 ├── dashboard/
 │   ├── app.py             # Parent ASGI app: create_app(), lifespan
 │   └── api.py             # Pure JSON API endpoints
@@ -124,8 +127,10 @@ dashboard/                  # Vue 3 frontend (separate build)
 | `log_event` | Record significant agent activity |
 | `memory_import_chatgpt` | Import ChatGPT export JSON |
 | `memory_import_claude` | Import Claude memory files |
-| `crawl_page` | Crawl a URL and return cleaned markdown content via Crawl4AI |
-| `crawl_and_store` | Crawl a URL + chunked ingestion (no more truncation, full content preserved) |
+| `crawl_page` | Crawl a URL with PruningContentFilter (or BM25 query-aware filtering), supports css_selector, screenshot, network capture |
+| `crawl_and_store` | Crawl a URL + chunked ingestion with content filtering (no more truncation, full content preserved) |
+| `deep_crawl` | Multi-page deep crawl (BFS/DFS) with optional store — crawls linked pages from a starting URL |
+| `discover_sitemap` | Discover page URLs from sitemap.xml and robots.txt for targeted crawling |
 | `memory_import_documents` | Import documents from a directory (PDF, images, DOCX, markdown) with optional vision OCR |
 
 ## Search & Retrieval Pipeline
@@ -320,10 +325,18 @@ docker network disconnect mcp <container> && docker network connect --alias nobr
 ```
 
 ### Crawl4AI Configuration
-- Container: `crawl4ai` on `mcp` network, port 11235
+- Container: `crawl4ai` on `mcp` network, port 11235 (v0.8.0)
 - CPU only (no GPU), 4GB RAM, 4 CPUs, `--shm-size=2g` for Chromium
 - Connects to Ollama via `http://ollama:11434` for LLM-based extraction
 - Env vars: `NOBRAINR_CRAWL4AI_URL=http://crawl4ai:11235`, `NOBRAINR_CRAWL4AI_API_TOKEN`
+- **Shared client**: All crawl operations go through `nobrainr.crawler.client` which applies
+  `PruningContentFilter` by default (80% noise reduction) and wraps sync/async/deep crawl APIs
+- **API format**: v0.8.x requires `crawler_config` dict wrapping (NOT flat params) to activate
+  content filtering. The shared client handles this automatically.
+- **Content filters**: PruningContentFilter (default, boilerplate removal) or BM25ContentFilter
+  (query-aware, extracts only relevant sections — used by entity_web_research, interest_expansion)
+- **Async job API**: Scheduler jobs use POST `/crawl/job` + polling to avoid HTTP timeouts
+- **Deep crawl**: BFS/DFS strategies via `crawl4ai_deep()`, exposed as `deep_crawl` MCP tool
 
 ### TLS Certificates
 Uses Traefik `letsencrypt-dns` resolver (Cloudflare DNS challenge) — works behind VPN
