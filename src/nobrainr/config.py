@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     speaches_url: str = "http://speaches:8000"
     speaches_model: str = "whisper-large-v3"
 
+    # Chunked ingestion
+    chunk_max_chars: int = 3000  # max chars per chunk
+    chunk_overlap_chars: int = 300  # overlap between consecutive chunks
+    chunk_threshold: int = 4000  # content above this length gets chunked
+
     # Security
     cors_origins: list[str] = ["http://localhost:8420"]
     max_content_length: int = 50000  # 50KB max memory content
