@@ -18,14 +18,16 @@ export const useChatStore = defineStore('chat', () => {
   function focusEntity(id: string) { focusEntityId.value = id }
   function clearFocus() { focusEntityId.value = null }
 
-  async function sendMessage(text: string) {
+  async function sendMessage(text: string, images?: string[], displayImages?: string[]) {
     if (!text.trim() || isStreaming.value) return
 
-    // Add user message
+    // Add user message — displayImages are full data URLs with correct MIME type for
+    // rendering in chat bubbles; images are raw base64 sent to the API.
     messages.value.push({
       id: crypto.randomUUID(),
       role: 'user',
       content: text.trim(),
+      images: displayImages?.length ? displayImages : undefined,
       timestamp: Date.now(),
     })
 
@@ -51,7 +53,7 @@ export const useChatStore = defineStore('chat', () => {
       const res = await fetch(`${baseUrl}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text.trim(), history }),
+        body: JSON.stringify({ message: text.trim(), history, ...(images?.length ? { images } : {}) }),
       })
 
       if (!res.ok || !res.body) {

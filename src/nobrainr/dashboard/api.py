@@ -1,5 +1,6 @@
 """API endpoints — pure JSON responses + SSE stream."""
 
+import base64
 import logging
 import time
 from collections import defaultdict
@@ -454,10 +455,44 @@ async def api_chat(request: Request) -> StreamingResponse | JSONResponse:
         history = []
     history = history[-settings.chat_max_history_length:]
 
+    # Optional base64-encoded images for multimodal (vision) support
+    images_raw = body.get("images")
+    images: list[str] | None = None
+    if isinstance(images_raw, list):
+        images = [img for img in images_raw if isinstance(img, str) and img]
+        if not images:
+            images = None
+
+    # Validate images server-side
+    if images:
+        _MAX_IMAGES = 5
+        _MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB per image
+        if len(images) > _MAX_IMAGES:
+            return JSONResponse(
+                {"error": f"Too many images ({len(images)}). Maximum is {_MAX_IMAGES}."},
+                status_code=400,
+            )
+        for i, img in enumerate(images):
+            # Strip optional data URL prefix before decoding
+            raw_b64 = img.split(",", 1)[-1] if img.startswith("data:") else img
+            try:
+                decoded = base64.b64decode(raw_b64, validate=True)
+            except (ValueError, Exception):
+                return JSONResponse(
+                    {"error": f"Image {i + 1} is not valid base64."},
+                    status_code=400,
+                )
+            if len(decoded) > _MAX_IMAGE_BYTES:
+                size_mb = len(decoded) / (1024 * 1024)
+                return JSONResponse(
+                    {"error": f"Image {i + 1} is too large ({size_mb:.1f} MB). Maximum is 10 MB per image."},
+                    status_code=400,
+                )
+
     from nobrainr.chat.rag import stream_chat_response
 
     return StreamingResponse(
-        stream_chat_response(message, history),
+        stream_chat_response(message, history, images=images),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

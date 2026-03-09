@@ -50,6 +50,7 @@ def _build_context(memories: list[dict], entities: list[dict]) -> str:
 async def stream_chat_response(
     message: str,
     history: list[dict],
+    images: list[str] | None = None,
 ) -> AsyncIterator[str]:
     """Full RAG pipeline: sanitize → embed → search → context → stream."""
     # 1. Sanitize input
@@ -105,13 +106,21 @@ async def stream_chat_response(
     llm_messages = [
         {"role": "system", "content": SYSTEM_PROMPT.format(context=context)},
     ]
-    # Sanitized history
+    # Sanitized history — NOTE: images are intentionally excluded from history messages.
+    # Only the current user message carries images. Prior turns' images are not forwarded
+    # because: (1) Ollama re-processes all images in every request, making multi-image
+    # history very expensive in VRAM and latency; (2) the frontend only stores display
+    # data URLs on messages, not the raw base64 needed by the API; (3) for knowledge-base
+    # Q&A, the textual conversation context is sufficient for multi-turn coherence.
     for h in history[-settings.chat_max_history_length:]:
         role = "user" if h.get("role") == "user" else "assistant"
         content = sanitize_user_input(h.get("content", ""), settings.chat_max_message_length)
         if content:
             llm_messages.append({"role": role, "content": content})
-    llm_messages.append({"role": "user", "content": clean})
+    user_msg: dict = {"role": "user", "content": clean}
+    if images:
+        user_msg["images"] = images
+    llm_messages.append(user_msg)
 
     # 8. Stream from Ollama
     model = settings.chat_model or settings.extraction_model
