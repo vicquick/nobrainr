@@ -943,6 +943,43 @@ async def memory_import_documents(
     )
 
 
+@mcp.tool()
+async def memory_import_github(
+    owner: str = "vicquick",
+    repos: list[str] | None = None,
+    source_machine: str | None = None,
+    include_commits: bool = True,
+    include_issues: bool = True,
+    include_code_structure: bool = True,
+    include_closed_issues: bool = True,
+) -> dict:
+    """Import knowledge from GitHub repositories into the memory system.
+
+    Fetches repo metadata, README, commit history, file structure, key config
+    files, issues, and PRs — all with entity extraction for the knowledge graph.
+    Requires the `gh` CLI to be installed and authenticated.
+
+    Args:
+        owner: GitHub username or organization (default: "vicquick").
+        repos: Specific repo names to import (default: all repos).
+        source_machine: Machine identifier for provenance.
+        include_commits: Import commit history grouped by week.
+        include_issues: Import issues and pull requests with comments.
+        include_code_structure: Import file tree and key config files.
+        include_closed_issues: Include closed issues and merged PRs.
+    """
+    from nobrainr.importers.github import import_github
+    return await import_github(
+        owner,
+        repos=repos,
+        source_machine=source_machine,
+        include_commits=include_commits,
+        include_issues=include_issues,
+        include_code_structure=include_code_structure,
+        include_closed_issues=include_closed_issues,
+    )
+
+
 # ──────────────────────────────────────────────
 # Entry points
 # ──────────────────────────────────────────────
