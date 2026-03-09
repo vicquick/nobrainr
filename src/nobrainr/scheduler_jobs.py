@@ -119,7 +119,7 @@ async def auto_summarize() -> dict:
         try:
             result = await ollama_chat(
                 system="You are a concise summarizer. Summarize the given text in one sentence, max 15 words.",
-                user=mem["content"],
+                user=mem["content"][:3000],
                 schema=SUMMARIZE_SCHEMA,
                 model=model,
                 timeout=60.0,
@@ -161,8 +161,8 @@ async def consolidation() -> dict:
                 ),
                 user=(
                     "Should these two memories be merged?\n\n"
-                    f"Memory A:\n{pair['content_a']}\n\n"
-                    f"Memory B (similarity {pair.get('similarity', 0):.4f}):\n{pair['content_b']}"
+                    f"Memory A:\n{pair['content_a'][:1500]}\n\n"
+                    f"Memory B (similarity {pair.get('similarity', 0):.4f}):\n{pair['content_b'][:1500]}"
                 ),
                 schema=DEDUP_SCHEMA,
                 model=model,
@@ -285,7 +285,11 @@ ENTITY_MERGE_SCHEMA = {
         "winner_type": {
             "type": "string",
             "description": "The correct entity type for the merged entity",
-            "enum": ["person", "project", "technology", "concept", "file", "config", "error", "location", "organization"],
+            "enum": [
+                "person", "project", "technology", "concept", "file", "config",
+                "error", "location", "organization", "service", "database",
+                "command", "port", "container",
+            ],
         },
         "reason": {
             "type": "string",
@@ -576,7 +580,7 @@ CROSS_MACHINE_SCHEMA = {
     "required": ["has_insight", "insight", "machines_involved"],
 }
 
-QUALITY_SCHEMA = {
+EXTRACTION_QUALITY_SCHEMA = {
     "type": "object",
     "properties": {
         "is_valid": {
@@ -585,6 +589,11 @@ QUALITY_SCHEMA = {
         },
         "correct_type": {
             "type": "string",
+            "enum": [
+                "person", "project", "technology", "concept", "file", "config",
+                "error", "location", "organization", "service", "database",
+                "command", "port", "container",
+            ],
             "description": "The correct entity type if mistyped, or same if correct",
         },
         "confidence": {
@@ -674,11 +683,11 @@ async def extraction_quality() -> dict:
                     "name, type, and association are accurate."
                 ),
                 user=(
-                    f"Memory content:\n{sample['memory_content']}\n\n"
+                    f"Memory content:\n{sample['memory_content'][:3000]}\n\n"
                     f"Extracted entity: {sample['entity_name']} (type: {sample['entity_type']})\n\n"
                     "Is this entity correctly extracted from this memory?"
                 ),
-                schema=QUALITY_SCHEMA,
+                schema=EXTRACTION_QUALITY_SCHEMA,
                 model=model,
                 timeout=60.0,
                 think=False,
@@ -1067,7 +1076,7 @@ async def interest_expansion() -> dict:
     }
 
 
-QUALITY_SCHEMA = {
+MEMORY_QUALITY_SCHEMA = {
     "type": "object",
     "properties": {
         "specificity": {
@@ -1115,7 +1124,7 @@ async def quality_scoring() -> dict:
                     "root cause are 4-5. Personal/non-technical content is 1."
                 ),
                 user=f"Source: {source} | Category: {category}\n\n{content}",
-                schema=QUALITY_SCHEMA,
+                schema=MEMORY_QUALITY_SCHEMA,
                 model=model,
                 timeout=60.0,
                 think=False,

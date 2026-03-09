@@ -106,7 +106,7 @@ async def decide_write_action(
         )
 
     user_prompt = (
-        f"NEW MEMORY:\n{content}\n\n"
+        f"NEW MEMORY:\n{content[:3000]}\n\n"
         f"EXISTING SIMILAR MEMORIES:\n{existing_text}"
     )
 
@@ -115,7 +115,7 @@ async def decide_write_action(
             system=SYSTEM_PROMPT,
             user=user_prompt,
             schema=WRITE_PATH_SCHEMA,
-            think=False,  # gemma3 doesn't support thinking
+            think=False,  # Structured labeling, no reasoning needed
             num_ctx=4096,
         )
 
