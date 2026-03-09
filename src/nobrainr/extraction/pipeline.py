@@ -18,12 +18,28 @@ from nobrainr.extraction.extractor import extract_entities
 logger = logging.getLogger("nobrainr")
 
 # Post-extraction noise filter: reject entities that are too short, numeric, or generic
-_NOISE_RE = re.compile(r"^[0-9./]+$")  # pure numbers/versions
+_NOISE_RE = re.compile(r"^[0-9./\-]+$")  # pure numbers/versions/dates
+_BRANCH_RE = re.compile(r"^(feature|agent|bugfix|hotfix|release|develop)/", re.IGNORECASE)
 _GENERIC_NAMES = frozenset({
     "main", "fix", "update", "test", "bug", "feature", "release", "merge",
     "commit", "branch", "tag", "none", "null", "true", "false", "yes", "no",
     "unknown", "default", "master", "develop", "head", "base", "origin",
     "main street",  # common misextraction from "main" branch
+    # Generic terms the LLM sometimes extracts as entities
+    "project", "agent", "server", "client", "frontend", "backend", "api",
+    "database", "file", "code", "script", "function", "model", "config",
+    "configuration", "configuration files", "server logic", "cli scripts",
+    "comment", "request_changes", "review", "pull request", "issue",
+    "error", "warning", "info", "debug", "log", "output", "input",
+    "data", "result", "response", "request", "query", "search",
+    # Python/JS runtime objects
+    "session", "venv", "__pycache__", "self", "cls", "args", "kwargs",
+    "module", "package", "class", "method", "variable", "parameter",
+    "object", "instance", "constructor", "prototype", "callback",
+    "promise", "async", "await", "import", "export", "return",
+    # HTML element IDs — too granular for knowledge graph
+    "div", "span", "button", "form", "table", "body", "header", "footer",
+    "container", "wrapper", "content", "sidebar", "modal", "dialog",
 })
 
 
@@ -34,6 +50,9 @@ def _is_noise_entity(name: str) -> bool:
     if _NOISE_RE.match(name):
         return True
     if name.lower() in _GENERIC_NAMES:
+        return True
+    # Git branch names are not meaningful entities
+    if _BRANCH_RE.match(name):
         return True
     return False
 
