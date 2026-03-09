@@ -7,6 +7,7 @@ import smtplib
 import socket
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
+from html import escape
 
 from nobrainr.config import settings
 
@@ -301,6 +302,159 @@ def _extract_container_name(anomaly: str) -> str | None:
     return None
 
 
+def _build_html_digest(
+    *,
+    machine: str,
+    now_str: str,
+    anomalies: list[dict],
+    resources: dict,
+    docker: dict,
+) -> str:
+    """Build an HTML email body for the monitoring digest."""
+    healthy_count = len(docker.get("healthy", []))
+    unhealthy_count = len(docker.get("unhealthy", []))
+    restarting_count = len(docker.get("restarting", []))
+    disk = resources.get("disk", {})
+    memory = resources.get("memory", {})
+    gpu = resources.get("gpu", {})
+
+    def _pct_color(pct: float, warn: float = 75, crit: float = 90) -> str:
+        if pct >= crit:
+            return "#e74c3c"
+        if pct >= warn:
+            return "#f39c12"
+        return "#2ecc71"
+
+    def _bar(pct: float, warn: float = 75, crit: float = 90) -> str:
+        color = _pct_color(pct, warn, crit)
+        return (
+            f'<div style="background:#2a2a3e;border-radius:4px;height:8px;width:100%;">'
+            f'<div style="background:{color};border-radius:4px;height:8px;width:{min(pct, 100):.0f}%;"></div>'
+            f'</div>'
+        )
+
+    # Status badge
+    if anomalies:
+        status_color = "#e74c3c"
+        status_text = f"{len(anomalies)} anomalies"
+        status_icon = "&#9888;"  # ⚠
+    else:
+        status_color = "#2ecc71"
+        status_text = "All systems normal"
+        status_icon = "&#10004;"  # ✔
+
+    # Anomaly rows
+    anomaly_rows = ""
+    if anomalies:
+        for mem in anomalies:
+            created = mem.get("created_at", "")
+            if isinstance(created, str) and len(created) > 19:
+                created = created[:19].replace("T", " ")
+            content = escape(mem.get("content", "no content"))
+            tags = mem.get("tags") or []
+            tag_badges = " ".join(
+                f'<span style="background:#2a2a3e;color:#8a8aa0;padding:1px 6px;border-radius:3px;font-size:11px;">{escape(t)}</span>'
+                for t in tags if t not in ("monitoring", "alert")
+            )
+            anomaly_rows += f"""
+            <tr>
+              <td style="padding:8px 12px;border-bottom:1px solid #1e1e2e;color:#8a8aa0;font-size:12px;white-space:nowrap;vertical-align:top;">{escape(str(created))}</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #1e1e2e;color:#e0e0e0;font-size:13px;">{content}</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #1e1e2e;vertical-align:top;">{tag_badges}</td>
+            </tr>"""
+
+    # Container list
+    container_rows = ""
+    for c in docker.get("healthy", []):
+        container_rows += f'<span style="display:inline-block;background:#1a3a2a;color:#2ecc71;padding:2px 8px;border-radius:3px;font-size:11px;margin:2px;">{escape(c["name"])}</span> '
+    for c in docker.get("unhealthy", []):
+        container_rows += f'<span style="display:inline-block;background:#3a1a1a;color:#e74c3c;padding:2px 8px;border-radius:3px;font-size:11px;margin:2px;">{escape(c["name"])}</span> '
+    for c in docker.get("restarting", []):
+        container_rows += f'<span style="display:inline-block;background:#3a2a1a;color:#f39c12;padding:2px 8px;border-radius:3px;font-size:11px;margin:2px;">{escape(c["name"])}</span> '
+
+    disk_pct = disk.get("used_percent", 0)
+    mem_pct = memory.get("used_percent", 0)
+    gpu_pct = gpu.get("used_percent", 0)
+
+    return f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#0e0e16;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+<div style="max-width:640px;margin:0 auto;padding:20px;">
+
+  <!-- Header -->
+  <div style="background:#12121a;border:1px solid #1e1e2e;border-radius:8px;padding:20px 24px;margin-bottom:16px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;">
+      <div>
+        <div style="font-size:18px;font-weight:600;color:#e0e0e0;">nobrainr monitoring</div>
+        <div style="font-size:12px;color:#6a6a80;margin-top:4px;">{escape(machine)} &middot; {escape(now_str)}</div>
+      </div>
+      <div style="background:{status_color}22;color:{status_color};padding:6px 14px;border-radius:6px;font-size:13px;font-weight:500;">
+        {status_icon} {status_text}
+      </div>
+    </div>
+  </div>
+
+  <!-- Resource Gauges -->
+  <div style="background:#12121a;border:1px solid #1e1e2e;border-radius:8px;padding:20px 24px;margin-bottom:16px;">
+    <div style="font-size:13px;font-weight:600;color:#8a8aa0;text-transform:uppercase;letter-spacing:1px;margin-bottom:16px;">System Resources</div>
+    <table style="width:100%;border-collapse:collapse;">
+      <tr>
+        <td style="padding:6px 0;width:80px;color:#8a8aa0;font-size:12px;">Disk</td>
+        <td style="padding:6px 12px;">{_bar(disk_pct, 75, 85)}</td>
+        <td style="padding:6px 0;width:90px;text-align:right;color:{_pct_color(disk_pct, 75, 85)};font-size:13px;font-weight:500;">{disk_pct:.0f}%&ensp;<span style="color:#6a6a80;font-weight:400;font-size:11px;">{disk.get('free_gb', '?')} GB free</span></td>
+      </tr>
+      <tr>
+        <td style="padding:6px 0;color:#8a8aa0;font-size:12px;">RAM</td>
+        <td style="padding:6px 12px;">{_bar(mem_pct, 80, 90)}</td>
+        <td style="padding:6px 0;text-align:right;color:{_pct_color(mem_pct, 80, 90)};font-size:13px;font-weight:500;">{mem_pct:.0f}%&ensp;<span style="color:#6a6a80;font-weight:400;font-size:11px;">{memory.get('available_gb', '?')} GB avail</span></td>
+      </tr>
+      {"" if not gpu else f'''<tr>
+        <td style="padding:6px 0;color:#8a8aa0;font-size:12px;">GPU</td>
+        <td style="padding:6px 12px;">{_bar(gpu_pct, 85, 95)}</td>
+        <td style="padding:6px 0;text-align:right;color:{_pct_color(gpu_pct, 85, 95)};font-size:13px;font-weight:500;">{gpu_pct:.0f}%&ensp;<span style="color:#6a6a80;font-weight:400;font-size:11px;">{gpu.get("total_mb", 0) - gpu.get("used_mb", 0):.0f} MB free</span></td>
+      </tr>'''}
+    </table>
+  </div>
+
+  <!-- Containers -->
+  <div style="background:#12121a;border:1px solid #1e1e2e;border-radius:8px;padding:20px 24px;margin-bottom:16px;">
+    <div style="font-size:13px;font-weight:600;color:#8a8aa0;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">
+      Containers
+      <span style="color:#6a6a80;font-weight:400;text-transform:none;letter-spacing:0;margin-left:8px;font-size:12px;">
+        <span style="color:#2ecc71;">{healthy_count}</span> healthy{f' &middot; <span style="color:#e74c3c;">{unhealthy_count}</span> unhealthy' if unhealthy_count else ''}{f' &middot; <span style="color:#f39c12;">{restarting_count}</span> restarting' if restarting_count else ''}
+      </span>
+    </div>
+    <div>{container_rows}</div>
+  </div>
+
+  <!-- Anomalies (only if any) -->
+  {"" if not anomalies else f'''
+  <div style="background:#12121a;border:1px solid #1e1e2e;border-radius:8px;padding:20px 24px;margin-bottom:16px;">
+    <div style="font-size:13px;font-weight:600;color:#e74c3c;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">
+      Anomalies &middot; Last 24h
+    </div>
+    <table style="width:100%;border-collapse:collapse;">
+      <tr>
+        <th style="text-align:left;padding:6px 12px;color:#6a6a80;font-size:11px;border-bottom:1px solid #1e1e2e;">Time</th>
+        <th style="text-align:left;padding:6px 12px;color:#6a6a80;font-size:11px;border-bottom:1px solid #1e1e2e;">Details</th>
+        <th style="text-align:left;padding:6px 12px;color:#6a6a80;font-size:11px;border-bottom:1px solid #1e1e2e;">Tags</th>
+      </tr>
+      {anomaly_rows}
+    </table>
+  </div>
+  '''}
+
+  <!-- Footer -->
+  <div style="text-align:center;color:#4a4a60;font-size:11px;padding:8px 0;">
+    nobrainr monitoring &middot; {escape(machine)}
+  </div>
+
+</div>
+</body>
+</html>"""
+
+
 async def send_email_digest() -> dict:
     """Scheduler job: send daily email digest of monitoring anomalies.
 
@@ -354,41 +508,36 @@ async def send_email_digest() -> dict:
     machine = settings.source_machine or socket.gethostname()
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
-    if not recent:
-        subject = f"[{machine}] Monitoring Digest - All Clear ({now_str})"
-        body = (
-            f"Server Monitoring Digest for {machine}\n"
-            f"Generated: {now_str}\n\n"
-            "No anomalies detected in the last 24 hours.\n\n"
-            "All systems operating normally.\n"
-        )
-    else:
-        subject = (
-            f"[{machine}] Monitoring Digest - "
-            f"{len(recent)} anomalies ({now_str})"
-        )
-        lines = [
-            f"Server Monitoring Digest for {machine}",
-            f"Generated: {now_str}",
-            f"Anomalies in last 24h: {len(recent)}",
-            "",
-            "=" * 60,
-            "",
-        ]
-        for i, mem in enumerate(recent, 1):
-            lines.append(f"[{i}] {mem.get('created_at', 'unknown time')}")
-            lines.append(f"    {mem.get('content', 'no content')}")
-            tags = mem.get("tags") or []
-            if tags:
-                lines.append(f"    Tags: {', '.join(tags)}")
-            lines.append("")
+    # Gather current resource snapshot for the email
+    resources = await check_system_resources()
+    docker = await check_docker_health(track_state=False)
 
-        lines.append("=" * 60)
-        lines.append("")
-        lines.append(
-            "This is an automated digest from the nobrainr monitoring system."
-        )
-        body = "\n".join(lines)
+    # Only send email when there are actual problems
+    has_problems = bool(
+        recent
+        or resources.get("warnings")
+        or docker.get("unhealthy")
+        or docker.get("restarting")
+        or docker.get("missing")
+        or docker.get("oom_killed")
+    )
+    if not has_problems:
+        return {
+            "ran_at": datetime.now(timezone.utc).isoformat(),
+            "status": "skipped",
+            "reason": "all_clear",
+        }
+
+    problem_count = len(recent) + len(resources.get("warnings", []))
+    subject = f"[{machine}] {problem_count} issue{'s' if problem_count != 1 else ''} ({now_str})"
+
+    body = _build_html_digest(
+        machine=machine,
+        now_str=now_str,
+        anomalies=recent,
+        resources=resources,
+        docker=docker,
+    )
 
     # Send via smtplib in a thread
     try:
@@ -409,14 +558,14 @@ async def send_email_digest() -> dict:
 
 
 def _send_smtp(subject: str, body: str) -> None:
-    """Send a plain-text email via SMTP (runs in thread executor).
+    """Send an HTML email via SMTP (runs in thread executor).
 
     Port handling:
     - 25: plain SMTP (no TLS)
     - 465: implicit TLS (SMTP_SSL)
     - 587: explicit TLS (SMTP + STARTTLS)
     """
-    msg = MIMEText(body, "plain", "utf-8")
+    msg = MIMEText(body, "html", "utf-8")
     msg["Subject"] = subject
     msg["From"] = settings.monitoring_smtp_from or settings.monitoring_smtp_user
     msg["To"] = settings.monitoring_smtp_to
