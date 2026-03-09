@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 from typing import Callable
 
 from nobrainr.db.queries import (
@@ -15,6 +16,26 @@ from nobrainr.embeddings.ollama import embed_batch
 from nobrainr.extraction.extractor import extract_entities
 
 logger = logging.getLogger("nobrainr")
+
+# Post-extraction noise filter: reject entities that are too short, numeric, or generic
+_NOISE_RE = re.compile(r"^[0-9./]+$")  # pure numbers/versions
+_GENERIC_NAMES = frozenset({
+    "main", "fix", "update", "test", "bug", "feature", "release", "merge",
+    "commit", "branch", "tag", "none", "null", "true", "false", "yes", "no",
+    "unknown", "default", "master", "develop", "head", "base", "origin",
+    "main street",  # common misextraction from "main" branch
+})
+
+
+def _is_noise_entity(name: str) -> bool:
+    """Return True if this entity name is noise and should be skipped."""
+    if len(name) <= 2:
+        return True
+    if _NOISE_RE.match(name):
+        return True
+    if name.lower() in _GENERIC_NAMES:
+        return True
+    return False
 
 
 async def process_memory(
@@ -38,15 +59,22 @@ async def process_memory(
         # Map entity names to their resolved IDs for relationship linking
         entity_id_map: dict[str, str] = {}
 
+        # Filter noise entities before processing
+        clean_entities = [e for e in result.entities if not _is_noise_entity(e.name)]
+        if len(clean_entities) < len(result.entities):
+            skipped = len(result.entities) - len(clean_entities)
+            logger.debug("Filtered %d noise entities from memory %s", skipped, memory_id)
+        clean_names = {e.name for e in clean_entities}
+
         # Batch-embed all entities at once (context-enriched: "type: name - description")
-        if result.entities:
+        if clean_entities:
             embed_texts = []
-            for entity in result.entities:
+            for entity in clean_entities:
                 desc = entity.description or entity.name
                 embed_texts.append(f"{entity.entity_type}: {entity.name} - {desc}")
             embeddings = await embed_batch(embed_texts)
 
-            for entity, embedding in zip(result.entities, embeddings):
+            for entity, embedding in zip(clean_entities, embeddings):
                 entity_id = await find_or_create_entity(
                     entity.name,
                     entity.entity_type,
@@ -60,14 +88,14 @@ async def process_memory(
                 )
 
         for rel in result.relationships:
+            # Skip relationships involving filtered noise entities
+            if rel.source not in clean_names or rel.target not in clean_names:
+                continue
+
             source_id = entity_id_map.get(rel.source)
             target_id = entity_id_map.get(rel.target)
 
             if not source_id or not target_id:
-                logger.warning(
-                    "Skipping relationship %s -> %s: entity not found in extraction",
-                    rel.source, rel.target,
-                )
                 continue
 
             await store_entity_relation(

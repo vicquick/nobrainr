@@ -17,10 +17,16 @@ Relationship types: uses, depends_on, fixes, relates_to, part_of, created_by, \
 deployed_on, configured_with, replaces, conflicts_with, runs_on, implements.
 
 Rules:
-- Only extract entities that are clearly identifiable from the text.
+- Only extract entities that are clearly identifiable and meaningful from the text.
 - Entity names should be concise (e.g. "PostgreSQL" not "the PostgreSQL database").
 - Each relationship source and target must match an extracted entity name exactly.
 - If there are no entities or relationships, return empty lists.
+- NEVER extract single characters, bare numbers, or version fragments as entities.
+- NEVER extract generic words like "main", "fix", "update", "test" as entities.
+- Git branch names like "feature/xyz" or "agent/abc" are type "project" (NOT "file").
+- "Co-Authored-By" lines: the person is type "person", the AI model is type "technology".
+- Use specific relationship types — only use "relates_to" as a last resort when no other type fits.
+- Ports (like 5432, 8420) are only worth extracting if the text discusses networking/deployment.
 
 Confidence calibration:
 - 1.0: explicitly stated fact ("X uses Y")
@@ -34,8 +40,7 @@ Example output:
 entities: [{name: "Docker", type: "technology", description: "Container runtime"}, \
 {name: "nobrainr", type: "service", description: "Memory service that was reconnected"}, \
 {name: "mcp", type: "config", description: "Docker network for MCP services"}, \
-{name: "pgvector", type: "container", description: "PostgreSQL + pgvector database container"}, \
-{name: "5432", type: "port", description: "PostgreSQL listening port"}]
+{name: "pgvector", type: "container", description: "PostgreSQL + pgvector database container"}]
 relationships: [{source: "nobrainr", target: "mcp", type: "deployed_on", confidence: 1.0}, \
 {source: "pgvector", target: "mcp", type: "deployed_on", confidence: 1.0}, \
 {source: "nobrainr", target: "pgvector", type: "depends_on", confidence: 0.8}]\
