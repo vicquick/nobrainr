@@ -1169,3 +1169,264 @@ async def send_email_digest() -> dict:
     from nobrainr.monitoring import send_email_digest
 
     return await send_email_digest()
+
+
+# ---------------------------------------------------------------------------
+# System pulse — autonomous health transmissions (inspired by OpusDelta)
+# ---------------------------------------------------------------------------
+
+async def system_pulse() -> dict:
+    """Generate a daily system health transmission.
+
+    Collects memory system metrics (counts, growth, entity health, search quality)
+    and stores a structured health report as a memory. Agents can discover these
+    to understand system state without manual checks.
+    """
+    pool = await get_pool()
+
+    # Gather stats
+    stats = {}
+    try:
+        async with pool.acquire() as conn:
+            stats["total_memories"] = await conn.fetchval(
+                "SELECT count(*) FROM memories WHERE category != '_archived'"
+            )
+            stats["total_entities"] = await conn.fetchval("SELECT count(*) FROM entities")
+            stats["total_relations"] = await conn.fetchval("SELECT count(*) FROM entity_relations")
+            stats["archived_memories"] = await conn.fetchval(
+                "SELECT count(*) FROM memories WHERE category = '_archived'"
+            )
+
+            # Growth in last 24h
+            stats["new_memories_24h"] = await conn.fetchval(
+                "SELECT count(*) FROM memories WHERE created_at > now() - interval '24 hours'"
+            )
+            stats["new_entities_24h"] = await conn.fetchval(
+                "SELECT count(*) FROM entities WHERE created_at > now() - interval '24 hours'"
+            )
+
+            # Category distribution
+            rows = await conn.fetch(
+                "SELECT category, count(*) as cnt FROM memories "
+                "WHERE category != '_archived' GROUP BY category ORDER BY cnt DESC LIMIT 10"
+            )
+            stats["top_categories"] = {r["category"]: r["cnt"] for r in rows}
+
+            # Source machine distribution
+            rows = await conn.fetch(
+                "SELECT source_machine, count(*) as cnt FROM memories "
+                "WHERE source_machine IS NOT NULL GROUP BY source_machine ORDER BY cnt DESC"
+            )
+            stats["machines"] = {r["source_machine"]: r["cnt"] for r in rows}
+
+            # Search feedback quality
+            feedback_row = await conn.fetchrow(
+                "SELECT count(*) as total, "
+                "count(*) FILTER (WHERE was_useful = true) as helpful, "
+                "count(*) FILTER (WHERE was_useful = false) as unhelpful "
+                "FROM memory_outcomes WHERE created_at > now() - interval '7 days'"
+            )
+            if feedback_row:
+                total = feedback_row["total"]
+                stats["feedback_7d"] = {
+                    "total": total,
+                    "helpful": feedback_row["helpful"],
+                    "unhelpful": feedback_row["unhelpful"],
+                    "hit_rate": round(feedback_row["helpful"] / max(1, total), 2),
+                }
+
+            # Entity graph density
+            stats["avg_relations_per_entity"] = float(await conn.fetchval(
+                "SELECT coalesce(avg(cnt), 0) FROM ("
+                "  SELECT count(*) as cnt FROM entity_relations "
+                "  GROUP BY source_entity_id"
+                ") sub"
+            ) or 0)
+
+            # Embedding model distribution
+            rows = await conn.fetch(
+                "SELECT embedding_model, count(*) as cnt FROM memories "
+                "GROUP BY embedding_model ORDER BY cnt DESC"
+            )
+            stats["embedding_models"] = {r["embedding_model"] or "unknown": r["cnt"] for r in rows}
+
+    except Exception:
+        logger.exception("system_pulse stats collection failed")
+        return {"error": "stats collection failed", "ran_at": datetime.now().isoformat()}
+
+    # Build human-readable report
+    report_parts = [
+        f"System Pulse — {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}",
+        f"Memories: {stats['total_memories']} active, {stats['archived_memories']} archived",
+        f"Knowledge Graph: {stats['total_entities']} entities, {stats['total_relations']} relations",
+        f"Growth (24h): +{stats['new_memories_24h']} memories, +{stats['new_entities_24h']} entities",
+        f"Graph density: {stats['avg_relations_per_entity']:.1f} relations/entity",
+    ]
+    if stats.get("feedback_7d"):
+        fb = stats["feedback_7d"]
+        report_parts.append(
+            f"Search quality (7d): {fb['hit_rate']:.0%} hit rate ({fb['helpful']}/{fb['total']} helpful)"
+        )
+    if stats.get("top_categories"):
+        cats = ", ".join(f"{k}={v}" for k, v in list(stats["top_categories"].items())[:5])
+        report_parts.append(f"Top categories: {cats}")
+    if stats.get("machines"):
+        machines = ", ".join(f"{k}={v}" for k, v in stats["machines"].items())
+        report_parts.append(f"Machines: {machines}")
+
+    report = "\n".join(report_parts)
+
+    # Store as a memory
+    from nobrainr.services.memory import store_memory_with_extraction
+
+    await store_memory_with_extraction(
+        content=report,
+        summary=f"System pulse {datetime.now().strftime('%Y-%m-%d')}",
+        tags=["system", "pulse", "health", "metrics"],
+        category="infrastructure",
+        source_type="system",
+        source_machine=settings.source_machine or _hostname(),
+        confidence=1.0,
+        metadata=stats,
+        skip_dedup=True,
+    )
+
+    return {
+        "status": "transmitted",
+        "total_memories": stats["total_memories"],
+        "total_entities": stats["total_entities"],
+        "new_24h": stats["new_memories_24h"],
+        "ran_at": datetime.now().isoformat(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Auto-optimize — autonomous self-improvement loop (inspired by autoresearch)
+# ---------------------------------------------------------------------------
+
+AUTO_OPTIMIZE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "analysis": {
+            "type": "string",
+            "description": "Brief analysis of current search quality based on feedback signals",
+        },
+        "suggestion": {
+            "type": "string",
+            "description": "One concrete suggestion to improve search/retrieval quality",
+        },
+        "experiment_type": {
+            "type": "string",
+            "enum": ["threshold", "weights", "tags", "none"],
+            "description": "Type of experiment to try, or 'none' if current config is good",
+        },
+    },
+    "required": ["analysis", "suggestion", "experiment_type"],
+}
+
+
+async def auto_optimize() -> dict:
+    """Analyze search quality feedback and suggest improvements.
+
+    Inspired by karpathy/autoresearch — this is the experiment loop for search
+    quality. Reads feedback signals, analyzes patterns, and stores improvement
+    insights for the system to act on.
+    """
+    pool = await get_pool()
+
+    # Gather recent feedback data
+    try:
+        async with pool.acquire() as conn:
+            # Get recent feedback with context
+            feedback_rows = await conn.fetch(
+                "SELECT mo.memory_id, mo.was_useful, mo.context, mo.created_at, "
+                "m.summary "
+                "FROM memory_outcomes mo "
+                "LEFT JOIN memories m ON m.id = mo.memory_id "
+                "WHERE mo.created_at > now() - interval '7 days' "
+                "ORDER BY mo.created_at DESC LIMIT 50"
+            )
+
+            total = len(feedback_rows)
+            helpful = sum(1 for r in feedback_rows if r["was_useful"])
+            unhelpful = total - helpful
+
+            if total < 3:
+                return {
+                    "status": "insufficient_data",
+                    "feedback_count": total,
+                    "ran_at": datetime.now().isoformat(),
+                }
+
+            # Build context for LLM analysis
+            feedback_summary = []
+            for r in feedback_rows[:20]:
+                status = "helpful" if r["was_useful"] else "NOT helpful"
+                summary = r["summary"] or r["memory_id"][:8]
+                context = f" — {r['context']}" if r["context"] else ""
+                feedback_summary.append(f"  Memory: '{summary}' → {status}{context}")
+
+            feedback_text = "\n".join(feedback_summary)
+
+    except Exception:
+        logger.exception("auto_optimize feedback collection failed")
+        return {"error": "feedback collection failed", "ran_at": datetime.now().isoformat()}
+
+    # Ask LLM to analyze patterns
+    try:
+        result = await ollama_chat(
+            system=(
+                "You are a search quality analyst. Analyze memory search feedback to "
+                "identify patterns in what works and what doesn't. Focus on actionable "
+                "improvements to search relevance, not cosmetic changes."
+            ),
+            user=(
+                f"Search feedback summary (last 7 days):\n"
+                f"Total: {total}, Helpful: {helpful} ({helpful/max(1,total):.0%}), "
+                f"Unhelpful: {unhelpful}\n\n"
+                f"Recent queries and results:\n{feedback_text}\n\n"
+                f"Analyze the patterns and suggest one concrete improvement."
+            ),
+            schema=AUTO_OPTIMIZE_SCHEMA,
+            model=settings.scheduler_llm_model,
+            timeout=60.0,
+            think=True,
+        )
+
+        analysis = result.get("analysis", "")
+        suggestion = result.get("suggestion", "")
+        exp_type = result.get("experiment_type", "none")
+
+        # Store the insight as a memory
+        if analysis and suggestion:
+            from nobrainr.services.memory import store_memory_with_extraction
+
+            await store_memory_with_extraction(
+                content=f"Search Quality Analysis: {analysis}\n\nSuggestion: {suggestion}",
+                summary=f"Auto-optimize: {suggestion[:80]}",
+                tags=["system", "optimization", "search-quality", "auto-optimize"],
+                category="insight",
+                source_type="system",
+                source_machine=settings.source_machine or _hostname(),
+                confidence=0.7,
+                metadata={
+                    "feedback_total": total,
+                    "feedback_helpful": helpful,
+                    "hit_rate": round(helpful / max(1, total), 2),
+                    "experiment_type": exp_type,
+                },
+                skip_dedup=False,  # Allow dedup to merge with previous insights
+            )
+
+        return {
+            "status": "analyzed",
+            "feedback_count": total,
+            "hit_rate": round(helpful / max(1, total), 2),
+            "experiment_type": exp_type,
+            "suggestion": suggestion[:200],
+            "ran_at": datetime.now().isoformat(),
+        }
+
+    except Exception:
+        logger.exception("auto_optimize LLM analysis failed")
+        return {"error": "analysis failed", "ran_at": datetime.now().isoformat()}
