@@ -1141,3 +1141,22 @@ async def quality_scoring() -> dict:
         "batch_size": len(batch),
         "ran_at": datetime.now().isoformat(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Non-LLM monitoring jobs (thin wrappers — logic lives in monitoring.py)
+# ---------------------------------------------------------------------------
+
+
+async def monitor_health() -> dict:
+    """Check Docker container health and system resources, store anomalies."""
+    from nobrainr.monitoring import monitor_health
+
+    return await monitor_health()
+
+
+async def send_email_digest() -> dict:
+    """Send daily email digest of monitoring anomalies."""
+    from nobrainr.monitoring import send_email_digest
+
+    return await send_email_digest()
