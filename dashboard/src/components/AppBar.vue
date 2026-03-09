@@ -9,7 +9,7 @@
       </div>
     </template>
 
-    <div class="d-flex align-center ml-3 ml-sm-6">
+    <div class="d-flex align-center ml-1 ml-sm-6 nav-links">
       <v-btn
         v-for="link in navLinks"
         :key="link.to"
@@ -19,8 +19,9 @@
         :variant="route.path === link.to ? 'tonal' : 'text'"
         :color="route.path === link.to ? 'primary' : undefined"
         rounded="lg"
-        size="small"
-        class="mx-0 mx-sm-1 text-none"
+        :size="mobile ? 'x-small' : 'small'"
+        class="mx-0 mx-sm-1 text-none nav-btn"
+        :class="{ 'active-nav': route.path === link.to }"
         style="letter-spacing: 0;"
       >
         <template v-if="!mobile">{{ link.label }}</template>
@@ -82,5 +83,15 @@ const navLinks = [
 .stat-chip {
   font-variant-numeric: tabular-nums;
   font-weight: 500;
+}
+/* On mobile, shrink nav to prevent crowding next to logo */
+@media (max-width: 600px) {
+  .nav-links {
+    gap: 0;
+  }
+  .nav-btn {
+    min-width: 32px !important;
+    padding: 0 4px !important;
+  }
 }
 </style>
