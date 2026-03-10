@@ -11,8 +11,8 @@ class Settings(BaseSettings):
 
     # Ollama
     ollama_url: str = "http://localhost:11434"
-    embedding_model: str = "nomic-embed-text"
-    embedding_dimensions: int = 768
+    embedding_model: str = "snowflake-arctic-embed2"
+    embedding_dimensions: int = 1024
 
     # MCP Server
     host: str = "0.0.0.0"
@@ -131,6 +131,8 @@ class Settings(BaseSettings):
 
     # System pulse (autonomous health transmissions)
     system_pulse_interval_hours: float = 24.0
+    # Community detection (GraphRAG)
+    community_detection_interval_hours: float = 12.0
     # Auto-optimize (search quality self-improvement)
     auto_optimize_interval_hours: float = 12.0
 

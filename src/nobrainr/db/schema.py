@@ -46,10 +46,12 @@ ALTER TABLE memories ADD COLUMN IF NOT EXISTS quality_self_containment smallint;
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS embedding_model text DEFAULT '{settings.embedding_model}';
 ALTER TABLE entities ADD COLUMN IF NOT EXISTS embedding_model text DEFAULT '{settings.embedding_model}';
 
--- HNSW index for fast approximate nearest neighbor search
-CREATE INDEX IF NOT EXISTS idx_memories_embedding_hnsw
-    ON memories USING hnsw (embedding vector_cosine_ops)
-    WITH (m = 24, ef_construction = 128);
+-- HNSW index on halfvec for faster ANN search (~50% smaller than full-vector index)
+-- snowflake-arctic-embed2 supports Matryoshka so halfvec(1024) preserves full quality
+DROP INDEX IF EXISTS idx_memories_embedding_hnsw;
+CREATE INDEX IF NOT EXISTS idx_memories_embedding_halfvec_hnsw
+    ON memories USING hnsw ((embedding::halfvec({settings.embedding_dimensions})) halfvec_cosine_ops)
+    WITH (m = 24, ef_construction = 200);
 
 -- GIN index for tag queries
 CREATE INDEX IF NOT EXISTS idx_memories_tags
@@ -121,9 +123,10 @@ DO $$ BEGIN
     END IF;
 END $$;
 
-CREATE INDEX IF NOT EXISTS idx_entities_embedding_hnsw
-    ON entities USING hnsw (embedding vector_cosine_ops)
-    WITH (m = 24, ef_construction = 128);
+DROP INDEX IF EXISTS idx_entities_embedding_hnsw;
+CREATE INDEX IF NOT EXISTS idx_entities_embedding_halfvec_hnsw
+    ON entities USING hnsw ((embedding::halfvec({settings.embedding_dimensions})) halfvec_cosine_ops)
+    WITH (m = 24, ef_construction = 200);
 
 CREATE INDEX IF NOT EXISTS idx_entities_type
     ON entities (entity_type);

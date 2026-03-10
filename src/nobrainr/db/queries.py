@@ -6,10 +6,16 @@ from uuid import UUID
 
 import numpy as np
 
+from nobrainr.config import settings as _cfg
 from nobrainr.db.pool import get_pool
 from nobrainr.events import publish
 
 logger = logging.getLogger("nobrainr")
+
+# Halfvec cast string for HNSW index utilization (e.g. "halfvec(1024)")
+_HV = f"halfvec({_cfg.embedding_dimensions})"
+# Full vector cast string for explicit typing in outer queries
+_VEC = f"vector({_cfg.embedding_dimensions})"
 
 
 # ──────────────────────────────────────────────
@@ -72,24 +78,24 @@ async def find_similar_memories(
     async with pool.acquire() as conn:
         if exclude_id:
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT id, content, summary, tags, category,
                        1 - (embedding <=> $1) AS similarity
                 FROM memories
                 WHERE embedding IS NOT NULL AND id != $3
-                ORDER BY embedding <=> $1
+                ORDER BY embedding::{_HV} <=> $1::{_HV}
                 LIMIT $2
                 """,
                 vec, limit, UUID(exclude_id),
             )
         else:
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT id, content, summary, tags, category,
                        1 - (embedding <=> $1) AS similarity
                 FROM memories
                 WHERE embedding IS NOT NULL
-                ORDER BY embedding <=> $1
+                ORDER BY embedding::{_HV} <=> $1::{_HV}
                 LIMIT $2
                 """,
                 vec, limit,
@@ -124,15 +130,14 @@ async def search_memories(
             source_type=source_type, source_machine=source_machine,
         )
 
-    # Standard vector search with threshold in SQL WHERE
+    # Two-phase vector search: halfvec HNSW index scan for candidates → full-precision re-ranking
     # Only search memories embedded with the current model to avoid cross-model garbage
-    from nobrainr.config import settings as _settings
 
     conditions = [
         "embedding IS NOT NULL",
         f"(embedding_model IS NULL OR embedding_model = ${4})",
     ]
-    params: list = [vec, threshold, limit, _settings.embedding_model]
+    params: list = [vec, threshold, limit, _cfg.embedding_model]
     idx = 5
 
     if tags:
@@ -153,19 +158,27 @@ async def search_memories(
         idx += 1
 
     where = " AND ".join(conditions)
+    # Overfetch 3x via halfvec index, then re-rank with full-precision memory_relevance
+    overfetch = max(limit * 3, 20)
 
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             f"""
+            WITH candidates AS (
+                SELECT *
+                FROM memories
+                WHERE {where}
+                  AND 1 - (embedding::{_HV} <=> $1::{_HV}) >= $2
+                ORDER BY embedding::{_HV} <=> $1::{_HV}
+                LIMIT {overfetch}
+            )
             SELECT id, content, summary, source_type, source_machine, tags, category,
                    confidence, metadata, created_at, updated_at, importance, stability,
                    access_count, last_accessed_at, quality_score, embedding_model,
-                   1 - (embedding <=> $1) AS similarity,
-                   memory_relevance($1, embedding, created_at, importance, stability, access_count, now(), quality_score) AS relevance
-            FROM memories
-            WHERE {where}
-              AND 1 - (embedding <=> $1) >= $2
-            ORDER BY memory_relevance($1, embedding, created_at, importance, stability, access_count, now(), quality_score) DESC
+                   1 - (embedding <=> $1::{_VEC}) AS similarity,
+                   memory_relevance($1::{_VEC}, embedding, created_at, importance, stability, access_count, now(), quality_score) AS relevance
+            FROM candidates
+            ORDER BY memory_relevance($1::{_VEC}, embedding, created_at, importance, stability, access_count, now(), quality_score) DESC
             LIMIT $3
             """,
             *params,
@@ -232,31 +245,37 @@ async def _hybrid_search_rrf(
     rrf_k: int = 60,
 ) -> list[dict]:
     """Hybrid search using Reciprocal Rank Fusion of vector + full-text results."""
-    from nobrainr.config import settings as _settings
-
     overfetch = max(limit * 3, 20)
+    # Inner overfetch for halfvec candidate retrieval before re-ranking
+    inner_overfetch = overfetch * 3
 
     async with pool.acquire() as conn:
-        # 1) Vector search: $1=embedding, $2=threshold, $3=overfetch, $4=model, filters from $5+
+        # 1) Vector search: halfvec HNSW scan → full-precision re-rank
         vec_extra, vec_fparams, _ = _build_filter_clause(
             5, tags, category, source_type, source_machine,
         )
         vec_rows = await conn.fetch(
             f"""
+            WITH vec_candidates AS (
+                SELECT *
+                FROM memories
+                WHERE embedding IS NOT NULL
+                  AND (embedding_model IS NULL OR embedding_model = $4)
+                  AND 1 - (embedding::{_HV} <=> $1::{_HV}) >= $2
+                  {vec_extra}
+                ORDER BY embedding::{_HV} <=> $1::{_HV}
+                LIMIT {inner_overfetch}
+            )
             SELECT id, content, summary, source_type, source_machine, tags, category,
                    confidence, metadata, created_at, updated_at, importance, stability,
                    access_count, last_accessed_at, quality_score, embedding_model,
-                   1 - (embedding <=> $1) AS similarity,
-                   memory_relevance($1, embedding, created_at, importance, stability, access_count, now(), quality_score) AS relevance
-            FROM memories
-            WHERE embedding IS NOT NULL
-              AND (embedding_model IS NULL OR embedding_model = $4)
-              AND 1 - (embedding <=> $1) >= $2
-              {vec_extra}
-            ORDER BY memory_relevance($1, embedding, created_at, importance, stability, access_count, now(), quality_score) DESC
+                   1 - (embedding <=> $1::{_VEC}) AS similarity,
+                   memory_relevance($1::{_VEC}, embedding, created_at, importance, stability, access_count, now(), quality_score) AS relevance
+            FROM vec_candidates
+            ORDER BY memory_relevance($1::{_VEC}, embedding, created_at, importance, stability, access_count, now(), quality_score) DESC
             LIMIT $3
             """,
-            embedding, threshold, overfetch, _settings.embedding_model, *vec_fparams,
+            embedding, threshold, overfetch, _cfg.embedding_model, *vec_fparams,
         )
 
         # 2) Full-text search: $1=query, $2=overfetch, filters from $3+
@@ -1146,8 +1165,6 @@ async def find_or_create_entity(
             return str(row["id"])
 
         # Create new
-        from nobrainr.config import settings as _settings
-
         vec = np.array(embedding, dtype=np.float32) if embedding else None
         row = await conn.fetchrow(
             """
@@ -1157,7 +1174,7 @@ async def find_or_create_entity(
                 SET mention_count = entities.mention_count + 1
             RETURNING id
             """,
-            name, entity_type, canonical, description, vec, _settings.embedding_model,
+            name, entity_type, canonical, description, vec, _cfg.embedding_model,
         )
         return str(row["id"])
 
@@ -1239,7 +1256,7 @@ async def search_entities(
                    1 - (embedding <=> $1) AS similarity
             FROM entities
             WHERE {where}
-            ORDER BY embedding <=> $1
+            ORDER BY embedding::{_HV} <=> $1::{_HV}
             LIMIT $2
             """,
             *params,

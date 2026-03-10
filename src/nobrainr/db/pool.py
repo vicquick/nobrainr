@@ -30,7 +30,7 @@ async def get_pool() -> asyncpg.Pool:
 
 async def _init_connection(conn: asyncpg.Connection) -> None:
     await register_vector(conn)
-    await conn.execute("SET hnsw.ef_search = 100")
+    await conn.execute("SET hnsw.ef_search = 200")
     # pgvector 0.8.0+: iterative scan for filtered vector queries
     try:
         await conn.execute("SET hnsw.iterative_scan = on")
