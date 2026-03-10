@@ -321,7 +321,9 @@ def re_embed(model, dimensions, batch_size, yes):
             # 1. Drop HNSW indexes (can't alter vector dimensions with index)
             console.print("\n[bold]1/6[/] Dropping HNSW indexes...")
             await conn.execute("DROP INDEX IF EXISTS idx_memories_embedding_hnsw")
+            await conn.execute("DROP INDEX IF EXISTS idx_memories_embedding_halfvec_hnsw")
             await conn.execute("DROP INDEX IF EXISTS idx_entities_embedding_hnsw")
+            await conn.execute("DROP INDEX IF EXISTS idx_entities_embedding_halfvec_hnsw")
 
             # 2. NULL out embeddings so ALTER TYPE succeeds
             console.print("[bold]2/6[/] Clearing old embeddings...")
@@ -480,18 +482,18 @@ def re_embed(model, dimensions, batch_size, yes):
 
         await embed_client.aclose()
 
-        # 7. Recreate HNSW indexes
-        console.print("[bold]6/6[/] Rebuilding HNSW indexes...")
+        # 7. Recreate halfvec HNSW indexes
+        console.print("[bold]6/6[/] Rebuilding halfvec HNSW indexes...")
         async with pool.acquire() as conn:
-            await conn.execute("""
-                CREATE INDEX idx_memories_embedding_hnsw
-                ON memories USING hnsw (embedding vector_cosine_ops)
-                WITH (m = 24, ef_construction = 128)
+            await conn.execute(f"""
+                CREATE INDEX idx_memories_embedding_halfvec_hnsw
+                ON memories USING hnsw ((embedding::halfvec({embed_dims})) halfvec_cosine_ops)
+                WITH (m = 24, ef_construction = 200)
             """)
-            await conn.execute("""
-                CREATE INDEX idx_entities_embedding_hnsw
-                ON entities USING hnsw (embedding vector_cosine_ops)
-                WITH (m = 24, ef_construction = 128)
+            await conn.execute(f"""
+                CREATE INDEX idx_entities_embedding_halfvec_hnsw
+                ON entities USING hnsw ((embedding::halfvec({embed_dims})) halfvec_cosine_ops)
+                WITH (m = 24, ef_construction = 200)
             """)
 
         await close_pool()

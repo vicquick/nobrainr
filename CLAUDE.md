@@ -25,7 +25,7 @@ cross-machine patterns, and archives stale knowledge — all on scheduled LLM-po
 - **Backend** — Python ASGI: FastMCP (HTTP + SSE) + pure JSON API (Starlette)
 - **Frontend** — Vue 3 + Vuetify + Cytoscape.js (separate container, nginx)
 - **PostgreSQL 18 + pgvector** — storage, vector similarity, knowledge graph
-- **Ollama + nomic-embed-text** — local embeddings (768 dimensions)
+- **Ollama + snowflake-arctic-embed2** — local embeddings (1024 dimensions, 8K context, Matryoshka MRL)
 - **Ollama + gemma3:12b** — entity/relationship extraction, scheduler jobs (structured output)
 - **Crawl4AI** — web crawling service (CPU-only container on `mcp` network, port 11235)
 
@@ -297,7 +297,7 @@ Knowledge graph grows → entities enriched → new relations discovered
 
 ### Ollama Configuration
 Two models are required:
-- `nomic-embed-text` — embeddings (~0.6 GB VRAM, always loaded)
+- `snowflake-arctic-embed2` — embeddings (1024d, ~1.2 GB VRAM, always loaded)
 - `gemma3:12b` — entity extraction + scheduler (~11.4 GB VRAM, keep_alive=5m)
 
 Additionally, `qwen3.5-nothink:9b` is available for external consumers (Affine copilot).
@@ -311,7 +311,7 @@ Recommended Ollama env vars for production:
 - `OLLAMA_NUM_CTX=4096` — context window per slot
 - `OLLAMA_NUM_GPU=999` — offload all layers to GPU
 
-`MAX_LOADED_MODELS=2` ensures only one LLM is loaded at a time alongside nomic-embed-text,
+`MAX_LOADED_MODELS=2` ensures only one LLM is loaded at a time alongside snowflake-arctic-embed2,
 preventing VRAM exhaustion when multiple apps share the GPU (nobrainr + Affine + Speaches).
 
 ### Extraction Performance
@@ -374,8 +374,8 @@ uv sync --extra reranker
 
 | Env Var | Default | Purpose |
 |---------|---------|---------|
-| `NOBRAINR_EMBEDDING_MODEL` | `nomic-embed-text` | Ollama embedding model |
-| `NOBRAINR_EMBEDDING_DIMENSIONS` | `768` | Vector dimensions (must match model) |
+| `NOBRAINR_EMBEDDING_MODEL` | `snowflake-arctic-embed2` | Ollama embedding model |
+| `NOBRAINR_EMBEDDING_DIMENSIONS` | `1024` | Vector dimensions (must match model) |
 | `NOBRAINR_CHUNK_MAX_CHARS` | `3000` | Max characters per chunk |
 | `NOBRAINR_CHUNK_OVERLAP_CHARS` | `300` | Overlap between consecutive chunks |
 | `NOBRAINR_CHUNK_THRESHOLD` | `4000` | Content above this length gets chunked |

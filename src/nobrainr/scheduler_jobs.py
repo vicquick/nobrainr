@@ -1430,3 +1430,19 @@ async def auto_optimize() -> dict:
     except Exception:
         logger.exception("auto_optimize LLM analysis failed")
         return {"error": "analysis failed", "ran_at": datetime.now().isoformat()}
+
+
+# ──────────────────────────────────────────────
+# Community detection (GraphRAG)
+# ──────────────────────────────────────────────
+
+async def community_detection() -> dict:
+    """Detect entity communities using Louvain and generate summaries."""
+    from nobrainr.services.communities import detect_communities, generate_community_summaries
+
+    result = await detect_communities(min_community_size=3, resolution=1.0)
+    if result["communities"] > 0:
+        summary_result = await generate_community_summaries(max_communities=50)
+        result["summaries"] = summary_result
+    result["ran_at"] = datetime.now().isoformat()
+    return result
