@@ -136,20 +136,41 @@ dashboard/                  # Vue 3 frontend (separate build)
 | `distill_search` | Search memories + auto-compress results into a focused answer |
 | `code_index` | Index a codebase by extracting code symbols (functions, classes, methods) via AST |
 | `code_search` | Search indexed code symbols by name/kind — symbol-level retrieval without reading files |
+| `community_detect` | Run Louvain community detection on the knowledge graph with optional LLM summaries |
+| `community_list` | List detected communities with titles, summaries, key topics, top entities |
+| `community_members` | Get all entities in a specific community |
+
+## MCP Resources
+| URI | Purpose |
+|-----|---------|
+| `nobrainr://briefing` | System stats, top categories, communities, recent events — read on session start |
+| `nobrainr://categories` | All memory categories with counts |
+| `nobrainr://machines` | Connected machines/agents with memory counts |
+| `nobrainr://entity-types` | Entity types in the knowledge graph with counts |
+
+## MCP Prompts
+| Prompt | Purpose |
+|--------|---------|
+| `session_start` | Structured workflow for starting a session (search context, log event) |
+| `session_end` | Structured workflow for ending a session (reflect, feedback, store) |
+| `debug_investigation` | Step-by-step debugging workflow (search, entity graph, store fix) |
+| `research_topic` | Research workflow combining memory search, entities, web crawling |
 
 ## Search & Retrieval Pipeline
 
 ```
-query → embed(query) → HNSW vector search + FTS keyword search
-                          ↓                    ↓
-                     vector results         FTS results
-                          ↓                    ↓
-                     Reciprocal Rank Fusion (RRF, k=60)
-                          ↓
+query → [optional] LLM query expansion (2-3 variants)
+          ↓
+     embed(each query) → halfvec HNSW index scan (candidates) + FTS keyword search
+                              ↓                                    ↓
+                         full-precision re-rank              FTS results
+                              ↓                                    ↓
+                         Reciprocal Rank Fusion (RRF, k=60)
+                              ↓
                    [optional] cross-encoder reranking (flashrank)
-                          ↓
+                              ↓
                    [optional] chunk context expansion (fetch adjacent chunks)
-                          ↓
+                              ↓
                      final results (with similarity, relevance, rrf_score)
 ```
 
@@ -232,7 +253,7 @@ Every memory mutation is tracked in the `memory_versions` table. This provides:
 
 ## Scheduler Jobs
 
-The scheduler runs 22 autonomous jobs (3 SQL + 2 system + 17 LLM). LLM jobs use a configurable
+The scheduler runs 23 autonomous jobs (3 SQL + 2 system + 18 LLM). LLM jobs use a configurable
 semaphore (`NOBRAINR_SCHEDULER_LLM_CONCURRENCY`, default 3) with 1s inter-request delay
 between batch LLM calls for live request coexistence. LLM retry: 5 attempts with
 exponential backoff on empty/malformed JSON responses. Structured labeling jobs use
@@ -275,6 +296,7 @@ exponential backoff on empty/malformed JSON responses. Structured labeling jobs 
 |-----|----------|------|---------|
 | `system_pulse` | 24h | LLM | Generate daily health transmission — memory stats, growth, search quality, anomalies |
 | `auto_optimize` | 12h | LLM | Analyze search feedback patterns, suggest improvements, store optimization insights |
+| `community_detection` | 12h | LLM | Louvain community detection on entity graph + LLM community summaries |
 
 ### Knowledge Growth Loop
 ```
