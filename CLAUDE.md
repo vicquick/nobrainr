@@ -347,8 +347,8 @@ Recommended Ollama env vars for production:
 preventing VRAM exhaustion when multiple apps share the GPU (nobrainr + Affine + Speaches).
 
 ### Extraction Performance
-- `ollama_chat()` uses `"think": false` for entity extraction (structured labeling doesn't need reasoning)
-- Scheduler jobs (consolidation, synthesis, dedup) keep `think=True` — they benefit from reasoning
+- `ollama_chat()` defaults to `think=False` — gemma3 does not support thinking mode (Ollama returns 400)
+- All callers use `think=False` explicitly or via default
 - gemma3:12b is ~2x faster than qwen3.5 for structured output and more reliable at producing valid JSON
 - Backfill: `nobrainr extract-backfill --batch-size 50`
 - Retry logic: 404s from Ollama (model loading contention) are retried 5x with exponential backoff
