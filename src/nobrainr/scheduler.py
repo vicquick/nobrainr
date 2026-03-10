@@ -30,6 +30,7 @@ LLM_JOB_DELAYS = {
     "interest_expansion": 25 * 60,
     "system_pulse": 28 * 60,
     "auto_optimize": 30 * 60,
+    "community_detection": 32 * 60,
 }
 
 # Per-job timeout for LLM operations
@@ -75,6 +76,7 @@ class Scheduler:
             {"name": "interest_expansion", "interval_hours": settings.interest_expansion_interval_hours, "type": "llm"},
             {"name": "system_pulse", "interval_hours": settings.system_pulse_interval_hours, "type": "llm"},
             {"name": "auto_optimize", "interval_hours": settings.auto_optimize_interval_hours, "type": "llm"},
+            {"name": "community_detection", "interval_hours": settings.community_detection_interval_hours, "type": "llm"},
         ]
         return sql_jobs + llm_jobs
 
@@ -169,6 +171,8 @@ class Scheduler:
              settings.system_pulse_interval_hours * 3600),
             ("auto_optimize", scheduler_jobs.auto_optimize,
              settings.auto_optimize_interval_hours * 3600),
+            ("community_detection", scheduler_jobs.community_detection,
+             settings.community_detection_interval_hours * 3600),
         ]
 
         for name, job_func, interval in llm_jobs:

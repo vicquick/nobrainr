@@ -114,6 +114,7 @@ async def memory_search(
     source_type: str | None = None,
     source_machine: str | None = None,
     hybrid: bool = True,
+    expand: bool = False,
 ) -> list[dict]:
     """Semantic search across all memories, ranked by relevance (similarity + recency + importance).
 
@@ -130,24 +131,64 @@ async def memory_search(
         source_type: Filter by source ("chatgpt", "claude", "manual", "agent").
         source_machine: Filter to specific host.
         hybrid: Combine vector + full-text search via RRF (default True).
+        expand: Generate variant queries via LLM for broader recall (default False). Adds ~500ms latency.
     """
+    import asyncio
+
     limit = max(1, min(limit, 100))
     threshold = max(0.0, min(threshold, 1.0))
-    embedding = await embed_text(query)
 
-    # Overfetch if reranking is enabled, so reranker has candidates to work with
-    fetch_limit = limit * 3 if settings.reranker_enabled else limit
+    # Multi-query expansion: generate variants and search each, then RRF-fuse
+    all_queries = [query]
+    if expand:
+        from nobrainr.services.query_expansion import expand_query
+        variants = await expand_query(query)
+        all_queries.extend(variants)
 
-    results = await queries.search_memories(
-        embedding=embedding,
-        limit=fetch_limit,
-        threshold=threshold,
-        tags=tags,
-        category=category,
-        source_type=source_type,
-        source_machine=source_machine,
-        text_query=query if hybrid else None,
-    )
+    # Embed all queries (batch for efficiency)
+    from nobrainr.embeddings.ollama import embed_batch
+    embeddings = await embed_batch(all_queries)
+
+    # Overfetch if reranking or multi-query
+    fetch_limit = limit * 3 if (settings.reranker_enabled or len(all_queries) > 1) else limit
+
+    # Search with each query embedding
+    search_coros = [
+        queries.search_memories(
+            embedding=emb,
+            limit=fetch_limit,
+            threshold=threshold,
+            tags=tags,
+            category=category,
+            source_type=source_type,
+            source_machine=source_machine,
+            text_query=q if hybrid else None,
+        )
+        for q, emb in zip(all_queries, embeddings)
+    ]
+    all_results = await asyncio.gather(*search_coros)
+
+    # Fuse results from all queries via RRF
+    if len(all_results) > 1:
+        rrf_k = 60
+        rrf_scores: dict[str, float] = {}
+        rows_by_id: dict[str, dict] = {}
+
+        for result_set in all_results:
+            for rank, row in enumerate(result_set, start=1):
+                rid = row["id"]
+                rrf_scores[rid] = rrf_scores.get(rid, 0.0) + 1.0 / (rrf_k + rank)
+                if rid not in rows_by_id:
+                    rows_by_id[rid] = row
+
+        sorted_ids = sorted(rrf_scores, key=rrf_scores.get, reverse=True)
+        results = []
+        for rid in sorted_ids:
+            row = rows_by_id[rid]
+            row["rrf_score"] = rrf_scores[rid]
+            results.append(row)
+    else:
+        results = all_results[0]
 
     # Rerank with cross-encoder if enabled
     if settings.reranker_enabled and len(results) > 1:
@@ -1434,6 +1475,60 @@ async def code_search(
         })
 
     return symbols
+
+
+# ──────────────────────────────────────────────
+# Tools: communities (GraphRAG)
+# ──────────────────────────────────────────────
+
+@mcp.tool()
+async def community_detect(
+    min_size: int = 3,
+    resolution: float = 1.0,
+    summarize: bool = True,
+) -> dict:
+    """Run community detection on the knowledge graph using Louvain algorithm.
+
+    Identifies clusters of densely connected entities. Optionally generates
+    LLM summaries for each community.
+
+    Args:
+        min_size: Minimum entities per community (default 3).
+        resolution: Louvain resolution — higher values find more, smaller communities.
+        summarize: Generate LLM summaries for each community (default True).
+    """
+    from nobrainr.services.communities import detect_communities, generate_community_summaries
+
+    result = await detect_communities(min_community_size=min_size, resolution=resolution)
+    if summarize and result["communities"] > 0:
+        summary_result = await generate_community_summaries()
+        result["summaries"] = summary_result
+    return result
+
+
+@mcp.tool()
+async def community_list(limit: int = 50) -> list[dict]:
+    """List all detected knowledge graph communities with summaries.
+
+    Returns communities sorted by size with title, summary, key topics,
+    and top entities. Run community_detect first to populate.
+
+    Args:
+        limit: Max communities to return (default 50).
+    """
+    from nobrainr.services.communities import list_communities
+    return await list_communities(limit=limit)
+
+
+@mcp.tool()
+async def community_members(community_id: int) -> list[dict]:
+    """Get all entities belonging to a specific community.
+
+    Args:
+        community_id: The community ID from community_list results.
+    """
+    from nobrainr.services.communities import get_community_members
+    return await get_community_members(community_id)
 
 
 # ──────────────────────────────────────────────
