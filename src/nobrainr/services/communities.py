@@ -182,7 +182,7 @@ async def generate_community_summaries(*, max_communities: int = 50) -> dict:
                 schema=SUMMARY_SCHEMA,
                 temperature=0.1,
                 num_ctx=2048,
-                timeout=30.0,
+                timeout=120.0,
                 think=False,
             )
             summaries[comm_id] = result

@@ -110,8 +110,8 @@ async def ollama_chat(
         except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as exc:
             wait = 2 ** attempt
             logger.warning(
-                "Ollama /api/chat connection error: %s (attempt %d/5), retrying in %ds",
-                exc, attempt + 1, wait,
+                "Ollama /api/chat %s (attempt %d/5), retrying in %ds",
+                type(exc).__name__, attempt + 1, wait,
             )
             await asyncio.sleep(wait)
             last_exc = exc
