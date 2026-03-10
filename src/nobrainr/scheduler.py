@@ -55,6 +55,7 @@ class Scheduler:
             {"name": "maintenance", "interval_hours": settings.maintenance_interval_hours, "type": "sql"},
             {"name": "feedback_integration", "interval_hours": settings.feedback_interval_hours, "type": "sql"},
             {"name": "memory_decay", "interval_hours": settings.decay_interval_hours, "type": "sql"},
+            {"name": "auto_tier", "interval_hours": 6.0, "type": "sql"},
             {"name": "monitor_health", "interval_hours": settings.monitoring_interval_hours, "type": "system"},
             {"name": "email_digest", "interval_hours": 24.0, "type": "system"},
         ]
@@ -106,6 +107,13 @@ class Scheduler:
                     "memory_decay",
                     self._job_memory_decay,
                     settings.decay_interval_hours * 3600,
+                )
+            ),
+            asyncio.create_task(
+                self._run_periodic(
+                    "auto_tier",
+                    self._job_auto_tier,
+                    6.0 * 3600,  # every 6 hours
                 )
             ),
         ]
@@ -184,7 +192,7 @@ class Scheduler:
                 )
             )
 
-        sql_count = 3 + (2 if settings.monitoring_enabled else 0)
+        sql_count = 4 + (2 if settings.monitoring_enabled else 0)
         logger.info(
             "Scheduler started with %d LLM jobs + %d SQL jobs. "
             "monitoring=%s (%.1fh), "
@@ -279,6 +287,12 @@ class Scheduler:
         from nobrainr import scheduler_jobs
         return await scheduler_jobs.memory_decay()
 
+    @staticmethod
+    async def _job_auto_tier() -> dict:
+        """Auto-assign memory tiers based on importance, access patterns, and quality."""
+        counts = await queries.auto_tier_memories()
+        counts["ran_at"] = datetime.now().isoformat()
+        return counts
 
 
 # Module-level singleton
