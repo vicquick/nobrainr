@@ -272,6 +272,7 @@ async def memory_search(
     source_machine: str | None = None,
     hybrid: bool = True,
     expand: bool = False,
+    include_cold: bool = False,
 ) -> list[dict]:
     """Semantic search across all memories, ranked by relevance (similarity + recency + importance).
 
@@ -289,6 +290,7 @@ async def memory_search(
         source_machine: Filter to specific host.
         hybrid: Combine vector + full-text search via RRF (default True).
         expand: Generate variant queries via LLM for broader recall (default False). Adds ~500ms latency.
+        include_cold: Include tier-3 (cold/archived) memories in search (default False).
     """
     import asyncio
 
@@ -306,8 +308,12 @@ async def memory_search(
     from nobrainr.embeddings.ollama import embed_batch
     embeddings = await embed_batch(all_queries)
 
-    # Overfetch if reranking or multi-query
-    fetch_limit = limit * 3 if (settings.reranker_enabled or len(all_queries) > 1) else limit
+    # Always overfetch for quality re-ranking (halfvec scan is cheap)
+    # With reranker or multi-query: 5x. Otherwise: 3x.
+    if settings.reranker_enabled or len(all_queries) > 1:
+        fetch_limit = limit * 5
+    else:
+        fetch_limit = limit * 3
 
     # Search with each query embedding
     search_coros = [
@@ -320,6 +326,7 @@ async def memory_search(
             source_type=source_type,
             source_machine=source_machine,
             text_query=q if hybrid else None,
+            include_cold=include_cold,
         )
         for q, emb in zip(all_queries, embeddings)
     ]
@@ -816,6 +823,93 @@ async def log_event(
         metadata=metadata,
     )
     return {"status": "logged", **result}
+
+
+# ──────────────────────────────────────────────
+# Tools: error prevention patterns
+# ──────────────────────────────────────────────
+
+@mcp.tool()
+async def error_store(
+    error_signature: str,
+    root_cause: str,
+    fix: str,
+    prevention: str,
+    summary: str | None = None,
+    tags: list[str] | None = None,
+    source_machine: str | None = None,
+    related_memory_ids: list[str] | None = None,
+) -> dict:
+    """Store a structured error pattern for future prevention.
+
+    Use this after solving a non-trivial bug to capture the fix so it's
+    auto-surfaced when the same error occurs again.
+
+    Args:
+        error_signature: The error message or pattern (e.g. "TypeError: cannot read property 'x' of undefined").
+        root_cause: Why the error happened (e.g. "Race condition in async initialization").
+        fix: What was done to fix it (e.g. "Added await before accessing the property").
+        prevention: How to avoid this in the future (e.g. "Always await async init before accessing properties").
+        summary: One-line summary for quick scanning.
+        tags: Tags for categorization.
+        source_machine: Which host this error was found on.
+        related_memory_ids: UUIDs of related memories (e.g. the debug session).
+    """
+    content = (
+        f"## Error Pattern\n\n"
+        f"**Signature:** {error_signature}\n\n"
+        f"**Root cause:** {root_cause}\n\n"
+        f"**Fix:** {fix}\n\n"
+        f"**Prevention:** {prevention}"
+    )
+    meta = {
+        "error_signature": error_signature,
+        "root_cause": root_cause,
+        "fix": fix,
+        "prevention": prevention,
+        "type": "error_pattern",
+    }
+    if related_memory_ids:
+        meta["related_memory_ids"] = related_memory_ids
+
+    result = await memory_store(
+        content=content,
+        summary=summary or f"Error: {error_signature[:100]}",
+        tags=list(set((tags or []) + ["error-pattern"])),
+        category="debugging",
+        source_type="agent",
+        source_machine=source_machine,
+        metadata=meta,
+    )
+    return result
+
+
+@mcp.tool()
+async def error_search(
+    error_text: str,
+    limit: int = 5,
+    source_machine: str | None = None,
+) -> list[dict]:
+    """Search for known error patterns matching an error message.
+
+    Call this BEFORE starting to debug — past sessions may have already
+    solved this exact error. Returns structured error patterns with
+    root cause, fix, and prevention guidance.
+
+    Args:
+        error_text: The error message or stack trace to search for.
+        limit: Max results (default 5).
+        source_machine: Filter to errors from a specific host.
+    """
+    results = await memory_search(
+        query=error_text,
+        limit=limit,
+        tags=["error-pattern"],
+        source_machine=source_machine,
+        hybrid=True,
+        include_cold=True,  # errors are always worth finding, even if cold
+    )
+    return results
 
 
 # ──────────────────────────────────────────────
@@ -1686,6 +1780,39 @@ async def community_members(community_id: int) -> list[dict]:
     """
     from nobrainr.services.communities import get_community_members
     return await get_community_members(community_id)
+
+
+# ──────────────────────────────────────────────
+# Tools: memory tiering
+# ──────────────────────────────────────────────
+
+@mcp.tool()
+async def memory_set_tier(
+    memory_id: str,
+    tier: int,
+) -> dict:
+    """Set a memory's tier level for search prioritization.
+
+    Tier 0 (pinned): Always included, highest priority — critical infra, active projects.
+    Tier 1 (hot): Recently active or high-quality memories.
+    Tier 2 (standard): Default tier for all new memories.
+    Tier 3 (cold): Archived, excluded from search unless include_cold=True.
+
+    Args:
+        memory_id: UUID of the memory to update.
+        tier: Tier level (0-3).
+    """
+    memory_id = _validate_uuid(memory_id)
+    result = await queries.set_memory_tier(memory_id, tier)
+    if result is None:
+        return {"error": "Memory not found"}
+    return result
+
+
+@mcp.tool()
+async def memory_tier_stats() -> list[dict]:
+    """Get memory counts by tier level (0=pinned, 1=hot, 2=standard, 3=cold)."""
+    return await queries.get_tier_stats()
 
 
 # ──────────────────────────────────────────────
