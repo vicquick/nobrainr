@@ -139,6 +139,9 @@ dashboard/                  # Vue 3 frontend (separate build)
 | `community_detect` | Run Louvain community detection on the knowledge graph with optional LLM summaries |
 | `community_list` | List detected communities with titles, summaries, key topics, top entities |
 | `community_members` | Get all entities in a specific community |
+| `handoff_create` | Create structured handoff for next session (task, status, next steps, blockers) |
+| `handoff_pickup` | Find pending handoffs from previous sessions — call on session start |
+| `handoff_resolve` | Mark a handoff as completed/superseded/abandoned |
 
 ## MCP Resources
 | URI | Purpose |
