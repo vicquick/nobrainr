@@ -117,6 +117,7 @@ async def search_memories(
     source_type: str | None = None,
     source_machine: str | None = None,
     text_query: str | None = None,
+    include_cold: bool = False,
 ) -> list[dict]:
     pool = await get_pool()
     vec = np.array(embedding, dtype=np.float32)
@@ -128,6 +129,7 @@ async def search_memories(
             limit=limit, threshold=threshold,
             tags=tags, category=category,
             source_type=source_type, source_machine=source_machine,
+            include_cold=include_cold,
         )
 
     # Two-phase vector search: halfvec HNSW index scan for candidates → full-precision re-ranking
@@ -137,6 +139,8 @@ async def search_memories(
         "embedding IS NOT NULL",
         f"(embedding_model IS NULL OR embedding_model = ${4})",
     ]
+    if not include_cold:
+        conditions.append("tier < 3")
     params: list = [vec, threshold, limit, _cfg.embedding_model]
     idx = 5
 
@@ -174,7 +178,7 @@ async def search_memories(
             )
             SELECT id, content, summary, source_type, source_machine, tags, category,
                    confidence, metadata, created_at, updated_at, importance, stability,
-                   access_count, last_accessed_at, quality_score, embedding_model,
+                   access_count, last_accessed_at, quality_score, embedding_model, tier,
                    1 - (embedding <=> $1::{_VEC}) AS similarity,
                    memory_relevance($1::{_VEC}, embedding, created_at, importance, stability, access_count, now(), quality_score) AS relevance
             FROM candidates
@@ -243,11 +247,13 @@ async def _hybrid_search_rrf(
     source_type: str | None = None,
     source_machine: str | None = None,
     rrf_k: int = 60,
+    include_cold: bool = False,
 ) -> list[dict]:
     """Hybrid search using Reciprocal Rank Fusion of vector + full-text results."""
     overfetch = max(limit * 3, 20)
     # Inner overfetch for halfvec candidate retrieval before re-ranking
     inner_overfetch = overfetch * 3
+    tier_filter = "" if include_cold else " AND tier < 3"
 
     async with pool.acquire() as conn:
         # 1) Vector search: halfvec HNSW scan → full-precision re-rank
@@ -262,13 +268,13 @@ async def _hybrid_search_rrf(
                 WHERE embedding IS NOT NULL
                   AND (embedding_model IS NULL OR embedding_model = $4)
                   AND 1 - (embedding::{_HV} <=> $1::{_HV}) >= $2
-                  {vec_extra}
+                  {vec_extra}{tier_filter}
                 ORDER BY embedding::{_HV} <=> $1::{_HV}
                 LIMIT {inner_overfetch}
             )
             SELECT id, content, summary, source_type, source_machine, tags, category,
                    confidence, metadata, created_at, updated_at, importance, stability,
-                   access_count, last_accessed_at, quality_score, embedding_model,
+                   access_count, last_accessed_at, quality_score, embedding_model, tier,
                    1 - (embedding <=> $1::{_VEC}) AS similarity,
                    memory_relevance($1::{_VEC}, embedding, created_at, importance, stability, access_count, now(), quality_score) AS relevance
             FROM vec_candidates
@@ -286,11 +292,11 @@ async def _hybrid_search_rrf(
             f"""
             SELECT id, content, summary, source_type, source_machine, tags, category,
                    confidence, metadata, created_at, updated_at, importance, stability,
-                   access_count, last_accessed_at, quality_score, embedding_model,
+                   access_count, last_accessed_at, quality_score, embedding_model, tier,
                    ts_rank(to_tsvector('english', content), plainto_tsquery('english', $1)) AS fts_rank
             FROM memories
             WHERE to_tsvector('english', content) @@ plainto_tsquery('english', $1)
-              {fts_extra}
+              {fts_extra}{tier_filter}
             ORDER BY fts_rank DESC
             LIMIT $2
             """,
@@ -344,7 +350,8 @@ async def get_memory(memory_id: str) -> dict | None:
             SELECT id, content, summary, source_type, source_machine, source_ref,
                    tags, category, confidence, metadata, created_at, updated_at,
                    importance, stability, access_count, last_accessed_at, extraction_status,
-                   quality_score, quality_specificity, quality_actionability, quality_self_containment
+                   quality_score, quality_specificity, quality_actionability, quality_self_containment,
+                   tier
             FROM memories WHERE id = $1
             """,
             UUID(memory_id),
@@ -2260,3 +2267,109 @@ async def get_topic_research_status(topic: str) -> dict | None:
         if row and row["last_researched"]:
             return {"topic": topic, "last_researched": row["last_researched"].isoformat()}
         return None
+
+
+# ──────────────────────────────────────────────
+# Memory tiering
+# ──────────────────────────────────────────────
+
+async def set_memory_tier(memory_id: str, tier: int) -> dict | None:
+    """Manually set a memory's tier (0=pinned, 1=hot, 2=standard, 3=cold)."""
+    if tier not in (0, 1, 2, 3):
+        raise ValueError(f"Invalid tier {tier}, must be 0-3")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "UPDATE memories SET tier = $1 WHERE id = $2 RETURNING id, tier",
+            tier, UUID(memory_id),
+        )
+        if row:
+            return {"id": str(row["id"]), "tier": row["tier"]}
+        return None
+
+
+async def auto_tier_memories() -> dict:
+    """Auto-assign tiers based on importance, access patterns, and quality.
+
+    Rules (applied in priority order):
+    - Tier 0 (pinned): importance >= 0.9 AND access_count >= 10
+    - Tier 1 (hot): accessed in last 7 days OR quality_score >= 0.8
+    - Tier 3 (cold): not accessed in 30+ days AND importance < 0.3 AND access_count < 3
+    - Tier 2 (standard): everything else
+
+    Never demotes manually-pinned tier 0 memories (those set via set_memory_tier).
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Promote to tier 0: high importance + high access (but don't demote manual pins)
+        r0 = await conn.execute(
+            """
+            UPDATE memories SET tier = 0
+            WHERE tier > 0
+              AND importance >= 0.9
+              AND access_count >= 10
+            """,
+        )
+
+        # Promote to tier 1: recently accessed or high quality
+        r1 = await conn.execute(
+            """
+            UPDATE memories SET tier = 1
+            WHERE tier > 1
+              AND (
+                  last_accessed_at > now() - interval '7 days'
+                  OR quality_score >= 0.8
+              )
+            """,
+        )
+
+        # Demote to tier 3: cold memories
+        r3 = await conn.execute(
+            """
+            UPDATE memories SET tier = 3
+            WHERE tier = 2
+              AND importance < 0.3
+              AND access_count < 3
+              AND (last_accessed_at IS NULL OR last_accessed_at < now() - interval '30 days')
+              AND created_at < now() - interval '30 days'
+            """,
+        )
+
+        # Recover from cold: if a cold memory gets accessed, bump back to 2
+        r_recover = await conn.execute(
+            """
+            UPDATE memories SET tier = 2
+            WHERE tier = 3
+              AND last_accessed_at > now() - interval '7 days'
+            """,
+        )
+
+        counts = {
+            "promoted_to_0": _affected(r0),
+            "promoted_to_1": _affected(r1),
+            "demoted_to_3": _affected(r3),
+            "recovered_from_cold": _affected(r_recover),
+        }
+        return counts
+
+
+async def get_tier_stats() -> list[dict]:
+    """Get memory counts by tier."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT COALESCE(tier, 2) AS tier, count(*) AS count
+            FROM memories
+            GROUP BY COALESCE(tier, 2)
+            ORDER BY tier
+            """,
+        )
+        return [{"tier": row["tier"], "count": row["count"]} for row in rows]
+
+
+def _affected(result: str) -> int:
+    """Extract affected row count from asyncpg execute result string."""
+    # asyncpg returns e.g. "UPDATE 42"
+    parts = result.split()
+    return int(parts[-1]) if parts else 0

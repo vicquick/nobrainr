@@ -7,6 +7,7 @@ Phases:
   - Crawl seed URLs + queued URLs from crawl_queue table
   - Discover links from crawled pages and queue interesting ones (link discovery)
   - Re-crawl stale pages that have changed (freshness)
+  - Saturation detection: skip domains where recent crawls yield mostly duplicates
 """
 
 import asyncio
@@ -21,6 +22,12 @@ from nobrainr.db.pool import get_pool
 from nobrainr.services.memory import store_document_chunked
 
 logger = logging.getLogger("nobrainr")
+
+# Saturation detection thresholds
+SATURATION_WINDOW_DAYS = 7       # Look at crawls from the last 7 days
+SATURATION_MIN_CRAWLS = 3        # Need at least 3 crawls to judge saturation
+SATURATION_NOVELTY_THRESHOLD = 0.2  # If <20% of recent crawls yielded new content, domain is saturated
+SATURATION_COOLDOWN_HOURS = 48   # Skip saturated domains for 48 hours
 
 # Curated seed URLs — safe public documentation.
 # Each entry: (url, tags, category)
@@ -250,12 +257,56 @@ async def _queue_discovered_links(
     return queued
 
 
+async def _record_crawl_outcome(url: str, *, novel: bool) -> None:
+    """Record whether a crawl yielded novel (non-duplicate) content."""
+    domain = urlparse(url).netloc.lower()
+    try:
+        await queries.log_agent_event(
+            event_type="crawl_outcome",
+            description=f"{'novel' if novel else 'duplicate'}: {url}",
+            metadata={"domain": domain, "url": url, "novel": novel},
+        )
+    except Exception:
+        pass
+
+
+async def _is_domain_saturated(url: str) -> bool:
+    """Check if the domain of this URL is saturated (too many recent duplicates)."""
+    domain = urlparse(url).netloc.lower()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT metadata->>'novel' AS novel
+            FROM agent_events
+            WHERE event_type = 'crawl_outcome'
+              AND metadata->>'domain' = $1
+              AND created_at > NOW() - INTERVAL '1 day' * $2
+            ORDER BY created_at DESC
+            LIMIT 20
+            """,
+            domain, SATURATION_WINDOW_DAYS,
+        )
+        if len(rows) < SATURATION_MIN_CRAWLS:
+            return False
+        novel_count = sum(1 for r in rows if r["novel"] == "true")
+        novelty_rate = novel_count / len(rows)
+        if novelty_rate < SATURATION_NOVELTY_THRESHOLD:
+            logger.info(
+                "Domain %s is saturated (%.0f%% novelty from %d recent crawls), skipping",
+                domain, novelty_rate * 100, len(rows),
+            )
+            return True
+        return False
+
+
 async def knowledge_crawl() -> dict:
     """Crawl a batch of documentation URLs and store as memories.
 
     Picks uncrawled URLs from the seed list + any queued URLs,
     respects rate limits, and stores results with entity extraction.
-    Now also discovers links from crawled pages and queues them.
+    Includes saturation detection: skips domains where recent crawls
+    are mostly duplicates.
     """
     # Get queued URLs from DB (added via crawl_queue tool or link discovery)
     pool = await get_pool()
@@ -308,11 +359,18 @@ async def knowledge_crawl() -> dict:
     crawled = 0
     stored = 0
     links_queued = 0
+    skipped_saturated = 0
 
     for url, tags, category in to_crawl:
         # Skip if already stored (race condition protection)
         if await _is_already_crawled(url):
             await _mark_queued_crawled(url)
+            continue
+
+        # Saturation detection: skip domains that are yielding mostly duplicates
+        if await _is_domain_saturated(url):
+            skipped_saturated += 1
+            await _mark_queued_crawled(url, error="domain_saturated")
             continue
 
         # Crawl with link extraction enabled; use async job API for scheduler (avoids HTTP timeouts)
@@ -331,6 +389,7 @@ async def knowledge_crawl() -> dict:
             continue
 
         # Store via chunked ingestion (handles embedding + overlap + entity extraction)
+        novel = False
         try:
             all_tags = list(tags) + ["crawled", "knowledge-base"]
             store_result = await store_document_chunked(
@@ -346,9 +405,13 @@ async def knowledge_crawl() -> dict:
             )
             if store_result.get("status") in ("stored", "updated"):
                 stored += store_result.get("chunks", 1)
+                novel = True
             logger.info("Knowledge crawl stored: %s (%d chars, %d chunks)", result["title"], len(markdown), store_result.get("chunks", 1))
         except Exception:
             logger.exception("Knowledge crawl store failed for %s", url)
+
+        # Record crawl outcome for saturation tracking
+        await _record_crawl_outcome(url, novel=novel)
 
         # Queue discovered links
         if result.get("links"):
@@ -363,6 +426,7 @@ async def knowledge_crawl() -> dict:
         "crawled": crawled,
         "stored": stored,
         "links_queued": links_queued,
+        "skipped_saturated": skipped_saturated,
         "ran_at": datetime.now().isoformat(),
     }
 

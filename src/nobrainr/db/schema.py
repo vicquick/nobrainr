@@ -46,6 +46,10 @@ ALTER TABLE memories ADD COLUMN IF NOT EXISTS quality_self_containment smallint;
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS embedding_model text DEFAULT '{settings.embedding_model}';
 ALTER TABLE entities ADD COLUMN IF NOT EXISTS embedding_model text DEFAULT '{settings.embedding_model}';
 
+-- v5: Memory tiering (0=pinned, 1=hot, 2=standard, 3=cold)
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS tier smallint DEFAULT 2;
+CREATE INDEX IF NOT EXISTS idx_memories_tier ON memories (tier);
+
 -- HNSW index on halfvec for faster ANN search (~50% smaller than full-vector index)
 -- snowflake-arctic-embed2 supports Matryoshka so halfvec(1024) preserves full quality
 DROP INDEX IF EXISTS idx_memories_embedding_hnsw;

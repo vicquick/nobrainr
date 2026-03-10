@@ -58,7 +58,7 @@ src/nobrainr/              # Python backend
 │   └── pipeline.py        # Full pipeline: extract → dedup → store → link
 ├── crawler/
 │   ├── client.py          # Shared Crawl4AI HTTP client (crawl4ai_request, crawl4ai_job, crawl4ai_deep, discover_sitemap_urls, bm25_markdown_generator)
-│   └── knowledge.py       # Scheduled knowledge crawler (seed URLs, link discovery, freshness)
+│   └── knowledge.py       # Scheduled knowledge crawler (seed URLs, link discovery, freshness, saturation detection)
 ├── dashboard/
 │   ├── app.py             # Parent ASGI app: create_app(), lifespan
 │   └── api.py             # Pure JSON API endpoints
@@ -142,6 +142,10 @@ dashboard/                  # Vue 3 frontend (separate build)
 | `handoff_create` | Create structured handoff for next session (task, status, next steps, blockers) |
 | `handoff_pickup` | Find pending handoffs from previous sessions — call on session start |
 | `handoff_resolve` | Mark a handoff as completed/superseded/abandoned |
+| `memory_set_tier` | Set a memory's tier (0=pinned, 1=hot, 2=standard, 3=cold) |
+| `memory_tier_stats` | Get memory counts by tier level |
+| `error_store` | Store structured error pattern (signature, root cause, fix, prevention) |
+| `error_search` | Search known error patterns — call before debugging |
 
 ## MCP Resources
 | URI | Purpose |
@@ -174,8 +178,10 @@ query → [optional] LLM query expansion (2-3 variants)
                               ↓
                    [optional] chunk context expansion (fetch adjacent chunks)
                               ↓
-                     final results (with similarity, relevance, rrf_score)
+                     final results (with similarity, relevance, rrf_score, tier)
 ```
+
+- **Memory tiering** — Tier 0 (pinned), 1 (hot), 2 (standard), 3 (cold). Cold memories excluded from search by default (`include_cold=True` to override). Auto-tiered every 6 hours based on importance + access patterns.
 
 - **Hybrid search** is on by default — every `memory_search` combines vector similarity + full-text matching
 - **Embedding model safeguard** — search only matches memories embedded with the current model (prevents garbage from mixed embeddings during migration)
@@ -256,7 +262,7 @@ Every memory mutation is tracked in the `memory_versions` table. This provides:
 
 ## Scheduler Jobs
 
-The scheduler runs 23 autonomous jobs (3 SQL + 2 system + 18 LLM). LLM jobs use a configurable
+The scheduler runs 24 autonomous jobs (4 SQL + 2 system + 18 LLM). LLM jobs use a configurable
 semaphore (`NOBRAINR_SCHEDULER_LLM_CONCURRENCY`, default 3) with 1s inter-request delay
 between batch LLM calls for live request coexistence. LLM retry: 5 attempts with
 exponential backoff on empty/malformed JSON responses. Structured labeling jobs use
@@ -275,7 +281,7 @@ exponential backoff on empty/malformed JSON responses. Structured labeling jobs 
 ### Web Intelligence (NEW — knowledge crawl evolution)
 | Job | Interval | Batch | Type | Purpose |
 |-----|----------|-------|------|---------|
-| `knowledge_crawl` | 6h | 3 | LLM | Crawl seed URLs + queued URLs, store with entity extraction, discover links |
+| `knowledge_crawl` | 6h | 3 | LLM | Crawl seed URLs + queued URLs, store with entity extraction, discover links, saturation detection |
 | `entity_web_research` | 12h | 3 | LLM | Find underdescribed entities, LLM suggests docs URL, crawl + store |
 | `freshness_recrawl` | 24h | 3 | LLM | Re-crawl stale pages (>30 days), update if content changed |
 | `interest_expansion` | 24h | 3 | LLM | Research hot topics based on agent search/crawl interest signals |
@@ -293,6 +299,7 @@ exponential backoff on empty/malformed JSON responses. Structured labeling jobs 
 | `maintenance` | 6h | SQL | Recompute importance scores, decay stability |
 | `feedback_integration` | 12h | SQL | Adjust importance based on feedback |
 | `memory_decay` | 24h | SQL | Archive low-value, never-accessed memories >30 days old |
+| `auto_tier` | 6h | SQL | Auto-assign tiers (0-3) based on importance, access patterns, quality |
 
 ### Self-Improvement (inspired by autoresearch + OpusDelta)
 | Job | Interval | Type | Purpose |
