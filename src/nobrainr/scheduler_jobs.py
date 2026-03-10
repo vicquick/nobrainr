@@ -1390,7 +1390,7 @@ async def auto_optimize() -> dict:
             schema=AUTO_OPTIMIZE_SCHEMA,
             model=settings.scheduler_llm_model,
             timeout=60.0,
-            think=True,
+            think=False,
         )
 
         analysis = result.get("analysis", "")
