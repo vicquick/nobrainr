@@ -56,6 +56,163 @@ mcp = FastMCP(
 
 
 # ──────────────────────────────────────────────
+# Resources: read-only data for agent context
+# ──────────────────────────────────────────────
+
+@mcp.resource("nobrainr://briefing")
+async def briefing() -> dict:
+    """System briefing — stats, recent activity, top communities. Read this on session start."""
+    from nobrainr.db.pool import get_pool
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        stats = {}
+        stats["total_memories"] = await conn.fetchval("SELECT count(*) FROM memories")
+        stats["total_entities"] = await conn.fetchval("SELECT count(*) FROM entities")
+        stats["total_relations"] = await conn.fetchval(
+            "SELECT count(*) FROM entity_relations WHERE valid = true"
+        )
+        stats["new_24h"] = await conn.fetchval(
+            "SELECT count(*) FROM memories WHERE created_at > now() - interval '24 hours'"
+        )
+        stats["embedding_model"] = settings.embedding_model
+
+        # Top categories
+        cats = await conn.fetch(
+            "SELECT category, count(*) AS n FROM memories WHERE category IS NOT NULL "
+            "GROUP BY category ORDER BY n DESC LIMIT 5"
+        )
+        stats["top_categories"] = {r["category"]: r["n"] for r in cats}
+
+        # Top communities (if available)
+        has_comm = await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'community_summaries')"
+        )
+        if has_comm:
+            comms = await conn.fetch(
+                "SELECT title, summary, member_count FROM community_summaries ORDER BY member_count DESC LIMIT 5"
+            )
+            stats["top_communities"] = [
+                {"title": c["title"], "summary": c["summary"], "members": c["member_count"]}
+                for c in comms
+            ]
+
+        # Recent agent events
+        events = await conn.fetch(
+            "SELECT event_type, description, created_at FROM agent_events "
+            "ORDER BY created_at DESC LIMIT 5"
+        )
+        stats["recent_events"] = [
+            {"type": e["event_type"], "description": e["description"][:100] if e["description"] else "", "at": str(e["created_at"])}
+            for e in events
+        ]
+
+    return stats
+
+
+@mcp.resource("nobrainr://categories")
+async def categories_resource() -> list[dict]:
+    """Available memory categories with counts."""
+    from nobrainr.db.pool import get_pool
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT category, count(*) AS count FROM memories "
+            "WHERE category IS NOT NULL GROUP BY category ORDER BY count DESC"
+        )
+        return [{"category": r["category"], "count": r["count"]} for r in rows]
+
+
+@mcp.resource("nobrainr://machines")
+async def machines_resource() -> list[dict]:
+    """Connected machines/agents with memory counts."""
+    from nobrainr.db.pool import get_pool
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT source_machine, count(*) AS count FROM memories "
+            "WHERE source_machine IS NOT NULL GROUP BY source_machine ORDER BY count DESC"
+        )
+        return [{"machine": r["source_machine"], "count": r["count"]} for r in rows]
+
+
+@mcp.resource("nobrainr://entity-types")
+async def entity_types_resource() -> list[dict]:
+    """Entity types in the knowledge graph with counts."""
+    from nobrainr.db.pool import get_pool
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT entity_type, count(*) AS count FROM entities GROUP BY entity_type ORDER BY count DESC"
+        )
+        return [{"type": r["entity_type"], "count": r["count"]} for r in rows]
+
+
+# ──────────────────────────────────────────────
+# Prompts: structured agent workflows
+# ──────────────────────────────────────────────
+
+@mcp.prompt()
+def session_start(machine: str = "unknown", task: str = "") -> str:
+    """Prompt for starting a new agent session — searches for relevant context."""
+    return (
+        f"Starting session on machine '{machine}'.\n"
+        f"Task: {task}\n\n"
+        "Before beginning work:\n"
+        "1. Call memory_search with keywords from the task to find relevant prior knowledge\n"
+        "2. Call log_event with event_type='session_start' to record this session\n"
+        "3. Review any returned memories for established conventions, known issues, or past solutions\n"
+        "4. If the task involves a specific entity, call entity_graph to explore its connections"
+    )
+
+
+@mcp.prompt()
+def session_end(learnings: str = "") -> str:
+    """Prompt for ending a session — saves learnings and logs completion."""
+    return (
+        "Session ending. Before closing:\n"
+        "1. Call memory_reflect with all significant learnings from this session:\n"
+        f"   {learnings}\n"
+        "2. Call log_event with event_type='session_end'\n"
+        "3. For any search results you used, call memory_feedback to report usefulness\n"
+        "4. If you discovered new patterns or conventions, store them with memory_store"
+    )
+
+
+@mcp.prompt()
+def debug_investigation(error: str, context: str = "") -> str:
+    """Prompt for investigating a bug — structured search + knowledge capture."""
+    return (
+        f"Investigating error: {error}\n"
+        f"Context: {context}\n\n"
+        "Investigation workflow:\n"
+        "1. Search for known solutions: memory_search(query=<error keywords>, expand=True)\n"
+        "2. Search entity graph: entity_search(query=<affected component>)\n"
+        "3. If a crawled doc might help: memory_search(tags=['crawled'], query=<topic>)\n"
+        "4. After fixing: store the root cause + solution with memory_store\n"
+        "   Tags: ['debugging', '<component>'], category: 'debugging'"
+    )
+
+
+@mcp.prompt()
+def research_topic(topic: str) -> str:
+    """Prompt for researching a topic — combines memory search with web crawling."""
+    return (
+        f"Researching: {topic}\n\n"
+        "Research workflow:\n"
+        "1. Search existing knowledge: memory_search(query=<topic>, expand=True, limit=20)\n"
+        "2. Explore entity graph: entity_search(query=<topic>)\n"
+        "3. Check communities: community_list() to find relevant clusters\n"
+        "4. If knowledge gaps exist, crawl authoritative sources:\n"
+        "   crawl_and_store(url=<docs_url>, tags=[<topic>], category='documentation')\n"
+        "5. Synthesize findings with memory_store, category='insight'"
+    )
+
+
+# ──────────────────────────────────────────────
 # Tool: memory_store (with dedup + async extraction)
 # ──────────────────────────────────────────────
 @mcp.tool()
