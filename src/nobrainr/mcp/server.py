@@ -1689,6 +1689,138 @@ async def community_members(community_id: int) -> list[dict]:
 
 
 # ──────────────────────────────────────────────
+# Tools: cross-session handoff
+# ──────────────────────────────────────────────
+
+@mcp.tool()
+async def handoff_create(
+    task_summary: str,
+    status: str,
+    next_steps: list[str],
+    blockers: list[str] | None = None,
+    relevant_memory_ids: list[str] | None = None,
+    source_machine: str | None = None,
+    metadata: dict | None = None,
+) -> dict:
+    """Create a handoff document for the next agent session.
+
+    Store structured context about in-progress work so the next session
+    can pick up where you left off without losing context.
+
+    Args:
+        task_summary: What was being worked on (1-3 sentences).
+        status: Current status ("in_progress", "blocked", "needs_review", "ready_for_next").
+        next_steps: Ordered list of next actions to take.
+        blockers: Current blockers preventing progress.
+        relevant_memory_ids: Memory IDs with important context for the task.
+        source_machine: Which host created this handoff.
+        metadata: Additional structured context (commit hashes, file paths, etc.).
+    """
+    content_parts = [
+        f"## Handoff: {task_summary}",
+        f"**Status:** {status}",
+        "",
+        "### Next Steps",
+    ]
+    for i, step in enumerate(next_steps, 1):
+        content_parts.append(f"{i}. {step}")
+
+    if blockers:
+        content_parts.extend(["", "### Blockers"])
+        for b in blockers:
+            content_parts.append(f"- {b}")
+
+    if relevant_memory_ids:
+        content_parts.extend(["", "### Related Memories"])
+        for mid in relevant_memory_ids[:10]:
+            content_parts.append(f"- {mid}")
+
+    content = "\n".join(content_parts)
+
+    meta = dict(metadata or {})
+    meta["handoff_status"] = status
+    meta["next_steps"] = next_steps
+    if blockers:
+        meta["blockers"] = blockers
+    if relevant_memory_ids:
+        meta["relevant_memory_ids"] = relevant_memory_ids[:10]
+
+    result = await store_memory_with_extraction(
+        content=content,
+        summary=f"Handoff: {task_summary} [{status}]",
+        tags=["handoff", f"handoff:{status}"],
+        category="session-log",
+        source_type="agent",
+        source_machine=source_machine,
+        confidence=1.0,
+        metadata=meta,
+    )
+    return result
+
+
+@mcp.tool()
+async def handoff_pickup(
+    source_machine: str | None = None,
+    limit: int = 3,
+) -> list[dict]:
+    """Pick up pending handoffs from previous sessions.
+
+    Searches for recent handoff documents that haven't been resolved yet.
+    Call this at session start to continue unfinished work.
+
+    Args:
+        source_machine: Filter handoffs from a specific machine.
+        limit: Max handoffs to return (default 3).
+    """
+    embedding = await embed_text("session handoff in-progress next steps blockers")
+    results = await queries.search_memories(
+        embedding=embedding,
+        limit=limit * 3,
+        threshold=0.2,
+        tags=["handoff"],
+        source_machine=source_machine,
+        text_query="handoff",
+    )
+    # Filter to non-completed handoffs and sort by recency
+    handoffs = []
+    for r in results:
+        meta = r.get("metadata", {}) or {}
+        status = meta.get("handoff_status", "")
+        if status != "completed":
+            handoffs.append(r)
+    return handoffs[:limit]
+
+
+@mcp.tool()
+async def handoff_resolve(
+    memory_id: str,
+    resolution: str = "completed",
+) -> dict:
+    """Mark a handoff as resolved/completed.
+
+    Args:
+        memory_id: The memory ID of the handoff to resolve.
+        resolution: Resolution status ("completed", "superseded", "abandoned").
+    """
+    memory_id = _validate_uuid(memory_id)
+    from nobrainr.db.pool import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE memories SET
+                tags = array_remove(tags, 'handoff:in_progress') || $2::text[],
+                metadata = metadata || $3::jsonb
+            WHERE id = $1
+            """,
+            UUID(memory_id),
+            [f"handoff:{resolution}"],
+            f'{{"handoff_status": "{resolution}"}}',
+        )
+    return {"status": "resolved", "memory_id": memory_id, "resolution": resolution}
+
+
+# ──────────────────────────────────────────────
 # Entry points
 # ──────────────────────────────────────────────
 
