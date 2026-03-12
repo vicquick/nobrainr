@@ -38,6 +38,11 @@ LLM_JOB_DELAYS = {
 # Per-job timeout for LLM operations
 LLM_JOB_TIMEOUT = 30 * 60  # 30 minutes for larger batch sizes
 
+# Per-job timeout overrides for slow jobs (multi-pass distillation etc.)
+LLM_JOB_TIMEOUT_OVERRIDES = {
+    "chatgpt_distill": 90 * 60,  # 90 minutes — multi-pass sliding window is slow
+}
+
 
 class Scheduler:
     """Asyncio-based periodic task runner for memory maintenance jobs."""
@@ -251,14 +256,15 @@ class Scheduler:
         """Run an LLM job periodically with semaphore, timeout, and staggered start."""
         await asyncio.sleep(initial_delay)
         while self._running:
+            job_timeout = LLM_JOB_TIMEOUT_OVERRIDES.get(name, LLM_JOB_TIMEOUT)
             try:
                 async with self._llm_semaphore:
                     logger.info("Running LLM job: %s", name)
-                    result = await asyncio.wait_for(job(), timeout=LLM_JOB_TIMEOUT)
+                    result = await asyncio.wait_for(job(), timeout=job_timeout)
                     await queries.log_scheduler_event(name, result)
                     logger.info("LLM job '%s' completed: %s", name, result)
             except asyncio.TimeoutError:
-                logger.warning("LLM job '%s' timed out after %ds", name, LLM_JOB_TIMEOUT)
+                logger.warning("LLM job '%s' timed out after %ds", name, job_timeout)
                 await queries.log_scheduler_event(name, {
                     "error": "timeout", "ran_at": datetime.now().isoformat(),
                 })
