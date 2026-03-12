@@ -82,7 +82,8 @@ class Settings(BaseSettings):
     insight_extraction_interval_hours: float = 1.0
     insight_extraction_batch_size: int = 30
     chatgpt_distill_interval_hours: float = 0.1
-    chatgpt_distill_batch_size: int = 5  # smaller batches for multi-pass sliding window
+    chatgpt_distill_batch_size: int = 15  # multi-pass sliding window, 3x concurrent
+    chatgpt_distill_concurrency: int = 3  # concurrent LLM calls per batch
     chatgpt_distill_model: str = "gemma3:12b"
     # Memory decay
     decay_interval_hours: float = 24.0
