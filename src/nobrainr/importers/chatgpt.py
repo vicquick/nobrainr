@@ -342,6 +342,16 @@ async def distill_conversations(
                 from nobrainr.config import settings as _s
                 await asyncio.sleep(_s.scheduler_inter_request_delay)
 
+            if local_windows == 0 and len(windows) > 0:
+                # All LLM calls failed — don't mark as distilled, retry later
+                logger.warning(
+                    "All %d windows failed for '%s', will retry next cycle",
+                    len(windows), title,
+                )
+                async with lock:
+                    results["processed"] += 1
+                return
+
             await _mark_distilled(convo_id, local_distilled, windows=len(windows))
             async with lock:
                 results["distilled"] += local_distilled

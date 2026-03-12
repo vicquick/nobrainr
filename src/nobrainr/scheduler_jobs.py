@@ -772,6 +772,7 @@ async def chatgpt_distill() -> dict:
     result = await distill_conversations(
         batch_size=settings.chatgpt_distill_batch_size,
         llm_model=settings.chatgpt_distill_model,
+        concurrency=settings.chatgpt_distill_concurrency,
     )
     return {
         "distilled": result["distilled"],
