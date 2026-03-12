@@ -31,6 +31,8 @@ LLM_JOB_DELAYS = {
     "system_pulse": 28 * 60,
     "auto_optimize": 30 * 60,
     "community_detection": 32 * 60,
+    "cooccurrence_linking": 9 * 60,  # after entity_merging, before synthesis
+    "github_sync": 35 * 60,  # after other jobs settle
 }
 
 # Per-job timeout for LLM operations
@@ -78,6 +80,8 @@ class Scheduler:
             {"name": "system_pulse", "interval_hours": settings.system_pulse_interval_hours, "type": "llm"},
             {"name": "auto_optimize", "interval_hours": settings.auto_optimize_interval_hours, "type": "llm"},
             {"name": "community_detection", "interval_hours": settings.community_detection_interval_hours, "type": "llm"},
+            {"name": "cooccurrence_linking", "interval_hours": settings.cooccurrence_interval_hours, "type": "llm"},
+            {"name": "github_sync", "interval_hours": settings.github_sync_interval_hours, "type": "llm"},
         ]
         return sql_jobs + llm_jobs
 
@@ -181,6 +185,10 @@ class Scheduler:
              settings.auto_optimize_interval_hours * 3600),
             ("community_detection", scheduler_jobs.community_detection,
              settings.community_detection_interval_hours * 3600),
+            ("cooccurrence_linking", scheduler_jobs.cooccurrence_linking,
+             settings.cooccurrence_interval_hours * 3600),
+            ("github_sync", scheduler_jobs.github_sync,
+             settings.github_sync_interval_hours * 3600),
         ]
 
         for name, job_func, interval in llm_jobs:

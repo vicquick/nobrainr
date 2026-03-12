@@ -117,3 +117,62 @@ async def ollama_chat(
             last_exc = exc
 
     raise last_exc or RuntimeError("ollama_chat failed after retries")
+
+
+async def ollama_generate(
+    prompt: str,
+    *,
+    system: str | None = None,
+    model: str | None = None,
+    temperature: float = 0.3,
+    num_ctx: int = 2048,
+    timeout: float = 60.0,
+    keep_alive: str = "5m",
+    max_tokens: int = 512,
+) -> str:
+    """Generate plain text from Ollama (no structured output).
+
+    Used for HyDE hypothetical document generation and query decomposition.
+    """
+    client = _get_client()
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+
+    payload = {
+        "model": model or settings.scheduler_llm_model,
+        "messages": messages,
+        "stream": False,
+        "think": False,
+        "options": {
+            "temperature": temperature,
+            "num_ctx": num_ctx,
+            "num_predict": max_tokens,
+        },
+        "keep_alive": keep_alive,
+    }
+
+    retryable_status = {404, 503, 502, 429}
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            resp = await client.post("/api/chat", json=payload, timeout=timeout)
+            if resp.status_code in retryable_status:
+                wait = 2 ** attempt
+                logger.warning("ollama_generate %d (attempt %d/3)", resp.status_code, attempt + 1)
+                last_exc = httpx.HTTPStatusError(
+                    f"HTTP {resp.status_code}", request=resp.request, response=resp,
+                )
+                await asyncio.sleep(wait)
+                continue
+            resp.raise_for_status()
+            content = resp.json()["message"]["content"]
+            return content.strip() if content else ""
+        except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as exc:
+            wait = 2 ** attempt
+            logger.warning("ollama_generate %s (attempt %d/3)", type(exc).__name__, attempt + 1)
+            last_exc = exc
+            await asyncio.sleep(wait)
+
+    raise last_exc or RuntimeError("ollama_generate failed after retries")

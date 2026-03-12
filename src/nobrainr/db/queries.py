@@ -1271,7 +1271,7 @@ async def search_entities(
         return [_row_to_dict(row) for row in rows]
 
 
-async def get_entity_graph(entity_name: str, depth: int = 2) -> dict:
+async def get_entity_graph(entity_name: str, depth: int = 2, max_nodes: int = 200) -> dict:
     """Get entity and its connections via recursive CTE traversal."""
     canonical = entity_name.lower().strip()
     pool = await get_pool()
@@ -1330,8 +1330,9 @@ async def get_entity_graph(entity_name: str, depth: int = 2) -> dict:
             JOIN entities se ON se.id = g.source_entity_id
             JOIN entities te ON te.id = g.target_entity_id
             ORDER BY g.relation_id, g.depth
+            LIMIT $3
             """,
-            start_id, depth,
+            start_id, depth, max_nodes * 3,
         )
 
         # Build nodes and edges
@@ -1370,7 +1371,11 @@ async def get_entity_graph(entity_name: str, depth: int = 2) -> dict:
                 "depth": row["depth"],
             })
 
-        return {"nodes": list(nodes_map.values()), "edges": edges}
+        result = {"nodes": list(nodes_map.values()), "edges": edges}
+        if len(edges) >= max_nodes * 3:
+            result["truncated"] = True
+            result["hint"] = f"Graph truncated at {max_nodes * 3} edges. Use max_nodes or reduce depth."
+        return result
 
 
 async def get_entity_memories(entity_id: str) -> list[dict]:
@@ -2351,6 +2356,115 @@ async def auto_tier_memories() -> dict:
             "recovered_from_cold": _affected(r_recover),
         }
         return counts
+
+
+async def get_unlinked_cooccurrences(
+    min_shared: int = 3,
+    limit: int = 50,
+) -> list[dict]:
+    """Find entity pairs co-occurring in min_shared+ memories with no relationship.
+
+    Returns rows with: entity_a_id, entity_a_name, entity_a_type,
+                       entity_b_id, entity_b_name, entity_b_type,
+                       shared_count, sample_memory_ids, sample_contents
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            WITH cooccurrences AS (
+                SELECT
+                    em1.entity_id AS a_id,
+                    em2.entity_id AS b_id,
+                    count(DISTINCT em1.memory_id) AS shared_count,
+                    array_agg(DISTINCT em1.memory_id ORDER BY em1.memory_id) AS memory_ids
+                FROM entity_memories em1
+                JOIN entity_memories em2
+                    ON em1.memory_id = em2.memory_id
+                   AND em1.entity_id < em2.entity_id
+                GROUP BY em1.entity_id, em2.entity_id
+                HAVING count(DISTINCT em1.memory_id) >= $1
+            ),
+            unlinked AS (
+                SELECT c.*
+                FROM cooccurrences c
+                LEFT JOIN entity_relations er
+                    ON (er.source_entity_id = c.a_id AND er.target_entity_id = c.b_id)
+                    OR (er.source_entity_id = c.b_id AND er.target_entity_id = c.a_id)
+                WHERE er.id IS NULL
+                ORDER BY c.shared_count DESC
+                LIMIT $2
+            )
+            SELECT
+                u.a_id, ea.name AS a_name, ea.entity_type AS a_type,
+                u.b_id, eb.name AS b_name, eb.entity_type AS b_type,
+                u.shared_count,
+                u.memory_ids[1:3] AS sample_memory_ids
+            FROM unlinked u
+            JOIN entities ea ON ea.id = u.a_id
+            JOIN entities eb ON eb.id = u.b_id
+            """,
+            min_shared,
+            limit,
+        )
+
+        # Fetch sample content for LLM context (up to 3 memories per pair)
+        results = []
+        for row in rows:
+            sample_ids = row["sample_memory_ids"]
+            contents = []
+            if sample_ids:
+                mem_rows = await conn.fetch(
+                    """
+                    SELECT id, LEFT(content, 500) AS content
+                    FROM memories
+                    WHERE id = ANY($1)
+                    """,
+                    sample_ids,
+                )
+                contents = [r["content"] for r in mem_rows]
+            results.append({
+                "entity_a_id": str(row["a_id"]),
+                "entity_a_name": row["a_name"],
+                "entity_a_type": row["a_type"],
+                "entity_b_id": str(row["b_id"]),
+                "entity_b_name": row["b_name"],
+                "entity_b_type": row["b_type"],
+                "shared_count": row["shared_count"],
+                "sample_contents": contents,
+            })
+        return results
+
+
+async def get_nearby_entities_for_memory(
+    embedding: list[float],
+    *,
+    limit: int = 15,
+    min_mentions: int = 2,
+) -> list[dict]:
+    """Find entities semantically close to a memory embedding.
+
+    Used to inject neighborhood context into the extraction prompt.
+    Returns entities with: id, name, entity_type, description, similarity.
+    """
+    pool = await get_pool()
+    vec = np.array(embedding, dtype=np.float32)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT id, name, entity_type, description,
+                   1 - (embedding <=> $1) AS similarity
+            FROM entities
+            WHERE embedding IS NOT NULL
+              AND mention_count >= $3
+            ORDER BY embedding::{_HV} <=> $1::{_HV}
+            LIMIT $2
+            """,
+            vec,
+            limit,
+            min_mentions,
+        )
+        return [_row_to_dict(row) for row in rows]
 
 
 async def get_tier_stats() -> list[dict]:

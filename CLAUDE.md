@@ -108,7 +108,7 @@ dashboard/                  # Vue 3 frontend (separate build)
 |------|---------|
 | `memory_store` | Store memory with auto-embedding, dedup check, async entity extraction |
 | `memory_store_document` | Store long documents with chunked ingestion (overlapping chunks, document linking) |
-| `memory_search` | Hybrid search (vector + FTS via RRF) with chunk-aware retrieval and optional reranking |
+| `memory_search` | Hybrid search (vector + FTS via RRF) with HyDE, query decomposition, reranking, chunk expansion |
 | `memory_query` | Structured filter (tags, category, source, machine) |
 | `memory_get` | Retrieve specific memory by ID (tracks access) |
 | `memory_update` | Update memory (re-embeds if content changes, versioned) |
@@ -146,6 +146,8 @@ dashboard/                  # Vue 3 frontend (separate build)
 | `memory_tier_stats` | Get memory counts by tier level |
 | `error_store` | Store structured error pattern (signature, root cause, fix, prevention) |
 | `error_search` | Search known error patterns — call before debugging |
+| `global_search` | GraphRAG global search — map-reduce over community summaries for broad questions |
+| `graph_search` | Entity-centric graph traversal search — finds entities, walks graph, collects memories |
 
 ## MCP Resources
 | URI | Purpose |
@@ -166,15 +168,16 @@ dashboard/                  # Vue 3 frontend (separate build)
 ## Search & Retrieval Pipeline
 
 ```
-query → [optional] LLM query expansion (2-3 variants)
+query → [optional] LLM query decomposition (2-4 sub-queries)
+      → [optional] LLM query expansion (2-3 variants)
           ↓
      embed(each query) → halfvec HNSW index scan (candidates) + FTS keyword search
-                              ↓                                    ↓
-                         full-precision re-rank              FTS results
-                              ↓                                    ↓
-                         Reciprocal Rank Fusion (RRF, k=60)
+          ↓                        ↓                                    ↓
+     [optional] HyDE       full-precision re-rank              FTS results
+     (embed hypothetical         ↓                                    ↓
+      answer too)          Reciprocal Rank Fusion (RRF, k=60)
                               ↓
-                   [optional] cross-encoder reranking (flashrank)
+                   cross-encoder reranking (flashrank, enabled by default)
                               ↓
                    [optional] chunk context expansion (fetch adjacent chunks)
                               ↓
@@ -190,9 +193,9 @@ query → [optional] LLM query expansion (2-3 variants)
 
 ### Chunked Document Ingestion
 
-Long documents (>4000 chars) are automatically split into overlapping chunks:
-- **Max chunk size:** 3000 chars (configurable: `NOBRAINR_CHUNK_MAX_CHARS`)
-- **Overlap:** 300 chars between consecutive chunks (`NOBRAINR_CHUNK_OVERLAP_CHARS`)
+Long documents (>8000 chars) are automatically split into overlapping chunks:
+- **Max chunk size:** 6000 chars (configurable: `NOBRAINR_CHUNK_MAX_CHARS`)
+- **Overlap:** 500 chars between consecutive chunks (`NOBRAINR_CHUNK_OVERLAP_CHARS`)
 - **Splitting:** Prefers paragraph → line → sentence boundaries
 - **Linking:** All chunks share a `document_id` in metadata with `chunk_index` and `chunk_total`
 - **Dedup skipped:** Individual chunks skip the write-path dedup check
@@ -262,7 +265,7 @@ Every memory mutation is tracked in the `memory_versions` table. This provides:
 
 ## Scheduler Jobs
 
-The scheduler runs 24 autonomous jobs (4 SQL + 2 system + 18 LLM). LLM jobs use a configurable
+The scheduler runs 26 autonomous jobs (4 SQL + 2 system + 20 LLM). LLM jobs use a configurable
 semaphore (`NOBRAINR_SCHEDULER_LLM_CONCURRENCY`, default 3) with 1s inter-request delay
 between batch LLM calls for live request coexistence. LLM retry: 5 attempts with
 exponential backoff on empty/malformed JSON responses. Structured labeling jobs use
@@ -307,6 +310,8 @@ exponential backoff on empty/malformed JSON responses. Structured labeling jobs 
 | `system_pulse` | 24h | LLM | Generate daily health transmission — memory stats, growth, search quality, anomalies |
 | `auto_optimize` | 12h | LLM | Analyze search feedback patterns, suggest improvements, store optimization insights |
 | `community_detection` | 12h | LLM | Louvain community detection on entity graph + LLM community summaries |
+| `cooccurrence_linking` | 4h | LLM | Find unlinked entity pairs in 3+ shared memories, LLM classifies relationships |
+| `github_sync` | 24h | LLM | Incremental sync of GitHub repository data |
 
 ### Knowledge Growth Loop
 ```
@@ -408,9 +413,9 @@ uv sync --extra reranker
 |---------|---------|---------|
 | `NOBRAINR_EMBEDDING_MODEL` | `snowflake-arctic-embed2` | Ollama embedding model |
 | `NOBRAINR_EMBEDDING_DIMENSIONS` | `1024` | Vector dimensions (must match model) |
-| `NOBRAINR_CHUNK_MAX_CHARS` | `3000` | Max characters per chunk |
-| `NOBRAINR_CHUNK_OVERLAP_CHARS` | `300` | Overlap between consecutive chunks |
-| `NOBRAINR_CHUNK_THRESHOLD` | `4000` | Content above this length gets chunked |
+| `NOBRAINR_CHUNK_MAX_CHARS` | `6000` | Max characters per chunk |
+| `NOBRAINR_CHUNK_OVERLAP_CHARS` | `500` | Overlap between consecutive chunks |
+| `NOBRAINR_CHUNK_THRESHOLD` | `8000` | Content above this length gets chunked |
 | `NOBRAINR_CHUNK_CONTEXT_WINDOW` | `1` | Adjacent chunks fetched around search hits |
-| `NOBRAINR_RERANKER_ENABLED` | `false` | Enable cross-encoder reranking |
+| `NOBRAINR_RERANKER_ENABLED` | `true` | Enable cross-encoder reranking |
 | `NOBRAINR_RERANKER_MODEL` | `ms-marco-MiniLM-L-12-v2` | flashrank model name |
