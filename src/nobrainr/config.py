@@ -31,14 +31,14 @@ class Settings(BaseSettings):
     speaches_model: str = "whisper-large-v3"
 
     # Chunked ingestion
-    chunk_max_chars: int = 3000  # max chars per chunk
-    chunk_overlap_chars: int = 300  # overlap between consecutive chunks
-    chunk_threshold: int = 4000  # content above this length gets chunked
+    chunk_max_chars: int = 6000  # max chars per chunk
+    chunk_overlap_chars: int = 500  # overlap between consecutive chunks
+    chunk_threshold: int = 8000  # content above this length gets chunked
     chunk_context_window: int = 1  # fetch N adjacent chunks around search hits
     contextual_embeddings_enabled: bool = True  # prepend LLM-generated context to chunks before embedding
 
     # Reranking
-    reranker_enabled: bool = False
+    reranker_enabled: bool = True
     reranker_model: str = "ms-marco-MiniLM-L-12-v2"
 
     # Security
@@ -131,10 +131,15 @@ class Settings(BaseSettings):
 
     # System pulse (autonomous health transmissions)
     system_pulse_interval_hours: float = 24.0
-    # Community detection (GraphRAG)
+    # Community detection (GraphRAP)
     community_detection_interval_hours: float = 12.0
     # Auto-optimize (search quality self-improvement)
     auto_optimize_interval_hours: float = 12.0
+    # Co-occurrence relationship inference
+    cooccurrence_interval_hours: float = 4.0
+    cooccurrence_batch_size: int = 30
+    # GitHub incremental sync
+    github_sync_interval_hours: float = 24.0
 
     # Monitoring & Alerts
     monitoring_enabled: bool = True

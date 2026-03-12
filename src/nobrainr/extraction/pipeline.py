@@ -7,12 +7,13 @@ from typing import Callable
 
 from nobrainr.db.queries import (
     find_or_create_entity,
+    get_nearby_entities_for_memory,
     get_unextracted_memories,
     link_entity_to_memory,
     set_extraction_status,
     store_entity_relation,
 )
-from nobrainr.embeddings.ollama import embed_batch
+from nobrainr.embeddings.ollama import embed_batch, embed_text
 from nobrainr.extraction.extractor import extract_entities
 
 logger = logging.getLogger("nobrainr")
@@ -73,7 +74,24 @@ async def process_memory(
     try:
         await set_extraction_status(memory_id, "pending")
 
-        result = await extract_entities(content)
+        # Fetch neighborhood context: embed the memory, find nearby entities
+        known_entities = None
+        try:
+            mem_embedding = await embed_text(content[:1500])  # quick embed for lookup
+            nearby = await get_nearby_entities_for_memory(
+                mem_embedding, limit=15, min_mentions=2,
+            )
+            if nearby:
+                known_entities = [
+                    {"name": e["name"], "entity_type": e["entity_type"],
+                     "description": e.get("description", "")}
+                    for e in nearby
+                    if e.get("similarity", 0) > 0.3  # only reasonably relevant
+                ]
+        except Exception:
+            logger.debug("Neighborhood lookup failed for %s, proceeding without", memory_id)
+
+        result = await extract_entities(content, known_entities=known_entities)
 
         # Map entity names to their resolved IDs for relationship linking
         entity_id_map: dict[str, str] = {}

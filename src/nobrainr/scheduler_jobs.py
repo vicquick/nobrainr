@@ -52,6 +52,39 @@ SYNTHESIS_SCHEMA = {
     "required": ["insight", "confidence"],
 }
 
+COOCCURRENCE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "has_relationship": {
+            "type": "boolean",
+            "description": "Whether a meaningful relationship exists between the two entities",
+        },
+        "relationship_type": {
+            "type": "string",
+            "enum": [
+                "uses", "depends_on", "fixes", "part_of", "created_by",
+                "deployed_on", "configured_with", "replaces", "conflicts_with",
+                "runs_on", "implements",
+            ],
+            "description": "The relationship type if has_relationship is true",
+        },
+        "direction": {
+            "type": "string",
+            "enum": ["a_to_b", "b_to_a"],
+            "description": "Direction: a_to_b means A->B, b_to_a means B->A",
+        },
+        "confidence": {
+            "type": "number",
+            "description": "Confidence in the relationship (0.5-1.0)",
+        },
+        "reason": {
+            "type": "string",
+            "description": "Brief explanation of why this relationship exists",
+        },
+    },
+    "required": ["has_relationship"],
+}
+
 ENTITY_DESC_SCHEMA = {
     "type": "object",
     "properties": {
@@ -1446,3 +1479,135 @@ async def community_detection() -> dict:
         result["summaries"] = summary_result
     result["ran_at"] = datetime.now().isoformat()
     return result
+
+
+# ──────────────────────────────────────────────
+# Co-occurrence relationship inference
+# ──────────────────────────────────────────────
+
+async def cooccurrence_linking() -> dict:
+    """Find entity pairs co-occurring in 3+ memories without edges, use LLM to classify."""
+    model = settings.scheduler_llm_model
+    pairs = await queries.get_unlinked_cooccurrences(min_shared=3, limit=30)
+    if not pairs:
+        return {"status": "no_pairs", "ran_at": datetime.now().isoformat()}
+
+    created = 0
+    skipped = 0
+    errors = 0
+
+    for pair in pairs:
+        await _yield_to_live_requests()
+
+        # Build context from sample memories
+        context_snippets = "\n---\n".join(
+            snippet for snippet in pair["sample_contents"] if snippet
+        )
+        if not context_snippets:
+            skipped += 1
+            continue
+
+        prompt = (
+            f"Entity A: {pair['entity_a_name']} (type: {pair['entity_a_type']})\n"
+            f"Entity B: {pair['entity_b_name']} (type: {pair['entity_b_type']})\n"
+            f"These two entities co-occur in {pair['shared_count']} memories.\n\n"
+            f"Sample memories where both appear:\n{context_snippets}\n\n"
+            f"Based on the evidence above, determine if a meaningful, specific "
+            f"relationship exists between Entity A and Entity B. "
+            f"Only say yes if the evidence clearly supports it."
+        )
+
+        try:
+            result = await ollama_chat(
+                system=(
+                    "You classify relationships between entities in a knowledge graph. "
+                    "Given two entities and sample memories where both appear, determine if "
+                    "a specific relationship exists. Be precise — only confirm relationships "
+                    "that the evidence clearly supports. Choose the most specific relationship "
+                    "type that fits."
+                ),
+                user=prompt,
+                schema=COOCCURRENCE_SCHEMA,
+                model=model,
+                think=False,
+            )
+
+            if result.get("has_relationship") and result.get("relationship_type"):
+                rel_type = result["relationship_type"]
+                confidence = min(max(result.get("confidence", 0.7), 0.5), 1.0)
+                direction = result.get("direction", "a_to_b")
+
+                if direction == "b_to_a":
+                    source_id = pair["entity_b_id"]
+                    target_id = pair["entity_a_id"]
+                else:
+                    source_id = pair["entity_a_id"]
+                    target_id = pair["entity_b_id"]
+
+                await queries.store_entity_relation(
+                    source_id,
+                    target_id,
+                    rel_type,
+                    confidence=confidence,
+                    properties={
+                        "source": "cooccurrence_inference",
+                        "shared_memories": pair["shared_count"],
+                        "reason": result.get("reason", ""),
+                    },
+                )
+                created += 1
+                logger.info(
+                    "Co-occurrence link: %s -[%s]-> %s (confidence=%.2f, shared=%d)",
+                    pair["entity_a_name"] if direction == "a_to_b" else pair["entity_b_name"],
+                    rel_type,
+                    pair["entity_b_name"] if direction == "a_to_b" else pair["entity_a_name"],
+                    confidence,
+                    pair["shared_count"],
+                )
+            else:
+                skipped += 1
+
+        except Exception:
+            logger.exception(
+                "Co-occurrence classification failed for %s / %s",
+                pair["entity_a_name"], pair["entity_b_name"],
+            )
+            errors += 1
+
+    return {
+        "status": "completed",
+        "pairs_evaluated": len(pairs),
+        "relationships_created": created,
+        "skipped": skipped,
+        "errors": errors,
+        "ran_at": datetime.now().isoformat(),
+    }
+
+
+# ──────────────────────────────────────────────
+# GitHub incremental sync
+# ──────────────────────────────────────────────
+
+async def github_sync() -> dict:
+    """Incrementally sync new commits, PRs, and issues from GitHub.
+
+    Relies on source_ref dedup in the importer — only new items are stored.
+    """
+    try:
+        from nobrainr.importers.github import import_github
+
+        result = await import_github(
+            owner="vicquick",
+            source_machine=settings.source_machine or _hostname(),
+            include_commits=True,
+            include_issues=True,
+            include_code_structure=False,  # skip on incremental — only on full import
+            include_source_code=False,     # skip on incremental — only on full import
+            include_closed_issues=False,   # skip closed on incremental
+            concurrency=2,
+        )
+        result["ran_at"] = datetime.now().isoformat()
+        return result
+    except Exception:
+        logger.exception("GitHub sync failed")
+        return {"error": "sync failed", "ran_at": datetime.now().isoformat()}
