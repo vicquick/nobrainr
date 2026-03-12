@@ -273,6 +273,8 @@ async def memory_search(
     hybrid: bool = True,
     expand: bool = False,
     include_cold: bool = False,
+    hyde: bool = False,
+    decompose: bool = False,
 ) -> list[dict]:
     """Semantic search across all memories, ranked by relevance (similarity + recency + importance).
 
@@ -291,6 +293,9 @@ async def memory_search(
         hybrid: Combine vector + full-text search via RRF (default True).
         expand: Generate variant queries via LLM for broader recall (default False). Adds ~500ms latency.
         include_cold: Include tier-3 (cold/archived) memories in search (default False).
+        hyde: Use HyDE (Hypothetical Document Embedding) — generates a hypothetical answer
+              and searches with its embedding for better semantic matching. Adds ~1s latency.
+        decompose: Break complex queries into sub-queries for more thorough recall. Adds ~1s latency.
     """
     import asyncio
 
@@ -304,9 +309,30 @@ async def memory_search(
         variants = await expand_query(query)
         all_queries.extend(variants)
 
+    # Query decomposition: break complex queries into sub-queries
+    if decompose:
+        from nobrainr.services.search_enhancements import decompose_query
+        try:
+            sub_queries = await decompose_query(query)
+            all_queries.extend(sub_queries)
+        except Exception:
+            pass  # Fall back to original query
+
     # Embed all queries (batch for efficiency)
     from nobrainr.embeddings.ollama import embed_batch
     embeddings = await embed_batch(all_queries)
+
+    # HyDE: generate a hypothetical answer and add its embedding
+    if hyde:
+        from nobrainr.services.search_enhancements import generate_hyde_document
+        try:
+            hyde_doc = await generate_hyde_document(query)
+            if hyde_doc:
+                hyde_embeddings = await embed_batch([hyde_doc])
+                embeddings.extend(hyde_embeddings)
+                all_queries.append(hyde_doc)
+        except Exception:
+            pass  # Fall back to original embeddings
 
     # Always overfetch for quality re-ranking (halfvec scan is cheap)
     # With reranker or multi-query: 5x. Otherwise: 3x.
@@ -1945,6 +1971,58 @@ async def handoff_resolve(
             f'{{"handoff_status": "{resolution}"}}',
         )
     return {"status": "resolved", "memory_id": memory_id, "resolution": resolution}
+
+
+# ──────────────────────────────────────────────
+# Tools: advanced search (GraphRAG)
+# ──────────────────────────────────────────────
+
+@mcp.tool()
+async def global_search(
+    query: str,
+    max_communities: int = 30,
+) -> dict:
+    """Answer broad questions by scanning all knowledge graph communities (GraphRAG global search).
+
+    Uses map-reduce: scores each community's relevance to the query, then synthesizes
+    an answer from the most relevant communities. Best for high-level questions that
+    span multiple topics (e.g. "What are all the infrastructure components?",
+    "Summarize everything about security").
+
+    For specific factual lookups, use memory_search instead.
+
+    Args:
+        query: Broad question to answer across all knowledge domains.
+        max_communities: Maximum communities to scan (default 30).
+    """
+    from nobrainr.services.search_enhancements import global_search as _global_search
+    return await _global_search(query, max_communities=max_communities)
+
+
+@mcp.tool()
+async def graph_search(
+    query: str,
+    limit: int = 10,
+    depth: int = 1,
+    include_cold: bool = False,
+) -> dict:
+    """Entity-centric search using the knowledge graph for relationship-aware retrieval.
+
+    Finds relevant entities via semantic search, traverses the graph to discover
+    related entities (1-2 hops), then collects all linked memories. Returns both
+    memories and the entity neighborhood for context.
+
+    Best for queries about specific entities and their connections
+    (e.g. "What does nobrainr depend on?", "How are Docker and Traefik related?").
+
+    Args:
+        query: Search query (entity-focused works best).
+        limit: Max memories to return (default 10).
+        depth: Graph traversal depth — 1 for direct neighbors, 2 for extended network.
+        include_cold: Include archived (cold) memories.
+    """
+    from nobrainr.services.search_enhancements import graph_search as _graph_search
+    return await _graph_search(query, limit=limit, depth=depth, include_cold=include_cold)
 
 
 # ──────────────────────────────────────────────
