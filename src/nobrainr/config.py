@@ -59,7 +59,7 @@ class Settings(BaseSettings):
 
     # Scheduler
     scheduler_enabled: bool = True
-    scheduler_llm_concurrency: int = 3  # max concurrent LLM jobs (leave slots for live requests)
+    scheduler_llm_concurrency: int = 5  # max concurrent LLM jobs (leave slots for live requests)
     scheduler_inter_request_delay: float = 1.0  # seconds between LLM calls in batch jobs
     maintenance_interval_hours: float = 6.0
     feedback_interval_hours: float = 12.0
@@ -82,8 +82,8 @@ class Settings(BaseSettings):
     insight_extraction_interval_hours: float = 1.0
     insight_extraction_batch_size: int = 30
     chatgpt_distill_interval_hours: float = 0.1
-    chatgpt_distill_batch_size: int = 15  # multi-pass sliding window, 3x concurrent
-    chatgpt_distill_concurrency: int = 3  # concurrent LLM calls per batch
+    chatgpt_distill_batch_size: int = 30  # multi-pass sliding window, 5x concurrent
+    chatgpt_distill_concurrency: int = 5  # concurrent LLM calls per batch
     chatgpt_distill_model: str = "gemma3:12b"
     # Memory decay
     decay_interval_hours: float = 24.0
