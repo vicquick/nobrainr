@@ -42,7 +42,8 @@ DISTILL_SCHEMA = {
                     },
                     "category": {
                         "type": "string",
-                        "description": "One of: architecture, debugging, patterns, infrastructure, tooling, deployment, security, business, data, frontend, backend, insight, documentation",
+                        "enum": ["architecture", "debugging", "patterns", "infrastructure", "tooling", "deployment", "security", "business", "data", "frontend", "backend", "insight", "documentation"],
+                        "description": "Best-fit category from the allowed list",
                     },
                     "tags": {
                         "type": "array",
@@ -74,6 +75,50 @@ DISTILL_SYSTEM_PROMPT = (
     "Return has_learnings=false ONLY if the segment is truly trivial (greetings, "
     "small talk with no substance, or pure noise)."
 )
+
+
+CANONICAL_CATEGORIES = {
+    "architecture", "debugging", "patterns", "infrastructure", "tooling",
+    "deployment", "security", "business", "data", "frontend", "backend",
+    "insight", "documentation", "session-log", "_archived",
+}
+
+# Map common LLM-invented categories to canonical ones
+_CATEGORY_MAP = {
+    "technical solutions": "patterns", "technical solution": "patterns",
+    "code pattern": "patterns", "code patterns": "patterns",
+    "workflow patterns": "patterns", "workflow pattern": "patterns",
+    "workflow": "patterns", "workflow patterns and best practices": "patterns",
+    "best practices": "patterns",
+    "debugging insights": "debugging", "debugging insight": "debugging",
+    "troubleshooting": "debugging",
+    "data processing": "data", "data processing techniques": "data",
+    "data processing technique": "data", "database": "data",
+    "database administration": "data", "sql": "data",
+    "configuration": "infrastructure", "system administration": "infrastructure",
+    "tool configurations": "tooling", "tool configuration": "tooling",
+    "tool configurations and integration details": "tooling",
+    "architectural decisions": "architecture", "architectural decision": "architecture",
+    "web development": "frontend", "css": "frontend", "html/css": "frontend",
+    "domain knowledge": "insight", "creative insights": "insight",
+    "general knowledge": "insight",
+}
+
+
+def _normalize_category(cat: str) -> str:
+    """Map freeform LLM categories to canonical ones."""
+    if not cat:
+        return "insight"
+    lower = cat.lower().strip()
+    if lower in CANONICAL_CATEGORIES:
+        return lower
+    if lower in _CATEGORY_MAP:
+        return _CATEGORY_MAP[lower]
+    # Fuzzy fallback: check if any canonical category is a substring
+    for canonical in CANONICAL_CATEGORIES:
+        if canonical in lower:
+            return canonical
+    return "insight"  # safe default
 
 
 # ──────────────────────────────────────────────
@@ -328,7 +373,7 @@ async def distill_conversations(
                         source_machine=machine,
                         source_ref=title,
                         tags=learning.get("tags", []) + ["imported", "chatgpt-distilled"],
-                        category=learning.get("category", "insight"),
+                        category=_normalize_category(learning.get("category", "insight")),
                         confidence=0.7,
                         metadata={
                             "conversation_id": convo_id,
