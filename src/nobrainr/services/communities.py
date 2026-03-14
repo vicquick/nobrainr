@@ -193,6 +193,9 @@ async def generate_community_summaries(*, max_communities: int = 50) -> dict:
 
     # Store summaries in a metadata table or in entity metadata
     if summaries:
+        # Build member count lookup from the original query
+        member_counts = {r["community_id"]: len(list(r["names"])) for r in rows}
+
         async with pool.acquire() as conn:
             # Create community_summaries table if needed
             await conn.execute("""
@@ -205,8 +208,10 @@ async def generate_community_summaries(*, max_communities: int = 50) -> dict:
                     updated_at timestamptz DEFAULT now()
                 )
             """)
+            # Clear stale summaries from previous detection runs (community_ids get reassigned)
+            await conn.execute("DELETE FROM community_summaries")
             for comm_id, s in summaries.items():
-                member_count = sum(1 for r in rows if r["community_id"] == comm_id)
+                member_count = member_counts.get(comm_id, 0)
                 await conn.execute("""
                     INSERT INTO community_summaries (community_id, title, summary, key_topics, member_count)
                     VALUES ($1, $2, $3, $4, $5)

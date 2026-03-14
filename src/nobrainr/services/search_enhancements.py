@@ -192,7 +192,7 @@ async def global_search(query: str, *, max_communities: int = 30) -> dict:
                 "specific entities and topics. Be concrete and actionable."
             ),
             temperature=0.3,
-            num_ctx=4096,
+            num_ctx=8192,
             timeout=60.0,
             max_tokens=1024,
         )

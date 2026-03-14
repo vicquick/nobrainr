@@ -356,7 +356,7 @@ async def distill_conversations(
                             schema=DISTILL_SCHEMA,
                             model=llm_model,
                             timeout=900.0,
-                            num_ctx=4096,
+                            num_ctx=8192,
                             think=False,
                         )
                     except Exception:

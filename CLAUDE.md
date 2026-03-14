@@ -265,16 +265,16 @@ Every memory mutation is tracked in the `memory_versions` table. This provides:
 
 ## Scheduler Jobs
 
-The scheduler runs 26 autonomous jobs (4 SQL + 2 system + 20 LLM). LLM jobs use a configurable
-semaphore (`NOBRAINR_SCHEDULER_LLM_CONCURRENCY`, default 3) with 1s inter-request delay
-between batch LLM calls for live request coexistence. LLM retry: 5 attempts with
-exponential backoff on empty/malformed JSON responses. Structured labeling jobs use
-`think=False` for ~10x speed.
+The scheduler runs 27 autonomous jobs (5 SQL + 2 system + 20 LLM). LLM jobs are serialized
+via a hardcoded `Semaphore(1)` — a single GPU cannot handle concurrent gemma3 inference without
+timeouts. 1s inter-request delay between batch LLM calls for live request coexistence.
+LLM retry: 5 attempts with exponential backoff on empty/malformed JSON responses.
+Structured labeling jobs use `think=False` for ~10x speed.
 
 ### Knowledge Lifecycle
 | Job | Interval | Batch | Type | Purpose |
 |-----|----------|-------|------|---------|
-| `chatgpt_distill` | 6m | 20 | LLM | Convert raw ChatGPT conversations → structured memories |
+| `chatgpt_distill` | 30m | 30 | LLM | Convert raw ChatGPT conversations → structured memories (serialized, 1 concurrent) |
 | `auto_summarize` | 1h | 20 | LLM | Generate 1-line summaries for unsummarized memories |
 | `insight_extraction` | 1h | 30 | LLM | Extract reusable learnings from agent events |
 | `consolidation` | 2h | 10 | LLM | Find near-duplicates (>88% similar) and merge via LLM |
@@ -303,6 +303,7 @@ exponential backoff on empty/malformed JSON responses. Structured labeling jobs 
 | `feedback_integration` | 12h | SQL | Adjust importance based on feedback |
 | `memory_decay` | 24h | SQL | Archive low-value, never-accessed memories >30 days old |
 | `auto_tier` | 6h | SQL | Auto-assign tiers (0-3) based on importance, access patterns, quality |
+| `entity_pruning` | 12h | SQL | Prune noise entities (<=1 memory link, older than 24h) |
 
 ### Self-Improvement (inspired by autoresearch + OpusDelta)
 | Job | Interval | Type | Purpose |
@@ -311,7 +312,7 @@ exponential backoff on empty/malformed JSON responses. Structured labeling jobs 
 | `auto_optimize` | 12h | LLM | Analyze search feedback patterns, suggest improvements, store optimization insights |
 | `community_detection` | 12h | LLM | Louvain community detection on entity graph + LLM community summaries |
 | `cooccurrence_linking` | 4h | LLM | Find unlinked entity pairs in 3+ shared memories, LLM classifies relationships |
-| `github_sync` | 24h | LLM | Incremental sync of GitHub repository data |
+| `github_sync` | 24h | LLM | Incremental sync of GitHub repository data (requires `gh` CLI + `GH_TOKEN` env var) |
 
 ### Knowledge Growth Loop
 ```
@@ -339,21 +340,24 @@ Two models are required:
 
 Additionally, `qwen3.5-nothink:9b` is available for external consumers (Affine copilot).
 
-Recommended Ollama env vars for production:
+Recommended Ollama env vars for production (RTX 4000 Ada 20GB):
 - `OLLAMA_FLASH_ATTENTION=1` — reduces VRAM, speeds inference
-- `OLLAMA_KV_CACHE_TYPE=q8_0` — halves KV cache memory per slot
-- `OLLAMA_NUM_PARALLEL=6` — concurrent inference slots
+- `OLLAMA_KV_CACHE_TYPE=q8_0` — halves KV cache memory per slot (critical for larger context)
+- `OLLAMA_NUM_PARALLEL=2` — inference slots (reduced from 6; LLM jobs are serialized)
 - `OLLAMA_KEEP_ALIVE=5m` — unload idle models after 5 minutes
 - `OLLAMA_MAX_LOADED_MODELS=2` — embedding + one LLM at a time
-- `OLLAMA_NUM_CTX=4096` — context window per slot
+- `OLLAMA_NUM_CTX=12288` — context window (safe max with Q8 KV cache + snowflake on 20GB GPU)
 - `OLLAMA_NUM_GPU=999` — offload all layers to GPU
 
-`MAX_LOADED_MODELS=2` ensures only one LLM is loaded at a time alongside snowflake-arctic-embed2,
-preventing VRAM exhaustion when multiple apps share the GPU (nobrainr + Affine + Speaches).
+VRAM budget with Q8 KV cache: gemma3:12b Q8 (13GB weights + ~4.6GB KV at 12K ctx) + snowflake (1.2GB) = ~19.8GB / 20GB.
+LLM jobs are serialized (Semaphore(1)) to prevent concurrent gemma3 inference which causes ReadTimeouts.
 
 ### Extraction Performance
 - `ollama_chat()` defaults to `think=False` — gemma3 does not support thinking mode (Ollama returns 400)
-- All callers use `think=False` explicitly or via default
+- Default `num_ctx=8192` for all LLM calls (extraction, dedup, distill, documents, search synthesis)
+- `MAX_CONTENT_CHARS=6000` — content truncation for extraction (matches chunk config)
+- Post-extraction noise filter in `pipeline.py` catches: short names, generic words, function calls,
+  CLI flags, CSS selectors, trivial file names, resolution strings, git branch names
 - gemma3:12b is ~2x faster than qwen3.5 for structured output and more reliable at producing valid JSON
 - Backfill: `nobrainr extract-backfill --batch-size 50`
 - Retry logic: 404s from Ollama (model loading contention) are retried 5x with exponential backoff

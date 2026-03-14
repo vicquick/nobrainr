@@ -35,10 +35,10 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/youruser/nobrainr"
-Documentation = "https://github.com/youruser/nobrainr#readme"
-Issues = "https://github.com/youruser/nobrainr/issues"
-Changelog = "https://github.com/youruser/nobrainr/blob/main/CHANGELOG.md"
+Repository = "https://github.com/vicquick/nobrainr"
+Documentation = "https://github.com/vicquick/nobrainr#readme"
+Issues = "https://github.com/vicquick/nobrainr/issues"
+Changelog = "https://github.com/vicquick/nobrainr/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 reranker = [
