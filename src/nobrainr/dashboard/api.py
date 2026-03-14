@@ -54,6 +54,25 @@ async def api_graph(request: Request) -> JSONResponse:
             node_ids_in_edges.add(edge["data"]["target"])
         data["nodes"] = [n for n in data["nodes"] if n["data"]["id"] in node_ids_in_edges]
 
+    # Drop tiny disconnected components (< 6 nodes) — they form a ring in the layout
+    import networkx as nx
+    _G = nx.Graph()
+    _node_set = {n["data"]["id"] for n in data["nodes"]}
+    for n in data["nodes"]:
+        _G.add_node(n["data"]["id"])
+    for e in data["edges"]:
+        s, t = e["data"]["source"], e["data"]["target"]
+        if s in _node_set and t in _node_set:
+            _G.add_edge(s, t)
+    keep_ids: set[str] = set()
+    for comp in nx.connected_components(_G):
+        if len(comp) >= 6:
+            keep_ids |= comp
+    if keep_ids:
+        data["nodes"] = [n for n in data["nodes"] if n["data"]["id"] in keep_ids]
+        data["edges"] = [e for e in data["edges"]
+                         if e["data"]["source"] in keep_ids and e["data"]["target"] in keep_ids]
+
     # Compute layout server-side
     from nobrainr.layout import compute_graph_layout
 
