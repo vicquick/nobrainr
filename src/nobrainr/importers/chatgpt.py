@@ -43,7 +43,7 @@ DISTILL_SCHEMA = {
                     "category": {
                         "type": "string",
                         "enum": ["architecture", "debugging", "patterns", "infrastructure", "tooling", "deployment", "security", "business", "data", "frontend", "backend", "insight", "documentation"],
-                        "description": "Best-fit category from the allowed list",
+                        "description": "Best-fit category. 'insight' for personal knowledge, life lessons, opinions, creative ideas, cultural observations. 'business' for career, project management, strategy. 'patterns' for workflows, habits, recurring approaches.",
                     },
                     "tags": {
                         "type": "array",
@@ -66,20 +66,30 @@ DISTILL_SCHEMA = {
 }
 
 DISTILL_SYSTEM_PROMPT = (
-    "You are a knowledge extractor. Extract ALL reusable knowledge from this conversation segment. "
-    "This includes:\n"
-    "- Technical solutions, commands, configurations, code patterns\n"
+    "You are a knowledge extractor building a comprehensive personal knowledge base. "
+    "Extract ALL reusable knowledge — both technical and personal.\n\n"
+    "TECHNICAL knowledge:\n"
+    "- Solutions, commands, configurations, code patterns with specific details\n"
     "- Architectural decisions and their rationale\n"
-    "- Debugging insights — what went wrong and why\n"
-    "- Workflow patterns and best practices\n"
-    "- Tool configurations and integration details\n"
-    "- Data processing techniques\n"
-    "- Personal preferences, creative insights, and domain knowledge\n"
-    "- Business decisions, project plans, and strategies\n\n"
-    "Each learning should be self-contained — someone reading it without the conversation "
-    "should understand the knowledge. Include specific names, versions, and details.\n"
-    "Rate confidence honestly: 0.3 for vague ideas, 0.5 for plausible but unverified, "
-    "0.7 for solid practical knowledge, 0.9+ for specific verified facts or tested solutions.\n"
+    "- Debugging insights — root cause, fix, and prevention\n"
+    "- Tool configurations, API details, integration patterns\n"
+    "- Data processing techniques and workflows\n\n"
+    "PERSONAL & DOMAIN knowledge:\n"
+    "- Life decisions, reasoning, and lessons learned\n"
+    "- Creative projects, artistic choices, and design decisions\n"
+    "- Professional insights, career observations, and work strategies\n"
+    "- Language learning discoveries and cultural observations\n"
+    "- Opinions, preferences, and values that inform future decisions\n"
+    "- Project goals, timelines, and stakeholder context\n"
+    "- Health, productivity, and workflow habits\n\n"
+    "Each learning must be SELF-CONTAINED — someone reading it without the conversation "
+    "should understand the full context. Include specific names, versions, dates, and details. "
+    "Capture the WHY behind decisions, not just the WHAT.\n\n"
+    "Rate confidence honestly:\n"
+    "- 0.3: vague idea, speculation, or incomplete information\n"
+    "- 0.5: plausible but unverified, or context-dependent\n"
+    "- 0.7: solid practical knowledge, tested approach\n"
+    "- 0.9: highly specific verified fact, proven solution, or firm decision\n\n"
     "Return has_learnings=false ONLY if the segment is truly trivial (greetings, "
     "small talk with no substance, or pure noise)."
 )
