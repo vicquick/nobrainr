@@ -40,9 +40,9 @@ def _valid_uuid(value: str) -> bool:
 async def api_graph(request: Request) -> JSONResponse:
     """Full knowledge graph with server-computed layout (Louvain + spring)."""
     try:
-        min_conn = max(0, int(request.query_params.get("min_connections", "0")))
+        min_conn = max(0, int(request.query_params.get("min_connections", "1")))
     except ValueError:
-        min_conn = 0
+        min_conn = 1
     data = await queries.get_all_entities_for_graph(min_connections=min_conn)
 
     # Filter to connected nodes only (nodes with at least one edge)
