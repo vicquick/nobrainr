@@ -27,7 +27,7 @@ async def ollama_chat(
     *,
     model: str | None = None,
     temperature: float = 0.1,
-    num_ctx: int = 4096,
+    num_ctx: int = 8192,
     timeout: float = 180.0,
     keep_alive: str = "5m",
     think: bool = False,

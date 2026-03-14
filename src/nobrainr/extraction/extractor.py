@@ -67,7 +67,7 @@ relationships: [{source: "snowflake-arctic-embed2", target: "nomic-embed-text", 
 """
 
 
-MAX_CONTENT_CHARS = 3000  # ~750 tokens — fits comfortably in num_ctx=4096 with prompt
+MAX_CONTENT_CHARS = 6000  # ~1500 tokens — fits in num_ctx=8192 with prompt + neighborhood context
 
 
 async def extract_entities(

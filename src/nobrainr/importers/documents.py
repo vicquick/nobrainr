@@ -46,7 +46,7 @@ async def _vision_extract(image_bytes: bytes, prompt: str = "Extract all text an
         ],
         "stream": False,
         "think": False,
-        "options": {"temperature": 0.1, "num_ctx": 4096},
+        "options": {"temperature": 0.1, "num_ctx": 8192},
         "keep_alive": "5m",
     }
     async with httpx.AsyncClient(base_url=settings.ollama_url, timeout=120.0) as client:

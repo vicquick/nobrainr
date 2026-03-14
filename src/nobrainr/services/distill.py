@@ -83,7 +83,7 @@ async def distill_text(
                 "options": {
                     "temperature": 0.1,
                     "num_predict": 200,
-                    "num_ctx": 4096,
+                    "num_ctx": 8192,
                 },
                 "keep_alive": "5m",
             })

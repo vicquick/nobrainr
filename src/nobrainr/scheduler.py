@@ -50,7 +50,7 @@ class Scheduler:
     def __init__(self):
         self._tasks: list[asyncio.Task] = []
         self._running = False
-        self._llm_semaphore = asyncio.Semaphore(settings.scheduler_llm_concurrency)
+        self._llm_semaphore = asyncio.Semaphore(1)  # Hardcoded: single GPU, serialize LLM jobs
 
     @property
     def running(self) -> bool:
@@ -123,6 +123,13 @@ class Scheduler:
                     "auto_tier",
                     self._job_auto_tier,
                     6.0 * 3600,  # every 6 hours
+                )
+            ),
+            asyncio.create_task(
+                self._run_periodic(
+                    "entity_pruning",
+                    self._job_entity_pruning,
+                    12.0 * 3600,  # every 12 hours — prune noise entities
                 )
             ),
         ]
@@ -307,6 +314,12 @@ class Scheduler:
         counts = await queries.auto_tier_memories()
         counts["ran_at"] = datetime.now().isoformat()
         return counts
+
+    @staticmethod
+    async def _job_entity_pruning() -> dict:
+        """Prune noise entities (<=1 memory link, older than 24h, no meaningful relations)."""
+        from nobrainr import scheduler_jobs
+        return await scheduler_jobs.entity_pruning()
 
 
 # Module-level singleton
