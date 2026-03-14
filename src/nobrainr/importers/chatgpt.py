@@ -50,8 +50,14 @@ DISTILL_SCHEMA = {
                         "items": {"type": "string"},
                         "description": "3-5 relevant tags",
                     },
+                    "confidence": {
+                        "type": "number",
+                        "description": "How confident you are in this learning's accuracy and usefulness (0.0-1.0). "
+                                       "0.3=vague/uncertain, 0.5=plausible but unverified, "
+                                       "0.7=solid knowledge, 0.9=highly specific verified fact or solution",
+                    },
                 },
-                "required": ["content", "summary", "category", "tags"],
+                "required": ["content", "summary", "category", "tags", "confidence"],
             },
             "description": "List of distilled learnings (0-5 per segment)",
         },
@@ -72,6 +78,8 @@ DISTILL_SYSTEM_PROMPT = (
     "- Business decisions, project plans, and strategies\n\n"
     "Each learning should be self-contained — someone reading it without the conversation "
     "should understand the knowledge. Include specific names, versions, and details.\n"
+    "Rate confidence honestly: 0.3 for vague ideas, 0.5 for plausible but unverified, "
+    "0.7 for solid practical knowledge, 0.9+ for specific verified facts or tested solutions.\n"
     "Return has_learnings=false ONLY if the segment is truly trivial (greetings, "
     "small talk with no substance, or pure noise)."
 )
@@ -365,6 +373,10 @@ async def distill_conversations(
                         logger.warning("Embedding failed for learning from '%s', skipping", title)
                         continue
 
+                    # Clamp LLM confidence to [0.1, 1.0]
+                    raw_conf = learning.get("confidence", 0.5)
+                    conf = max(0.1, min(1.0, float(raw_conf))) if isinstance(raw_conf, (int, float)) else 0.5
+
                     await queries.store_memory(
                         content=full_content,
                         embedding=embedding,
@@ -374,7 +386,7 @@ async def distill_conversations(
                         source_ref=title,
                         tags=learning.get("tags", []) + ["imported", "chatgpt-distilled"],
                         category=_normalize_category(learning.get("category", "insight")),
-                        confidence=0.7,
+                        confidence=conf,
                         metadata={
                             "conversation_id": convo_id,
                             "window_index": window_idx,
@@ -442,7 +454,7 @@ async def _mark_distilled(
                 "distilled": True,
                 "learning_count": learning_count,
                 "distill_windows": windows,
-                "distill_version": 2,
+                "distill_version": 3,
                 **({"distill_error": error} if error else {}),
             }),
             UUID(convo_id),
