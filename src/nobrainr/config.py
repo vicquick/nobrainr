@@ -81,9 +81,9 @@ class Settings(BaseSettings):
     entity_merging_batch_size: int = 15
     insight_extraction_interval_hours: float = 1.0
     insight_extraction_batch_size: int = 30
-    chatgpt_distill_interval_hours: float = 0.1
-    chatgpt_distill_batch_size: int = 30  # multi-pass sliding window, 5x concurrent
-    chatgpt_distill_concurrency: int = 5  # concurrent LLM calls per batch
+    chatgpt_distill_interval_hours: float = 0.5  # 30min — reduced from 6min to avoid GPU saturation
+    chatgpt_distill_batch_size: int = 30  # multi-pass sliding window
+    chatgpt_distill_concurrency: int = 1  # serialized — single GPU cannot handle concurrent inference
     chatgpt_distill_model: str = "gemma3:12b"
     # Memory decay
     decay_interval_hours: float = 24.0

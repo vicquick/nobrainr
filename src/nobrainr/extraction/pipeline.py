@@ -21,6 +21,11 @@ logger = logging.getLogger("nobrainr")
 # Post-extraction noise filter: reject entities that are too short, numeric, or generic
 _NOISE_RE = re.compile(r"^[0-9./\-]+$")  # pure numbers/versions/dates
 _BRANCH_RE = re.compile(r"^(feature|agent|bugfix|hotfix|release|develop)/", re.IGNORECASE)
+_FUNC_RE = re.compile(r"^[\w.]+\(\)$")  # function calls: strpos(), format(), etc.
+_CLI_FLAG_RE = re.compile(r"^--?\w")  # CLI flags: --content, -v, etc.
+_CSS_SELECTOR_RE = re.compile(r"^[\w-]+\.[\w-]+$")  # CSS selectors: html.dark-mode
+_TRIVIAL_FILE_RE = re.compile(r"^\w+\.(txt|log|tmp|bak|csv|json|xml|yaml|yml|ini|cfg|conf)$", re.IGNORECASE)
+_RESOLUTION_RE = re.compile(r"^\d+\s*(PPI|DPI|px|pt|em|rem|%)$", re.IGNORECASE)  # 300 PPI, 72 DPI
 _GENERIC_NAMES = frozenset({
     "main", "fix", "update", "test", "bug", "feature", "release", "merge",
     "commit", "branch", "tag", "none", "null", "true", "false", "yes", "no",
@@ -54,6 +59,21 @@ def _is_noise_entity(name: str) -> bool:
         return True
     # Git branch names are not meaningful entities
     if _BRANCH_RE.match(name):
+        return True
+    # Function calls (strpos(), substr(), format()) — too granular
+    if _FUNC_RE.match(name):
+        return True
+    # CLI flags (--content, --verbose) — not knowledge entities
+    if _CLI_FLAG_RE.match(name):
+        return True
+    # CSS selectors (html.dark-mode) — too granular for knowledge graph
+    if _CSS_SELECTOR_RE.match(name):
+        return True
+    # Trivial file names (urls.txt, data.csv) — not meaningful unless specific
+    if _TRIVIAL_FILE_RE.match(name):
+        return True
+    # Resolution/unit strings (300 PPI, 72 DPI)
+    if _RESOLUTION_RE.match(name):
         return True
     return False
 
