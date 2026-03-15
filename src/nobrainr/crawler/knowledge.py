@@ -36,40 +36,75 @@ SEED_URLS = [
     ("https://docs.python.org/3/whatsnew/3.13.html", ["python", "changelog"], "documentation"),
     ("https://docs.python.org/3/library/asyncio.html", ["python", "asyncio"], "documentation"),
     ("https://docs.python.org/3/library/typing.html", ["python", "typing"], "documentation"),
+    ("https://docs.python.org/3/library/pathlib.html", ["python", "pathlib"], "documentation"),
     ("https://docs.astral.sh/uv/", ["uv", "python", "package-manager"], "tooling"),
     ("https://docs.astral.sh/ruff/", ["ruff", "python", "linter"], "tooling"),
     ("https://docs.pydantic.dev/latest/", ["pydantic", "python", "validation"], "documentation"),
     ("https://fastapi.tiangolo.com/", ["fastapi", "python", "api"], "documentation"),
-    # Database
+    ("https://www.starlette.io/", ["starlette", "python", "asgi"], "documentation"),
+    ("https://www.uvicorn.org/", ["uvicorn", "python", "asgi"], "documentation"),
+    ("https://magicstack.github.io/asyncpg/current/", ["asyncpg", "postgresql", "python"], "documentation"),
+    ("https://networkx.org/documentation/stable/tutorial.html", ["networkx", "python", "graphs"], "documentation"),
+    ("https://www.python-httpx.org/", ["httpx", "python", "http"], "documentation"),
+    # Database & GIS
     ("https://www.postgresql.org/docs/current/release-18.html", ["postgresql", "changelog"], "documentation"),
     ("https://github.com/pgvector/pgvector", ["pgvector", "postgresql", "embeddings"], "documentation"),
+    ("https://postgis.net/documentation/", ["postgis", "gis", "spatial"], "documentation"),
+    ("https://pgrouting.org/documentation.html", ["pgrouting", "routing", "spatial"], "documentation"),
+    ("https://docs.qgis.org/latest/en/docs/pyqgis_developer_cookbook/", ["qgis", "pyqgis", "gis"], "documentation"),
     # Frontend
     ("https://vuejs.org/guide/introduction.html", ["vue", "frontend", "javascript"], "documentation"),
     ("https://vuetifyjs.com/en/getting-started/installation/", ["vuetify", "vue", "ui"], "documentation"),
     ("https://vite.dev/guide/", ["vite", "frontend", "build-tool"], "documentation"),
+    ("https://pinia.vuejs.org/introduction.html", ["pinia", "vue", "state-management"], "documentation"),
+    ("https://www.sigmajs.org/", ["sigma", "graph-visualization", "frontend"], "documentation"),
+    ("https://js.cytoscape.org/", ["cytoscape", "graph-visualization", "frontend"], "documentation"),
     # Infrastructure
     ("https://docs.docker.com/engine/release-notes/", ["docker", "changelog"], "infrastructure"),
     ("https://docs.docker.com/compose/", ["docker", "compose"], "infrastructure"),
     ("https://doc.traefik.io/traefik/", ["traefik", "reverse-proxy"], "infrastructure"),
     ("https://coolify.io/docs", ["coolify", "paas", "deployment"], "infrastructure"),
+    ("https://docs.hetzner.com/cloud/", ["hetzner", "cloud", "infrastructure"], "infrastructure"),
+    ("https://www.wireguard.com/quickstart/", ["wireguard", "vpn", "security"], "infrastructure"),
     # AI/ML
     ("https://github.com/ollama/ollama/blob/main/docs/api.md", ["ollama", "api", "llm"], "documentation"),
     ("https://docs.anthropic.com/en/docs/overview", ["claude", "api", "anthropic"], "documentation"),
     ("https://modelcontextprotocol.io/introduction", ["mcp", "protocol", "ai"], "documentation"),
+    ("https://docs.crawl4ai.com/", ["crawl4ai", "web-crawling", "ai"], "documentation"),
+    ("https://huggingface.co/Snowflake/snowflake-arctic-embed-m-v2.0", ["snowflake", "embeddings", "ai"], "documentation"),
     # BIM/Construction (domain-specific)
     ("https://technical.buildingsmart.org/standards/ifc/", ["ifc", "bim", "buildingsmart"], "documentation"),
     ("https://www.buildingsmart.org/standards/bsi-standards/industry-foundation-classes/", ["ifc", "bim", "standards"], "business"),
+    ("https://docs.thatopen.com/", ["that-open-engine", "bim", "3d-viewer"], "documentation"),
+    ("https://xeokit.github.io/xeokit-sdk/docs/", ["xeokit", "bim", "3d-viewer"], "documentation"),
+    # Data & ML
+    ("https://scikit-learn.org/stable/user_guide.html", ["scikit-learn", "ml", "python"], "documentation"),
+    ("https://pytorch.org/docs/stable/index.html", ["pytorch", "ml", "deep-learning"], "documentation"),
 ]
 
 MAX_CONTENT_CHARS = 50000  # Cap at 50k chars, chunking handles the rest
 
 # Domains we trust for automatic link discovery (avoid crawling the entire web)
 TRUSTED_DOMAINS = {
+    # Python
     "docs.python.org", "docs.astral.sh", "docs.pydantic.dev", "fastapi.tiangolo.com",
-    "www.postgresql.org", "vuejs.org", "vuetifyjs.com", "vite.dev",
+    "www.starlette.io", "www.uvicorn.org", "magicstack.github.io", "networkx.org",
+    "www.python-httpx.org", "scikit-learn.org", "pytorch.org",
+    # Database & GIS
+    "www.postgresql.org", "postgis.net", "pgrouting.org", "docs.qgis.org",
+    # Frontend
+    "vuejs.org", "vuetifyjs.com", "vite.dev", "pinia.vuejs.org",
+    "www.sigmajs.org", "js.cytoscape.org",
+    # Infrastructure
     "docs.docker.com", "doc.traefik.io", "coolify.io",
-    "docs.anthropic.com", "modelcontextprotocol.io",
+    "docs.hetzner.com", "www.wireguard.com",
+    # AI
+    "docs.anthropic.com", "modelcontextprotocol.io", "docs.crawl4ai.com",
+    "huggingface.co",
+    # BIM
     "technical.buildingsmart.org", "www.buildingsmart.org",
+    "docs.thatopen.com", "xeokit.github.io",
+    # General
     "github.com", "developer.mozilla.org",
 }
 
