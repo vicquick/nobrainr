@@ -140,7 +140,8 @@ class Settings(BaseSettings):
     cooccurrence_interval_hours: float = 4.0
     cooccurrence_batch_size: int = 30
     # GitHub incremental sync
-    github_sync_interval_hours: float = 24.0
+    github_sync_interval_hours: float = 4.0  # 4h — catches active dev within a work session
+    github_sync_quality_gate: bool = True  # LLM-score commits before storing, skip noise
 
     # Monitoring & Alerts
     monitoring_enabled: bool = True
