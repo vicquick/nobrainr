@@ -445,6 +445,18 @@ BEGIN
          + (0.10 * recency_boost);
 END;
 $$ LANGUAGE plpgsql STABLE;
+
+-- Memory facts: atomic, searchable knowledge extracted from memories (Mem0-style)
+CREATE TABLE IF NOT EXISTS memory_facts (
+    id UUID PRIMARY KEY DEFAULT uuidv7(),
+    memory_id UUID NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    embedding vector({settings.embedding_dimensions}),
+    quality_score REAL,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_facts_memory ON memory_facts(memory_id);
+CREATE INDEX IF NOT EXISTS idx_facts_created ON memory_facts(created_at DESC);
 """
 
 
