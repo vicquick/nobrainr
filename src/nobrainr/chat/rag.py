@@ -106,13 +106,17 @@ async def stream_chat_response(
     try:
         from nobrainr.db import queries as _q
         _stats = await _q.get_stats()
+        cats = _stats.get("by_category") or []
+        tags = _stats.get("top_tags") or []
+        cat_str = ", ".join(f"{c['category']}({c['cnt']})" for c in cats[:5])
+        tag_str = ", ".join(f"{t['tag']}({t['cnt']})" for t in tags[:10])
         stats_summary = (
             f"\nKNOWLEDGE BASE STATS:\n"
             f"  Total memories: {_stats.get('total_memories', '?')}\n"
             f"  Total entities: {_stats.get('total_entities', '?')}\n"
             f"  Total relations: {_stats.get('total_relations', '?')}\n"
-            f"  Top categories: {', '.join(f'{c[\"category\"]}({c[\"cnt\"]})' for c in (_stats.get('by_category') or [])[:5])}\n"
-            f"  Top tags: {', '.join(f'{t[\"tag\"]}({t[\"cnt\"]})' for t in (_stats.get('top_tags') or [])[:10])}\n"
+            f"  Top categories: {cat_str}\n"
+            f"  Top tags: {tag_str}\n"
         )
     except Exception:
         stats_summary = ""
