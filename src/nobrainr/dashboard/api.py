@@ -37,8 +37,32 @@ def _valid_uuid(value: str) -> bool:
         return False
 
 
+_GRAPH_CACHE_PATH = "/tmp/nobrainr_graph_cache.json"
+
+
 async def api_graph(request: Request) -> JSONResponse:
-    """Full knowledge graph with server-computed layout (Louvain + spring)."""
+    """Full knowledge graph with server-computed layout (Louvain + spring).
+    Uses cached layout if available — cache rebuilt after community_detection runs."""
+    import os
+    import time as _time
+
+    # Serve from cache if available and not stale (max 24h)
+    force_refresh = request.query_params.get("refresh", "").lower() == "true"
+    if not force_refresh and os.path.exists(_GRAPH_CACHE_PATH):
+        cache_age = _time.time() - os.path.getmtime(_GRAPH_CACHE_PATH)
+        if cache_age < 86400:  # 24 hours max
+            try:
+                with open(_GRAPH_CACHE_PATH, "r") as f:
+                    import json
+                    cached = json.load(f)
+                log.info("Serving graph from cache (%.0fs old, %d nodes)", cache_age, len(cached.get("nodes", [])))
+                return JSONResponse(cached)
+            except Exception:
+                pass  # cache corrupt, fall through to recompute
+
+    log.info("Computing graph layout (no cache or refresh requested)...")
+    t0 = _time.monotonic()
+
     try:
         min_conn = max(0, int(request.query_params.get("min_connections", "1")))
     except ValueError:
@@ -89,6 +113,18 @@ async def api_graph(request: Request) -> JSONResponse:
             node["data"]["x"] = 0.0
             node["data"]["y"] = 0.0
             node["data"]["community"] = -1
+
+    elapsed = _time.monotonic() - t0
+    log.info("Graph layout computed in %.1fs (%d nodes, %d edges)", elapsed, len(data["nodes"]), len(data["edges"]))
+
+    # Save to cache for fast subsequent loads
+    try:
+        import json
+        with open(_GRAPH_CACHE_PATH, "w") as f:
+            json.dump(data, f)
+        log.info("Graph cache saved to %s", _GRAPH_CACHE_PATH)
+    except Exception:
+        log.warning("Failed to save graph cache", exc_info=True)
 
     return JSONResponse(data)
 
