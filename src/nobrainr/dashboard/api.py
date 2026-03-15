@@ -9,7 +9,7 @@ from uuid import UUID
 
 import httpx
 from starlette.requests import Request
-from starlette.responses import JSONResponse, StreamingResponse
+from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from nobrainr.config import settings
@@ -614,8 +614,52 @@ async def api_transcribe(request: Request) -> JSONResponse:
         await form.close()
 
 
+async def api_tts(request: Request) -> Response:
+    """POST /api/tts — proxy text-to-speech via Speaches (OpenAI-compatible)."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    text = body.get("text", "").strip()
+    if not text:
+        return JSONResponse({"error": "No text provided"}, status_code=400)
+    if len(text) > 5000:
+        text = text[:5000]
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{settings.speaches_url}/v1/audio/speech",
+                json={
+                    "model": settings.speaches_tts_model,
+                    "input": text,
+                    "voice": body.get("voice", settings.speaches_tts_voice),
+                    "response_format": "mp3",
+                },
+            )
+        if resp.status_code != 200:
+            log.warning("Speaches TTS failed: %s %s", resp.status_code, resp.text[:200])
+            return JSONResponse({"error": "TTS service error"}, status_code=502)
+
+        return Response(
+            content=resp.content,
+            media_type="audio/mpeg",
+            headers={"Content-Disposition": "inline"},
+        )
+    except httpx.TimeoutException:
+        return JSONResponse({"error": "TTS timed out"}, status_code=504)
+    except httpx.ConnectError:
+        log.error("Cannot connect to Speaches TTS at %s", settings.speaches_url)
+        return JSONResponse({"error": "TTS service unavailable"}, status_code=503)
+    except Exception:
+        log.exception("TTS proxy error")
+        return JSONResponse({"error": "TTS failed"}, status_code=500)
+
+
 api_routes = [
     Route("/api/transcribe", api_transcribe, methods=["POST"]),
+    Route("/api/tts", api_tts, methods=["POST"]),
     Route("/api/chat", api_chat, methods=["POST"]),
     Route("/api/graph", api_graph),
     Route("/api/memories", api_memories),
