@@ -11,7 +11,7 @@ export const useChatStore = defineStore('chat', () => {
   const isStreaming = ref(false)
   const isThinking = ref(false)
   const isSpeaking = ref(false)
-  const voiceMode = ref(false)
+  const voiceMode = ref(true)  // voice responses on by default
   const currentSources = ref<ChatSources | null>(null)
   const focusEntityId = ref<string | null>(null)
 
