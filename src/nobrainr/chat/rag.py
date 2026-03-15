@@ -199,13 +199,20 @@ async def _try_fast_answer(question: str) -> str | None:
 
     # ── TIER 3: GREETINGS — social/conversational, no LLM needed ──
     greetings = {"hi", "hello", "hey", "hola", "hallo", "yo", "sup", "greetings"}
-    thanks = {"thanks", "thank you", "thx", "cheers", "danke"}
-    if q.rstrip("!.? ") in greetings or (len(words) <= 3 and words[0] in greetings):
+    thanks = {"thanks", "thank you", "thx", "cheers", "danke", "merci"}
+    farewells = {"bye", "goodbye", "ciao", "tschüss", "see you", "good night", "gn"}
+    if q.rstrip("!.? ") in greetings or (len(words) <= 5 and words[0] in greetings):
         return "Hello! Ask me anything about your knowledge base. Try: \"what is my largest category?\" or \"find memories about Docker\"."
     if q.rstrip("!.? ") in thanks or any(w in thanks for w in words[:2]):
         return "You're welcome! Let me know if you need anything else."
-    if q in ("ok", "okay", "got it", "understood", "alright", "cool", "nice"):
+    if q.rstrip("!.? ") in farewells or any(fw in q for fw in farewells):
+        return "See you! The knowledge base keeps growing while you're away."
+    if q.rstrip("!.? ") in {"ok", "okay", "got it", "understood", "alright", "cool", "nice",
+                             "great", "perfect", "awesome", "sweet", "good", "yes", "no", "nah"}:
         return "Got it! What else would you like to know?"
+    # Very short messages (1-2 words) that aren't search terms — likely conversational
+    if len(words) <= 2 and len(q) < 15 and not any(c.isdigit() for c in q):
+        return "I'm here to help! Try asking about your knowledge base, like \"find memories about Python\" or \"top tags\"."
 
     # ── TIER 4: Falls through to full RAG+LLM pipeline ──
     return None
