@@ -102,7 +102,21 @@ async def stream_chat_response(
             entity_map[e["id"]] = e
 
     # 7. Build context (only top-N memories fed to LLM)
-    context = _build_context(context_memories, list(entity_map.values()))
+    # Inject knowledge base stats for meta-questions
+    try:
+        from nobrainr.db import queries as _q
+        _stats = await _q.get_stats()
+        stats_summary = (
+            f"\nKNOWLEDGE BASE STATS:\n"
+            f"  Total memories: {_stats.get('total_memories', '?')}\n"
+            f"  Total entities: {_stats.get('total_entities', '?')}\n"
+            f"  Total relations: {_stats.get('total_relations', '?')}\n"
+            f"  Top categories: {', '.join(f'{c[\"category\"]}({c[\"cnt\"]})' for c in (_stats.get('by_category') or [])[:5])}\n"
+            f"  Top tags: {', '.join(f'{t[\"tag\"]}({t[\"cnt\"]})' for t in (_stats.get('top_tags') or [])[:10])}\n"
+        )
+    except Exception:
+        stats_summary = ""
+    context = _build_context(context_memories, list(entity_map.values())) + stats_summary
     llm_messages = [
         {"role": "system", "content": SYSTEM_PROMPT.format(context=context)},
     ]
