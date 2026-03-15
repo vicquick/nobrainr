@@ -14,11 +14,32 @@ import asyncio
 import base64
 import json
 import logging
+import re
 from collections import defaultdict
 from datetime import datetime
 
 from nobrainr.db.pool import get_pool
 from nobrainr.services.memory import store_memory_with_extraction
+
+# Commit message patterns that indicate low-value noise
+_NOISE_COMMIT_RE = re.compile(
+    r"^(Merge (branch|pull request|remote)|"
+    r"Revert \"|"
+    r"Update \S+\.(md|txt|yml|yaml|json|lock)$|"
+    r"bump |"
+    r"wip$|wip:|WIP$|WIP:|"
+    r"\.+$|"  # just dots
+    r"initial commit$|"
+    r"auto-commit|"
+    r"Co-Authored-By:)",
+    re.IGNORECASE,
+)
+
+# Patterns indicating meaningful commits worth storing
+_VALUABLE_COMMIT_RE = re.compile(
+    r"^(feat|fix|perf|refactor|security|breaking)[\(:]",
+    re.IGNORECASE,
+)
 
 logger = logging.getLogger("nobrainr.import.github")
 
@@ -277,7 +298,12 @@ async def _import_commits(
 
     logger.info("  Found %d unique commits across %d branches for %s/%s", len(commits), len(branch_names), owner, repo)
 
-    # Store EACH commit as its own memory
+    # Quality gate: filter noise commits and detect follow-ups
+    from nobrainr.config import settings
+    quality_gate = settings.github_sync_quality_gate
+    skipped_noise = 0
+
+    # Store EACH commit as its own memory (with quality filtering)
     for c in commits:
         sha = c["sha"]
         sha_short = c["sha_short"]
@@ -293,6 +319,23 @@ async def _import_commits(
         msg_lines = message.split("\n")
         title = msg_lines[0][:300]
         body = "\n".join(msg_lines[1:]).strip()
+
+        # Quality gate: skip noise commits
+        if quality_gate:
+            if _NOISE_COMMIT_RE.match(title):
+                skipped_noise += 1
+                continue
+            # Skip very short messages with no conventional prefix (likely WIP)
+            if len(title) < 10 and not _VALUABLE_COMMIT_RE.match(title):
+                skipped_noise += 1
+                continue
+
+        # Assign confidence based on commit type
+        confidence = 0.75
+        if _VALUABLE_COMMIT_RE.match(title):
+            confidence = 0.9  # feat/fix/perf commits are high-value
+        elif title.startswith(("chore", "docs", "style", "test", "ci")):
+            confidence = 0.5  # maintenance commits are lower-value
 
         content = (
             f"## Commit: {owner}/{repo} `{sha_short}`\n\n"
@@ -318,13 +361,16 @@ async def _import_commits(
                     source_type="github",
                     source_machine=source_machine,
                     source_ref=f"github:{owner}/{repo}/commit/{sha_short}",
-                    confidence=0.75,
+                    confidence=confidence,
                 ):
                     stored += 1
                     if stored % 25 == 0:
                         logger.info("  ... stored %d commits so far for %s/%s", stored, owner, repo)
             except Exception:
                 logger.exception("Failed to store commit %s for %s/%s", sha_short, owner, repo)
+
+    if skipped_noise:
+        logger.info("  Skipped %d noise commits (merges, reverts, WIP) for %s/%s", skipped_noise, owner, repo)
 
     logger.info("  Stored %d individual commit memories for %s/%s", stored, owner, repo)
     return stored
