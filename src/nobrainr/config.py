@@ -69,43 +69,46 @@ class Settings(BaseSettings):
     # Machine identifier for scheduler-created memories (defaults to hostname)
     source_machine: str = ""
 
-    # LLM scheduler jobs — AGGRESSIVE MODE: maximize graph evolution
+    # LLM scheduler jobs — BALANCED MODE: fact extraction + graph evolution
     scheduler_llm_model: str = "gemma3:12b"
-    summarize_interval_hours: float = 0.5  # 30min (was 1h)
-    summarize_batch_size: int = 30  # (was 20)
-    consolidation_interval_hours: float = 1.0  # 1h (was 2h)
-    consolidation_batch_size: int = 15  # (was 10)
-    synthesis_interval_hours: float = 2.0  # 2h (was 4h)
-    synthesis_batch_size: int = 8  # (was 5)
-    entity_enrichment_interval_hours: float = 0.75  # 45min (was 2h)
-    entity_enrichment_batch_size: int = 30  # (was 20)
-    entity_merging_interval_hours: float = 1.0  # 1h (was 2h)
-    entity_merging_batch_size: int = 20  # (was 15)
-    insight_extraction_interval_hours: float = 0.5  # 30min (was 1h)
-    insight_extraction_batch_size: int = 40  # (was 30)
-    chatgpt_distill_interval_hours: float = 0.25  # 15min (was 30min)
-    chatgpt_distill_batch_size: int = 30  # multi-pass sliding window
-    chatgpt_distill_concurrency: int = 1  # serialized — single GPU
+    summarize_interval_hours: float = 1.0
+    summarize_batch_size: int = 20
+    consolidation_interval_hours: float = 2.0
+    consolidation_batch_size: int = 10
+    synthesis_interval_hours: float = 3.0
+    synthesis_batch_size: int = 5
+    entity_enrichment_interval_hours: float = 2.0
+    entity_enrichment_batch_size: int = 20
+    entity_merging_interval_hours: float = 2.0
+    entity_merging_batch_size: int = 15
+    insight_extraction_interval_hours: float = 1.0
+    insight_extraction_batch_size: int = 30
+    chatgpt_distill_interval_hours: float = 0.5  # 30min
+    chatgpt_distill_batch_size: int = 30
+    chatgpt_distill_concurrency: int = 1
     chatgpt_distill_model: str = "gemma3:12b"
+    # Fact extraction (NEW — Mem0-style atomic facts)
+    fact_extraction_interval_hours: float = 0.5  # 30min — high priority during initial backfill
+    fact_extraction_batch_size: int = 20
     # Memory decay
-    decay_interval_hours: float = 12.0  # 12h (was 24h)
-    decay_batch_size: int = 100  # (was 50)
+    decay_interval_hours: float = 24.0
+    decay_batch_size: int = 50
     # Contradiction detection
-    contradiction_interval_hours: float = 2.0  # 2h (was 4h)
-    contradiction_batch_size: int = 15  # (was 10)
+    contradiction_interval_hours: float = 4.0
+    contradiction_batch_size: int = 10
     # Cross-machine insights
-    cross_machine_interval_hours: float = 3.0  # 3h (was 6h)
-    cross_machine_batch_size: int = 8  # (was 5)
+    cross_machine_interval_hours: float = 6.0
+    cross_machine_batch_size: int = 5
     # Extraction quality
-    quality_interval_hours: float = 2.0  # 2h (was 4h)
-    quality_batch_size: int = 30  # (was 20)
+    quality_interval_hours: float = 4.0
+    quality_batch_size: int = 20
     # Memory quality scoring (LLM-assessed)
-    quality_scoring_interval_hours: float = 0.25  # 15min (was 30min)
-    quality_scoring_batch_size: int = 40  # (was 30)
+    quality_scoring_interval_hours: float = 0.5
+    quality_scoring_batch_size: int = 30
     # Knowledge crawl
     knowledge_crawl_enabled: bool = True
-    knowledge_crawl_interval_hours: float = 2.0  # 2h (was 6h)
-    knowledge_crawl_batch_size: int = 5  # (was 3)
+    knowledge_crawl_interval_hours: float = 3.0
+    knowledge_crawl_batch_size: int = 5
     knowledge_crawl_delay: float = 10.0  # seconds between requests (be polite)
 
     # Link discovery (Phase 2) — queue interesting links found during crawling
@@ -135,12 +138,12 @@ class Settings(BaseSettings):
     # System pulse (autonomous health transmissions)
     system_pulse_interval_hours: float = 24.0
     # Community detection (GraphRAP)
-    community_detection_interval_hours: float = 4.0  # 4h (was 12h)
+    community_detection_interval_hours: float = 6.0  # balanced
     # Auto-optimize (search quality self-improvement)
-    auto_optimize_interval_hours: float = 6.0  # 6h (was 12h)
+    auto_optimize_interval_hours: float = 12.0
     # Co-occurrence relationship inference
-    cooccurrence_interval_hours: float = 1.0  # 1h (was 4h) — THIS IS THE KEY ONE
-    cooccurrence_batch_size: int = 50  # (was 30)
+    cooccurrence_interval_hours: float = 2.0  # 2h — still aggressive but leaves room for facts
+    cooccurrence_batch_size: int = 40
     # GitHub incremental sync
     github_sync_interval_hours: float = 4.0  # 4h — catches active dev within a work session
     github_sync_quality_gate: bool = True  # LLM-score commits before storing, skip noise
