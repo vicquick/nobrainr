@@ -56,7 +56,7 @@
         </div>
       </div>
       <div v-if="panelOpen" class="entity-panel">
-        <GraphSidePanel :node="selectedNode" @close="handleClosePanel" />
+        <GraphSidePanel :node="selectedNode" @close="handleClosePanel" @navigate="handleNavigateEntity" />
       </div>
     </div>
 
@@ -64,7 +64,7 @@
     <v-bottom-sheet v-if="mobile" v-model="showMobilePanel" :scrim="false">
       <v-card color="#12121a" class="mobile-entity-sheet" rounded="t-xl">
         <div class="sheet-handle" />
-        <GraphSidePanel :node="selectedNode" @close="handleClosePanel" />
+        <GraphSidePanel :node="selectedNode" @close="handleClosePanel" @navigate="handleNavigateEntity" />
       </v-card>
     </v-bottom-sheet>
   </v-container>
@@ -504,6 +504,15 @@ watch(searchQuery, (q) => {
     renderer?.refresh()
   }, 200)
 })
+
+// Navigate to a connected entity from side panel — focus + load details
+async function handleNavigateEntity(entityId: string) {
+  if (!entityId || !graph) return
+  if (graph.hasNode(entityId)) {
+    focusNode(entityId)
+  }
+  await fetchNodeDetail(entityId)
+}
 
 // Watch single entity focus from chat — click-focus on graph + open side panel
 watch(() => chatStore.focusEntityId, async (entityId) => {
