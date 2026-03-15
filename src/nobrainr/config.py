@@ -53,8 +53,8 @@ class Settings(BaseSettings):
 
     # Chat (RAG)
     chat_model: str = ""  # defaults to extraction_model
-    chat_max_context_memories: int = 10  # reduced from 15 for faster chat response (~20s→~13s)
-    chat_max_source_memories: int = 50
+    chat_max_context_memories: int = 5  # reduced from 15→10→5 for fast chat (~10s prefill)
+    chat_max_source_memories: int = 15  # reduced from 50 — less entity noise in UI
     chat_max_message_length: int = 2000
     chat_max_history_length: int = 20
     chat_enabled: bool = True

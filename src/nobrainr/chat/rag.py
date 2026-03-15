@@ -47,6 +47,54 @@ def _build_context(memories: list[dict], entities: list[dict]) -> str:
     return "\n".join(parts) if parts else "(No relevant context found.)"
 
 
+async def _try_fast_answer(question: str) -> str | None:
+    """Answer simple meta-questions directly from DB, bypassing LLM entirely.
+    Returns None if the question doesn't match a fast path."""
+    q = question.lower().strip()
+
+    try:
+        from nobrainr.db import queries
+        pool = await queries.get_pool()
+
+        # "most recent memory" / "latest memory" / "newest memory"
+        if any(kw in q for kw in ["most recent", "latest memory", "newest memory", "last memory"]):
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT summary, content, category, source_type, created_at "
+                    "FROM memories ORDER BY created_at DESC LIMIT 1"
+                )
+            if row:
+                summary = row["summary"] or row["content"][:200]
+                return f"The most recent memory ({row['category']}, {row['source_type']}) from {str(row['created_at'])[:16]}:\n\n{summary}"
+
+        # "how many memories" / "total memories"
+        if any(kw in q for kw in ["how many memories", "total memories", "memory count"]):
+            async with pool.acquire() as conn:
+                count = await conn.fetchval("SELECT COUNT(*) FROM memories")
+            return f"You have {count:,} memories in the knowledge base."
+
+        # "largest category" / "biggest category" / "top category"
+        if any(kw in q for kw in ["largest category", "biggest category", "top category", "most memories"]):
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT category, COUNT(*) as cnt FROM memories "
+                    "GROUP BY category ORDER BY cnt DESC LIMIT 5"
+                )
+            if rows:
+                lines = [f"{r['category']}: {r['cnt']:,}" for r in rows]
+                return f"Top categories:\n" + "\n".join(f"  {i+1}. {l}" for i, l in enumerate(lines))
+
+        # "how many entities" / "total entities"
+        if any(kw in q for kw in ["how many entities", "total entities", "entity count"]):
+            async with pool.acquire() as conn:
+                count = await conn.fetchval("SELECT COUNT(*) FROM entities")
+            return f"The knowledge graph has {count:,} entities."
+
+    except Exception:
+        pass
+    return None
+
+
 async def stream_chat_response(
     message: str,
     history: list[dict],
@@ -66,7 +114,15 @@ async def stream_chat_response(
         yield _sse("done", {})
         return
 
-    # 3. Emit "thinking" immediately so client sees activity
+    # 3. Fast path — answer simple meta-questions directly without LLM
+    fast_answer = await _try_fast_answer(clean)
+    if fast_answer:
+        yield _sse("token", {"content": fast_answer})
+        yield _sse("sources", {"memories": [], "entities": []})
+        yield _sse("done", {})
+        return
+
+    # 4. Emit "thinking" immediately so client sees activity
     yield _sse("thinking", {"status": "searching"})
 
     import time as _time
