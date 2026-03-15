@@ -1478,6 +1478,14 @@ async def community_detection() -> dict:
     if result["communities"] > 0:
         summary_result = await generate_community_summaries(max_communities=50)
         result["summaries"] = summary_result
+
+    # Invalidate graph layout cache — communities changed, layout needs recomputation
+    import os
+    _cache = "/tmp/nobrainr_graph_cache.json"
+    if os.path.exists(_cache):
+        os.remove(_cache)
+        logger.info("Graph cache invalidated after community detection")
+
     result["ran_at"] = datetime.now().isoformat()
     return result
 
