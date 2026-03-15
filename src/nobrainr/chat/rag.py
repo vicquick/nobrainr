@@ -69,6 +69,9 @@ async def stream_chat_response(
     # 3. Emit "thinking" immediately so client sees activity
     yield _sse("thinking", {"status": "searching"})
 
+    import time as _time
+    _t0 = _time.monotonic()
+
     # 4. Embed query
     try:
         embedding = await embed_text(clean)
@@ -102,24 +105,28 @@ async def stream_chat_response(
             entity_map[e["id"]] = e
 
     # 7. Build context (only top-N memories fed to LLM)
-    # Inject knowledge base stats for meta-questions
-    try:
-        from nobrainr.db import queries as _q
-        _stats = await _q.get_stats()
-        cats = _stats.get("by_category") or []
-        tags = _stats.get("top_tags") or []
-        cat_str = ", ".join(f"{c['category']}({c['cnt']})" for c in cats[:5])
-        tag_str = ", ".join(f"{t['tag']}({t['cnt']})" for t in tags[:10])
-        stats_summary = (
-            f"\nKNOWLEDGE BASE STATS:\n"
-            f"  Total memories: {_stats.get('total_memories', '?')}\n"
-            f"  Total entities: {_stats.get('total_entities', '?')}\n"
-            f"  Total relations: {_stats.get('total_relations', '?')}\n"
-            f"  Top categories: {cat_str}\n"
-            f"  Top tags: {tag_str}\n"
-        )
-    except Exception:
-        stats_summary = ""
+    # Inject knowledge base stats only for meta-questions (saves ~2s context processing)
+    _meta_keywords = {"category", "categories", "how many", "total", "largest", "smallest", "stats", "count", "tag", "tags", "memories", "entities", "relations"}
+    _is_meta = any(kw in clean.lower() for kw in _meta_keywords)
+    stats_summary = ""
+    if _is_meta:
+        try:
+            from nobrainr.db import queries as _q
+            _stats = await _q.get_stats()
+            cats = _stats.get("by_category") or []
+            tags = _stats.get("top_tags") or []
+            cat_str = ", ".join(f"{c['category']}({c['cnt']})" for c in cats[:5])
+            tag_str = ", ".join(f"{t['tag']}({t['cnt']})" for t in tags[:10])
+            stats_summary = (
+                f"\nKNOWLEDGE BASE STATS:\n"
+                f"  Total memories: {_stats.get('total_memories', '?')}\n"
+                f"  Total entities: {_stats.get('total_entities', '?')}\n"
+                f"  Total relations: {_stats.get('total_relations', '?')}\n"
+                f"  Top categories: {cat_str}\n"
+                f"  Top tags: {tag_str}\n"
+            )
+        except Exception:
+            pass
     context = _build_context(context_memories, list(entity_map.values())) + stats_summary
     llm_messages = [
         {"role": "system", "content": SYSTEM_PROMPT.format(context=context)},
@@ -141,6 +148,8 @@ async def stream_chat_response(
     llm_messages.append(user_msg)
 
     # 8. Stream from Ollama
+    _t_pre_llm = _time.monotonic()
+    logger.info("Chat RAG pipeline: embed+search+context took %.1fs", _t_pre_llm - _t0)
     model = settings.chat_model or settings.extraction_model
     client = _get_client()
     payload = {
