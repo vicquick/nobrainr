@@ -48,50 +48,166 @@ def _build_context(memories: list[dict], entities: list[dict]) -> str:
 
 
 async def _try_fast_answer(question: str) -> str | None:
-    """Answer simple meta-questions directly from DB, bypassing LLM entirely.
-    Returns None if the question doesn't match a fast path."""
+    """Smart router: answer questions via the fastest possible path.
+
+    4 tiers (checked in order):
+      1. FAST_SQL  — meta-questions answered by direct SQL (<1s)
+      2. SEARCH    — topic lookups answered by embedding search, no LLM (~2s)
+      3. GREETING  — social/conversational, canned response (<0.1s)
+      4. None      — falls through to full RAG+LLM pipeline (~15-20s)
+    """
     q = question.lower().strip()
+    words = q.split()
 
+    # ── TIER 1: FAST SQL — meta-questions about the KB itself ──
     try:
-        from nobrainr.db import queries
-        pool = await queries.get_pool()
+        from nobrainr.db.pool import get_pool
+        pool = await get_pool()
 
-        # "most recent memory" / "latest memory" / "newest memory"
-        if any(kw in q for kw in ["most recent", "latest memory", "newest memory", "last memory"]):
+        # Recent/latest/newest memory
+        if any(kw in q for kw in ["most recent", "latest memory", "newest memory", "last memory",
+                                   "latest entry", "last entry", "newest entry"]):
             async with pool.acquire() as conn:
                 row = await conn.fetchrow(
                     "SELECT summary, content, category, source_type, created_at "
-                    "FROM memories ORDER BY created_at DESC LIMIT 1"
+                    "FROM memories WHERE tier < 3 ORDER BY created_at DESC LIMIT 1"
                 )
             if row:
                 summary = row["summary"] or row["content"][:200]
-                return f"The most recent memory ({row['category']}, {row['source_type']}) from {str(row['created_at'])[:16]}:\n\n{summary}"
+                return (f"Most recent memory ({row['category']}, {row['source_type']}) "
+                        f"from {str(row['created_at'])[:16]}:\n\n{summary}")
 
-        # "how many memories" / "total memories"
-        if any(kw in q for kw in ["how many memories", "total memories", "memory count"]):
+        # Oldest memory
+        if any(kw in q for kw in ["oldest memory", "first memory", "earliest memory"]):
             async with pool.acquire() as conn:
-                count = await conn.fetchval("SELECT COUNT(*) FROM memories")
-            return f"You have {count:,} memories in the knowledge base."
+                row = await conn.fetchrow(
+                    "SELECT summary, content, category, source_type, created_at "
+                    "FROM memories ORDER BY created_at ASC LIMIT 1"
+                )
+            if row:
+                summary = row["summary"] or row["content"][:200]
+                return (f"Oldest memory ({row['category']}, {row['source_type']}) "
+                        f"from {str(row['created_at'])[:16]}:\n\n{summary}")
 
-        # "largest category" / "biggest category" / "top category"
-        if any(kw in q for kw in ["largest category", "biggest category", "top category", "most memories"]):
+        # Count memories
+        if any(kw in q for kw in ["how many memories", "total memories", "memory count",
+                                   "number of memories"]):
+            async with pool.acquire() as conn:
+                count = await conn.fetchval("SELECT COUNT(*) FROM memories WHERE tier < 3")
+                total = await conn.fetchval("SELECT COUNT(*) FROM memories")
+            return f"You have {total:,} memories ({count:,} searchable, {total - count:,} archived)."
+
+        # Categories
+        if any(kw in q for kw in ["largest category", "biggest category", "top category",
+                                   "category breakdown", "what categories", "list categories",
+                                   "all categories"]):
             async with pool.acquire() as conn:
                 rows = await conn.fetch(
                     "SELECT category, COUNT(*) as cnt FROM memories "
-                    "GROUP BY category ORDER BY cnt DESC LIMIT 5"
+                    "GROUP BY category ORDER BY cnt DESC LIMIT 10"
                 )
             if rows:
                 lines = [f"{r['category']}: {r['cnt']:,}" for r in rows]
-                return f"Top categories:\n" + "\n".join(f"  {i+1}. {l}" for i, l in enumerate(lines))
+                return "Categories:\n" + "\n".join(f"  {i+1}. {l}" for i, l in enumerate(lines))
 
-        # "how many entities" / "total entities"
+        # Entity count
         if any(kw in q for kw in ["how many entities", "total entities", "entity count"]):
             async with pool.acquire() as conn:
                 count = await conn.fetchval("SELECT COUNT(*) FROM entities")
-            return f"The knowledge graph has {count:,} entities."
+                rels = await conn.fetchval("SELECT COUNT(*) FROM entity_relations")
+            return f"Knowledge graph: {count:,} entities connected by {rels:,} relations."
+
+        # Tags
+        if any(kw in q for kw in ["top tags", "what tags", "list tags", "popular tags"]):
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT unnest(tags) as tag, COUNT(*) as cnt FROM memories "
+                    "GROUP BY tag ORDER BY cnt DESC LIMIT 15"
+                )
+            if rows:
+                lines = [f"{r['tag']}: {r['cnt']:,}" for r in rows]
+                return "Top tags:\n" + "\n".join(f"  {l}" for l in lines)
+
+        # Sources
+        if any(kw in q for kw in ["what sources", "data sources", "where does", "source breakdown"]):
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT source_type, COUNT(*) as cnt FROM memories "
+                    "GROUP BY source_type ORDER BY cnt DESC"
+                )
+            if rows:
+                lines = [f"{r['source_type']}: {r['cnt']:,}" for r in rows]
+                return "Data sources:\n" + "\n".join(f"  {l}" for l in lines)
+
+        # Machines
+        if any(kw in q for kw in ["what machines", "which machines", "connected machines",
+                                   "source machines"]):
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT source_machine, COUNT(*) as cnt FROM memories "
+                    "WHERE source_machine IS NOT NULL "
+                    "GROUP BY source_machine ORDER BY cnt DESC"
+                )
+            if rows:
+                lines = [f"{r['source_machine']}: {r['cnt']:,}" for r in rows]
+                return "Machines:\n" + "\n".join(f"  {l}" for l in lines)
+
+        # Full stats summary
+        if any(kw in q for kw in ["full stats", "knowledge base stats", "kb stats", "overview",
+                                   "system stats", "dashboard"]):
+            stats = await queries.get_stats()
+            cats = stats.get("by_category", [])[:5]
+            return (
+                f"Knowledge Base Overview:\n"
+                f"  Memories: {stats.get('total_memories', '?'):,}\n"
+                f"  Entities: {stats.get('total_entities', '?'):,}\n"
+                f"  Relations: {stats.get('total_relations', '?'):,}\n"
+                f"  Top categories: {', '.join(str(c['category']) + '(' + str(c['cnt']) + ')' for c in cats)}\n"
+                f"  Extraction: {stats.get('extraction_done', '?'):,} done, "
+                f"{stats.get('extraction_pending', '?')} pending"
+            )
 
     except Exception:
-        pass
+        logger.debug("Fast SQL path failed, falling through to RAG", exc_info=True)
+
+    # ── TIER 2: SEARCH — topic lookups, return formatted results directly ──
+    # Detect "find/show/search/what do I know about X" patterns
+    search_prefixes = ["find ", "search ", "show me ", "list ", "what do i know about ",
+                       "what do you know about ", "tell me about ", "memories about ",
+                       "anything about ", "look up "]
+    for prefix in search_prefixes:
+        if q.startswith(prefix):
+            topic = question[len(prefix):].strip().rstrip("?.")
+            if topic and len(topic) > 2:
+                try:
+                    embedding = await embed_text(topic)
+                    results = await queries.search_memories(
+                        embedding=embedding, limit=5, threshold=0.3, text_query=topic,
+                    )
+                    if results:
+                        parts = [f"Found {len(results)} memories about \"{topic}\":\n"]
+                        for i, m in enumerate(results, 1):
+                            summary = m.get("summary") or m.get("content", "")[:200]
+                            cat = m.get("category", "")
+                            parts.append(f"  {i}. [{cat}] {summary}")
+                        return "\n".join(parts)
+                    else:
+                        return f"No memories found about \"{topic}\"."
+                except Exception:
+                    pass
+            break  # matched prefix but topic too short, fall through
+
+    # ── TIER 3: GREETINGS — social/conversational, no LLM needed ──
+    greetings = {"hi", "hello", "hey", "hola", "hallo", "yo", "sup", "greetings"}
+    thanks = {"thanks", "thank you", "thx", "cheers", "danke"}
+    if q.rstrip("!.? ") in greetings or (len(words) <= 3 and words[0] in greetings):
+        return "Hello! Ask me anything about your knowledge base. Try: \"what is my largest category?\" or \"find memories about Docker\"."
+    if q.rstrip("!.? ") in thanks or any(w in thanks for w in words[:2]):
+        return "You're welcome! Let me know if you need anything else."
+    if q in ("ok", "okay", "got it", "understood", "alright", "cool", "nice"):
+        return "Got it! What else would you like to know?"
+
+    # ── TIER 4: Falls through to full RAG+LLM pipeline ──
     return None
 
 
