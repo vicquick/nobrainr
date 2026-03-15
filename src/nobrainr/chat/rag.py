@@ -308,8 +308,8 @@ async def stream_chat_response(
         yield _sse("done", {})
         return
 
-    # 4. Emit "thinking" immediately so client sees activity
-    yield _sse("thinking", {"status": "searching"})
+    # 4. Stream progress — show each pipeline step so user sees what's happening
+    yield _sse("thinking", {"status": "Embedding query..."})
 
     import time as _time
     _t0 = _time.monotonic()
@@ -322,6 +322,8 @@ async def stream_chat_response(
         yield _sse("error", {"message": "Search temporarily unavailable. Please try again."})
         return
 
+    yield _sse("thinking", {"status": "Searching knowledge base..."})
+
     # 5. Hybrid memory search — fetch more for sources, top-N for LLM context
     all_memories = await queries.search_memories(
         embedding=embedding,
@@ -330,6 +332,8 @@ async def stream_chat_response(
         text_query=clean,
     )
     context_memories = all_memories[: settings.chat_max_context_memories]
+
+    yield _sse("thinking", {"status": f"Found {len(all_memories)} memories, building context..."})
 
     # 6. Collect linked entities from context memories (parallel, not serial)
     async def _fetch_entities(mem_id: str) -> list[dict]:
@@ -392,6 +396,7 @@ async def stream_chat_response(
     # 8. Stream from Ollama
     _t_pre_llm = _time.monotonic()
     logger.info("Chat RAG pipeline: embed+search+context took %.1fs", _t_pre_llm - _t0)
+    yield _sse("thinking", {"status": f"Thinking... ({len(context_memories)} memories in context)"})
     model = settings.chat_model or settings.extraction_model
     client = _get_client()
     payload = {

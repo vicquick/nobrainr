@@ -72,7 +72,7 @@
 
           <div v-if="chatStore.isThinking && msg === lastAssistantMsg && !msg.content" class="thinking-state">
             <v-progress-circular indeterminate size="14" width="1.5" color="primary" class="mr-2" />
-            <span class="text-caption text-medium-emphasis">Searching knowledge base...</span>
+            <span class="text-caption text-medium-emphasis">{{ chatStore.thinkingStatus || 'Thinking...' }}</span>
           </div>
           <div v-else class="message-content">
             {{ msg.content }}<span v-if="chatStore.isStreaming && msg === lastAssistantMsg && !msg.content" class="typing-dot" />
