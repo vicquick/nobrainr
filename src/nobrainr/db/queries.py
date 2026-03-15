@@ -1642,6 +1642,23 @@ async def prune_noise_entities(*, min_age_hours: int = 24) -> dict:
     """
     pool = await get_pool()
     async with pool.acquire() as conn:
+        # Log what will be pruned BEFORE deleting (lightweight — just names)
+        pruned_names = await conn.fetch(
+            """
+            SELECT e.name, e.entity_type
+            FROM entities e
+            WHERE e.created_at < NOW() - make_interval(hours => $1)
+              AND (SELECT COUNT(*) FROM entity_memories em WHERE em.entity_id = e.id) <= 1
+            LIMIT 500
+            """,
+            min_age_hours,
+        )
+        if pruned_names:
+            import logging
+            _log = logging.getLogger("nobrainr")
+            names = [f"{r['name']}({r['entity_type']})" for r in pruned_names[:20]]
+            _log.info("Entity pruning: deleting %d entities (sample: %s)", len(pruned_names), ", ".join(names))
+
         # Delete entities linked to <=1 memory and older than threshold.
         # CASCADE on entity_relations will clean up associated relations.
         result = await conn.execute(
