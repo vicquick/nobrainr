@@ -348,7 +348,8 @@ function initSigma() {
         } else if (focusedNeighbors.has(node)) {
           res.zIndex = 1
           res.forceLabel = true
-          res.labelColor = 'rgba(255, 255, 255, 0.85)'
+          res.labelColor = '#000000'
+          res.labelBgColor = 'rgba(255, 255, 255, 0.85)'
         } else {
           res.color = 'rgba(60, 60, 70, 0.15)'
           res.size = 1.5
@@ -368,7 +369,8 @@ function initSigma() {
         } else if (chatFocusedNeighbors.has(node)) {
           res.zIndex = 1
           res.forceLabel = true
-          res.labelColor = 'rgba(255, 255, 255, 0.85)'
+          res.labelColor = '#000000'
+          res.labelBgColor = 'rgba(255, 255, 255, 0.85)'
         } else {
           res.color = 'rgba(60, 60, 70, 0.15)'
           res.size = 1.5
