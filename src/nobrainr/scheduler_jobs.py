@@ -755,6 +755,126 @@ async def extraction_quality() -> dict:
     return {"validated": validated, "invalid": invalid, "ran_at": datetime.now().isoformat()}
 
 
+FACT_EXTRACTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "facts": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "3-5 atomic, self-contained facts extracted from the text",
+        },
+    },
+    "required": ["facts"],
+}
+
+FACT_SYSTEM_PROMPT = """\
+You are a precise fact extractor. Given a text, extract 3-5 atomic facts.
+
+Each fact MUST be:
+- Self-contained (understandable without the original text)
+- Specific (include names, versions, exact details)
+- Actionable (useful for someone looking up this information)
+
+Do NOT extract:
+- Vague statements ("things went well", "it was discussed")
+- Opinions or subjective assessments
+- Facts that require the original context to understand
+- Duplicate facts with slight rewording
+
+If the text is too short or trivial for meaningful facts, return an empty array.
+"""
+
+
+async def fact_extraction() -> dict:
+    """Extract atomic facts from memories that don't have facts yet (Mem0-style)."""
+    from nobrainr.db.pool import get_pool
+    from nobrainr.extraction.llm import ollama_chat
+    from nobrainr.embeddings.ollama import embed_text
+
+    pool = await get_pool()
+    batch_size = settings.fact_extraction_batch_size
+
+    # Find memories without facts
+    async with pool.acquire() as conn:
+        # Auto-create table if not exists
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS memory_facts (
+                id UUID PRIMARY KEY DEFAULT uuidv7(),
+                memory_id UUID NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                content TEXT NOT NULL,
+                embedding vector(1024),
+                quality_score REAL,
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_facts_memory ON memory_facts(memory_id)")
+
+        rows = await conn.fetch("""
+            SELECT m.id, m.content, m.summary
+            FROM memories m
+            WHERE m.tier < 3
+              AND NOT EXISTS (SELECT 1 FROM memory_facts f WHERE f.memory_id = m.id)
+            ORDER BY m.importance DESC NULLS LAST, m.created_at DESC
+            LIMIT $1
+        """, batch_size)
+
+    if not rows:
+        return {"extracted": 0, "facts_created": 0, "ran_at": datetime.now().isoformat()}
+
+    extracted = 0
+    facts_created = 0
+
+    for row in rows:
+        content = row["content"]
+        if len(content) < 50:  # too short for meaningful facts
+            continue
+
+        try:
+            result = await ollama_chat(
+                system=FACT_SYSTEM_PROMPT,
+                user=content[:4000],
+                schema=FACT_EXTRACTION_SCHEMA,
+                temperature=0.1,
+                num_ctx=8192,
+                timeout=60.0,
+                think=False,
+            )
+            facts = result.get("facts", [])
+            if not facts:
+                # Store empty marker so we don't re-process
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        "INSERT INTO memory_facts (memory_id, content) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                        row["id"], "(no facts extracted)",
+                    )
+                extracted += 1
+                continue
+
+            async with pool.acquire() as conn:
+                for fact_text in facts[:7]:  # max 7 facts per memory
+                    if len(fact_text) < 10:
+                        continue
+                    try:
+                        embedding = await embed_text(fact_text)
+                        await conn.execute(
+                            """INSERT INTO memory_facts (memory_id, content, embedding)
+                               VALUES ($1, $2, $3) ON CONFLICT DO NOTHING""",
+                            row["id"], fact_text, embedding,
+                        )
+                        facts_created += 1
+                    except Exception:
+                        logger.debug("Failed to store fact for memory %s", row["id"])
+
+            extracted += 1
+            await _yield_to_live_requests()
+
+        except Exception:
+            logger.debug("Fact extraction failed for memory %s", row["id"], exc_info=True)
+
+    logger.info("Fact extraction: %d memories processed, %d facts created", extracted, facts_created)
+    return {"extracted": extracted, "facts_created": facts_created, "ran_at": datetime.now().isoformat()}
+
+
 async def entity_pruning() -> dict:
     """Prune low-value noise entities (<=1 memory link, older than 72h)."""
     result = await queries.prune_noise_entities(min_age_hours=72)  # 3 days for cross-session knowledge

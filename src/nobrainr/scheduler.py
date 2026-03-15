@@ -14,6 +14,7 @@ INITIAL_DELAY_SECONDS = 60
 # Staggered initial delays for LLM jobs (seconds)
 LLM_JOB_DELAYS = {
     "chatgpt_distill": 30,         # highest priority — clear backlog first
+    "fact_extraction": 1 * 60,     # high priority — build fact layer
     "auto_summarize": 2 * 60,
     "insight_extraction": 4 * 60,
     "entity_enrichment": 6 * 60,
@@ -68,6 +69,7 @@ class Scheduler:
         ]
         llm_jobs = [
             {"name": "chatgpt_distill", "interval_hours": settings.chatgpt_distill_interval_hours, "type": "llm"},
+            {"name": "fact_extraction", "interval_hours": settings.fact_extraction_interval_hours, "type": "llm"},
             {"name": "auto_summarize", "interval_hours": settings.summarize_interval_hours, "type": "llm"},
             {"name": "insight_extraction", "interval_hours": settings.insight_extraction_interval_hours, "type": "llm"},
             {"name": "entity_enrichment", "interval_hours": settings.entity_enrichment_interval_hours, "type": "llm"},
@@ -175,6 +177,8 @@ class Scheduler:
              settings.synthesis_interval_hours * 3600),
             ("chatgpt_distill", scheduler_jobs.chatgpt_distill,
              settings.chatgpt_distill_interval_hours * 3600),
+            ("fact_extraction", scheduler_jobs.fact_extraction,
+             settings.fact_extraction_interval_hours * 3600),
             ("contradiction_detection", scheduler_jobs.contradiction_detection,
              settings.contradiction_interval_hours * 3600),
             ("cross_machine_insights", scheduler_jobs.cross_machine_insights,
