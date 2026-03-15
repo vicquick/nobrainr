@@ -750,13 +750,21 @@ async def normalize_categories(category_map: dict[str, str]) -> int:
 
 
 async def analyze_tables() -> None:
-    """Run ANALYZE on core tables to refresh planner statistics."""
+    """Run ANALYZE on core tables + audit log retention (90 days)."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("ANALYZE memories")
         await conn.execute("ANALYZE entities")
         await conn.execute("ANALYZE entity_memories")
         await conn.execute("ANALYZE entity_relations")
+        # Audit log retention — keep 90 days, delete older
+        result = await conn.execute(
+            "DELETE FROM audit_log WHERE created_at < NOW() - INTERVAL '90 days'"
+        )
+        cleaned = int(result.split()[-1]) if result else 0
+        if cleaned > 0:
+            import logging
+            logging.getLogger("nobrainr").info("Audit log retention: deleted %d entries older than 90 days", cleaned)
 
 
 async def store_memory_outcome(
@@ -1659,8 +1667,10 @@ async def prune_noise_entities(*, min_age_hours: int = 24) -> dict:
             names = [f"{r['name']}({r['entity_type']})" for r in pruned_names[:20]]
             _log.info("Entity pruning: deleting %d entities (sample: %s)", len(pruned_names), ", ".join(names))
 
-        # Delete entities linked to <=1 memory and older than threshold.
-        # CASCADE on entity_relations will clean up associated relations.
+        # Smart prune: delete entities linked to <=1 memory, older than threshold,
+        # AND whose name doesn't appear in any unextracted memory content.
+        # This prevents pruning entities that will be re-discovered when
+        # pending memories are processed.
         result = await conn.execute(
             """
             DELETE FROM entities
@@ -1669,6 +1679,12 @@ async def prune_noise_entities(*, min_age_hours: int = 24) -> dict:
                 FROM entities e
                 WHERE e.created_at < NOW() - make_interval(hours => $1)
                   AND (SELECT COUNT(*) FROM entity_memories em WHERE em.entity_id = e.id) <= 1
+                  AND NOT EXISTS (
+                      SELECT 1 FROM memories m
+                      WHERE (m.extraction_status IS NULL OR m.extraction_status = 'pending')
+                        AND m.content ILIKE '%' || e.name || '%'
+                      LIMIT 1
+                  )
             )
             """,
             min_age_hours,
