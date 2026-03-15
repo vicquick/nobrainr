@@ -7,8 +7,11 @@ export const useChatStore = defineStore('chat', () => {
   const messages = ref<ChatMessage[]>([])
   const isStreaming = ref(false)
   const isThinking = ref(false)
+  const isSpeaking = ref(false)
+  const voiceMode = ref(false)
   const currentSources = ref<ChatSources | null>(null)
   const focusEntityId = ref<string | null>(null)
+  let currentAudio: HTMLAudioElement | null = null
 
   function toggle() { isOpen.value = !isOpen.value }
   function open() { isOpen.value = true }
@@ -17,6 +20,37 @@ export const useChatStore = defineStore('chat', () => {
   function clearSources() { currentSources.value = null }
   function focusEntity(id: string) { focusEntityId.value = id }
   function clearFocus() { focusEntityId.value = null }
+  function toggleVoiceMode() { voiceMode.value = !voiceMode.value }
+  function stopSpeaking() {
+    if (currentAudio) {
+      currentAudio.pause()
+      currentAudio = null
+    }
+    isSpeaking.value = false
+  }
+
+  async function speakText(text: string) {
+    if (!text.trim()) return
+    stopSpeaking()
+    isSpeaking.value = true
+    try {
+      const baseUrl = import.meta.env.VITE_API_BASE || ''
+      const res = await fetch(`${baseUrl}/api/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: text.slice(0, 2000) }),
+      })
+      if (!res.ok) { isSpeaking.value = false; return }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      currentAudio = new Audio(url)
+      currentAudio.onended = () => { isSpeaking.value = false; URL.revokeObjectURL(url) }
+      currentAudio.onerror = () => { isSpeaking.value = false; URL.revokeObjectURL(url) }
+      await currentAudio.play()
+    } catch {
+      isSpeaking.value = false
+    }
+  }
 
   async function sendMessage(text: string, images?: string[], displayImages?: string[]) {
     if (!text.trim() || isStreaming.value) return
@@ -99,6 +133,10 @@ export const useChatStore = defineStore('chat', () => {
     } finally {
       isStreaming.value = false
       isThinking.value = false
+      // Auto-speak response in voice mode
+      if (voiceMode.value && assistantMsg.content) {
+        speakText(assistantMsg.content)
+      }
     }
   }
 
@@ -108,8 +146,10 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   return {
-    isOpen, messages, isStreaming, isThinking, currentSources, focusEntityId,
+    isOpen, messages, isStreaming, isThinking, isSpeaking, voiceMode,
+    currentSources, focusEntityId,
     toggle, open, close, clearSources, focusEntity, clearFocus,
+    toggleVoiceMode, stopSpeaking, speakText,
     sendMessage, clearHistory,
   }
 })
