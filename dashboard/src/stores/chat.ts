@@ -10,6 +10,7 @@ export const useChatStore = defineStore('chat', () => {
   const messages = ref<ChatMessage[]>([])
   const isStreaming = ref(false)
   const isThinking = ref(false)
+  const thinkingStatus = ref('')
   const isSpeaking = ref(false)
   const voiceMode = ref(true)  // voice responses on by default
   const currentSources = ref<ChatSources | null>(null)
@@ -188,8 +189,10 @@ export const useChatStore = defineStore('chat', () => {
             const event = JSON.parse(line.slice(6))
             if (event.type === 'thinking') {
               isThinking.value = true
+              thinkingStatus.value = event.status || 'Thinking...'
             } else if (event.type === 'token') {
               isThinking.value = false
+              thinkingStatus.value = ''
               assistantMsg.content += event.content
 
               // Streaming TTS: accumulate tokens, send at sentence boundaries
@@ -237,7 +240,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   return {
-    isOpen, messages, isStreaming, isThinking, isSpeaking, voiceMode,
+    isOpen, messages, isStreaming, isThinking, thinkingStatus, isSpeaking, voiceMode,
     currentSources, focusEntityId,
     toggle, open, close, clearSources, focusEntity, clearFocus,
     toggleVoiceMode, stopSpeaking, speakText,
