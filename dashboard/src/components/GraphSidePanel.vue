@@ -38,7 +38,9 @@
           <div
             v-for="(conn, i) in node.connections"
             :key="i"
-            class="connection-item d-flex align-center pa-2 rounded-lg"
+            class="connection-item d-flex align-center pa-2 rounded-lg clickable"
+            @click="$emit('navigate', conn.connected_id)"
+            title="Click to explore"
           >
             <v-icon
               :icon="conn.direction === 'outgoing' ? 'mdi-arrow-right' : 'mdi-arrow-left'"
@@ -99,6 +101,7 @@ defineProps<{
 
 defineEmits<{
   close: []
+  navigate: [entityId: string]
 }>()
 </script>
 
@@ -149,6 +152,9 @@ defineEmits<{
 .connection-item:hover {
   background: rgba(255, 255, 255, 0.04);
   border-color: rgba(255, 255, 255, 0.06);
+}
+.clickable {
+  cursor: pointer;
 }
 .conn-relation {
   display: inline-block;
