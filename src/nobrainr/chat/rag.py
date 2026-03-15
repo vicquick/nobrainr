@@ -47,6 +47,35 @@ def _build_context(memories: list[dict], entities: list[dict]) -> str:
     return "\n".join(parts) if parts else "(No relevant context found.)"
 
 
+# Dynamic topic cache — refreshed every 10 minutes from entity names
+_topic_cache: set[str] = set()
+_topic_cache_time: float = 0
+
+
+async def _get_known_topics() -> set[str]:
+    """Load entity names as known topics, cached for 10 minutes."""
+    global _topic_cache, _topic_cache_time
+    import time
+    now = time.monotonic()
+    if _topic_cache and (now - _topic_cache_time) < 600:
+        return _topic_cache
+    try:
+        from nobrainr.db.pool import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT DISTINCT LOWER(name) as name FROM entities "
+                "WHERE mention_count >= 3 AND LENGTH(name) >= 3 "
+                "ORDER BY name LIMIT 5000"
+            )
+        _topic_cache = {r["name"] for r in rows}
+        _topic_cache_time = now
+        logger.info("Topic cache refreshed: %d known topics", len(_topic_cache))
+    except Exception:
+        pass
+    return _topic_cache
+
+
 async def _try_fast_answer(question: str) -> str | None:
     """Smart router: answer questions via the fastest possible path.
 
@@ -225,9 +254,8 @@ async def _try_fast_answer(question: str) -> str | None:
         return "I can only answer questions about your knowledge base. Try: \"find memories about Docker\" or \"top tags\"."
 
     # Very short messages (1-2 words) that aren't likely search topics
-    _likely_topics = {"ifc", "bim", "docker", "python", "qgis", "postgis", "postgresql",
-                      "vue", "fastapi", "ollama", "nobrainr", "bimavo", "traefik", "coolify",
-                      "redis", "celery", "whisper", "speaches", "kokoro", "gemma3"}
+    # Dynamic topic detection — check against actual entities in the knowledge graph
+    _likely_topics = await _get_known_topics()
     if len(words) <= 2 and len(q) < 20 and not any(c.isdigit() for c in q):
         # Check if it's a known topic — route to search instead
         if any(w in _likely_topics for w in words):
