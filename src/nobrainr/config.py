@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     # Speaches (OpenAI-compatible whisper API)
     speaches_url: str = "http://speaches:8000"
     speaches_model: str = "whisper-large-v3"
-    speaches_tts_model: str = "kokoro"
+    speaches_tts_model: str = "speaches-ai/Kokoro-82M-v1.0-ONNX-fp16"
     speaches_tts_voice: str = "af_heart"  # Kokoro default voice
 
     # Chunked ingestion
