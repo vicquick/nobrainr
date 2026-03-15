@@ -756,8 +756,8 @@ async def extraction_quality() -> dict:
 
 
 async def entity_pruning() -> dict:
-    """Prune low-value noise entities (1 memory, no relations, older than 24h)."""
-    result = await queries.prune_noise_entities(min_age_hours=24)
+    """Prune low-value noise entities (<=1 memory link, older than 72h)."""
+    result = await queries.prune_noise_entities(min_age_hours=72)  # 3 days for cross-session knowledge
     return {
         "entities_pruned": result["entities_pruned"],
         "orphan_relations_removed": result["orphan_relations_removed"],
