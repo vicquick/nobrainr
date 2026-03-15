@@ -100,7 +100,8 @@ async def _try_fast_answer(question: str) -> str | None:
         # Categories
         if any(kw in q for kw in ["largest category", "biggest category", "top category",
                                    "category breakdown", "what categories", "list categories",
-                                   "all categories"]):
+                                   "all categories", "show me categories", "show categories",
+                                   "my categories"]):
             async with pool.acquire() as conn:
                 rows = await conn.fetch(
                     "SELECT category, COUNT(*) as cnt FROM memories "
@@ -110,8 +111,9 @@ async def _try_fast_answer(question: str) -> str | None:
                 lines = [f"{r['category']}: {r['cnt']:,}" for r in rows]
                 return "Categories:\n" + "\n".join(f"  {i+1}. {l}" for i, l in enumerate(lines))
 
-        # Entity count
-        if any(kw in q for kw in ["how many entities", "total entities", "entity count"]):
+        # Entity/relation count
+        if any(kw in q for kw in ["how many entities", "total entities", "entity count",
+                                   "how many relations", "total relations", "relation count"]):
             async with pool.acquire() as conn:
                 count = await conn.fetchval("SELECT COUNT(*) FROM entities")
                 rels = await conn.fetchval("SELECT COUNT(*) FROM entity_relations")
@@ -172,12 +174,18 @@ async def _try_fast_answer(question: str) -> str | None:
 
     # ── TIER 2: SEARCH — topic lookups, return formatted results directly ──
     # Detect "find/show/search/what do I know about X" patterns
+    # Skip if the topic itself is a meta-keyword (handled by SQL tier above)
+    _meta_topics = {"categories", "category", "tags", "sources", "machines", "entities",
+                    "relations", "memories", "stats", "overview", "dashboard"}
     search_prefixes = ["find ", "search ", "show me ", "list ", "what do i know about ",
                        "what do you know about ", "tell me about ", "memories about ",
                        "anything about ", "look up "]
     for prefix in search_prefixes:
         if q.startswith(prefix):
             topic = question[len(prefix):].strip().rstrip("?.")
+            # Skip search if topic is a meta-keyword (already handled by SQL tier)
+            if topic.lower().strip() in _meta_topics:
+                break
             if topic and len(topic) > 2:
                 try:
                     embedding = await embed_text(topic)
@@ -210,9 +218,36 @@ async def _try_fast_answer(question: str) -> str | None:
     if q.rstrip("!.? ") in {"ok", "okay", "got it", "understood", "alright", "cool", "nice",
                              "great", "perfect", "awesome", "sweet", "good", "yes", "no", "nah"}:
         return "Got it! What else would you like to know?"
-    # Very short messages (1-2 words) that aren't search terms — likely conversational
-    if len(words) <= 2 and len(q) < 15 and not any(c.isdigit() for c in q):
-        return "I'm here to help! Try asking about your knowledge base, like \"find memories about Python\" or \"top tags\"."
+    # Out-of-scope questions — things the KB can't answer
+    _out_of_scope = ["weather", "time is it", "date today", "play music", "set alarm",
+                     "send email", "call ", "open ", "download ", "install "]
+    if any(oos in q for oos in _out_of_scope):
+        return "I can only answer questions about your knowledge base. Try: \"find memories about Docker\" or \"top tags\"."
+
+    # Very short messages (1-2 words) that aren't likely search topics
+    _likely_topics = {"ifc", "bim", "docker", "python", "qgis", "postgis", "postgresql",
+                      "vue", "fastapi", "ollama", "nobrainr", "bimavo", "traefik", "coolify",
+                      "redis", "celery", "whisper", "speaches", "kokoro", "gemma3"}
+    if len(words) <= 2 and len(q) < 20 and not any(c.isdigit() for c in q):
+        # Check if it's a known topic — route to search instead
+        if any(w in _likely_topics for w in words):
+            topic = question.strip().rstrip("?.!")
+            try:
+                embedding = await embed_text(topic)
+                results = await queries.search_memories(
+                    embedding=embedding, limit=5, threshold=0.3, text_query=topic,
+                )
+                if results:
+                    parts = [f"Here's what I know about \"{topic}\":\n"]
+                    for i, m in enumerate(results, 1):
+                        summary = m.get("summary") or m.get("content", "")[:200]
+                        cat = m.get("category", "")
+                        parts.append(f"  {i}. [{cat}] {summary}")
+                    return "\n".join(parts)
+            except Exception:
+                pass
+        else:
+            return "I'm here to help! Try asking about your knowledge base, like \"find memories about Python\" or \"top tags\"."
 
     # ── TIER 4: Falls through to full RAG+LLM pipeline ──
     return None
