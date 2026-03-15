@@ -16,6 +16,23 @@
         <span class="text-subtitle-2 font-weight-bold">Knowledge Chat</span>
         <v-spacer />
         <v-btn
+          :icon="chatStore.voiceMode ? 'mdi-volume-high' : 'mdi-volume-off'"
+          variant="text"
+          size="x-small"
+          :color="chatStore.voiceMode ? 'primary' : undefined"
+          @click="chatStore.toggleVoiceMode()"
+          title="Voice responses"
+        />
+        <v-btn
+          v-if="chatStore.isSpeaking"
+          icon="mdi-stop-circle"
+          variant="text"
+          size="x-small"
+          color="error"
+          @click="chatStore.stopSpeaking()"
+          title="Stop speaking"
+        />
+        <v-btn
           icon="mdi-delete-outline"
           variant="text"
           size="x-small"
@@ -57,7 +74,19 @@
             <v-progress-circular indeterminate size="14" width="1.5" color="primary" class="mr-2" />
             <span class="text-caption text-medium-emphasis">Searching knowledge base...</span>
           </div>
-          <div v-else class="message-content">{{ msg.content }}<span v-if="chatStore.isStreaming && msg === lastAssistantMsg && !msg.content" class="typing-dot" /></div>
+          <div v-else class="message-content">
+            {{ msg.content }}<span v-if="chatStore.isStreaming && msg === lastAssistantMsg && !msg.content" class="typing-dot" />
+            <v-btn
+              v-if="msg.role === 'assistant' && msg.content && !chatStore.isStreaming"
+              icon="mdi-volume-medium"
+              variant="text"
+              size="x-small"
+              class="speak-btn ml-1"
+              :loading="chatStore.isSpeaking"
+              @click.stop="chatStore.speakText(msg.content)"
+              title="Read aloud"
+            />
+          </div>
 
           <!-- Sources -->
           <div v-if="msg.sources && (msg.sources.entities.length || msg.sources.memories.length)" class="sources-section mt-2">
@@ -515,6 +544,13 @@ watch(
 }
 .message-content {
   white-space: pre-wrap;
+}
+.speak-btn {
+  opacity: 0.3;
+  vertical-align: middle;
+}
+.speak-btn:hover {
+  opacity: 0.8;
 }
 .thinking-state {
   display: flex;
