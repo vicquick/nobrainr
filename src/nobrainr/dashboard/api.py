@@ -693,6 +693,54 @@ async def api_tts(request: Request) -> Response:
         return JSONResponse({"error": "TTS failed"}, status_code=500)
 
 
+async def api_memory_facts(request: Request) -> JSONResponse:
+    """GET /api/memories/{memory_id}/facts — atomic facts extracted from this memory."""
+    memory_id = request.path_params["memory_id"]
+    try:
+        facts = await queries.get_memory_facts(memory_id)
+        return JSONResponse({"facts": facts})
+    except Exception:
+        return JSONResponse({"facts": []})
+
+
+async def api_facts_search(request: Request) -> JSONResponse:
+    """GET /api/facts — search atomic facts by query."""
+    q = request.query_params.get("q", "").strip()
+    if not q:
+        return JSONResponse({"facts": [], "query": ""})
+    try:
+        from nobrainr.embeddings.ollama import embed_text
+        embedding = await embed_text(q)
+        facts = await queries.search_facts(
+            embedding=embedding, limit=15, threshold=0.3, text_query=q,
+        )
+        return JSONResponse({"facts": facts, "query": q})
+    except Exception:
+        log.exception("Fact search failed")
+        return JSONResponse({"facts": [], "query": q, "error": "search failed"})
+
+
+async def api_facts_stats(request: Request) -> JSONResponse:
+    """GET /api/facts/stats — fact extraction progress."""
+    try:
+        from nobrainr.db.pool import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            total = await conn.fetchval("SELECT COUNT(*) FROM memory_facts")
+            real = await conn.fetchval("SELECT COUNT(*) FROM memory_facts WHERE LENGTH(content) > 30")
+            memories_with = await conn.fetchval("SELECT COUNT(DISTINCT memory_id) FROM memory_facts")
+            memories_total = await conn.fetchval("SELECT COUNT(*) FROM memories WHERE tier < 3")
+        return JSONResponse({
+            "total_facts": real,
+            "total_markers": total,
+            "memories_processed": memories_with,
+            "memories_total": memories_total,
+            "coverage_pct": round(memories_with / max(memories_total, 1) * 100, 1),
+        })
+    except Exception:
+        return JSONResponse({"total_facts": 0, "coverage_pct": 0})
+
+
 api_routes = [
     Route("/api/transcribe", api_transcribe, methods=["POST"]),
     Route("/api/tts", api_tts, methods=["POST"]),
@@ -704,7 +752,10 @@ api_routes = [
     Route("/api/memories/{memory_id}", api_memory_delete, methods=["DELETE"]),
     Route("/api/memories/{memory_id}/feedback", api_memory_feedback, methods=["POST"]),
     Route("/api/memories/{memory_id}/history", api_memory_history, methods=["GET"]),
+    Route("/api/memories/{memory_id}/facts", api_memory_facts, methods=["GET"]),
     Route("/api/memories/{memory_id}/restore", api_memory_restore, methods=["POST"]),
+    Route("/api/facts", api_facts_search),
+    Route("/api/facts/stats", api_facts_stats),
     Route("/api/timeline", api_timeline),
     Route("/api/node/{entity_id}", api_node_detail),
     Route("/api/stats", api_stats),

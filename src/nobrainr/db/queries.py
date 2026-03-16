@@ -1404,6 +1404,88 @@ async def get_entity_memories(entity_id: str) -> list[dict]:
         return [_row_to_dict(row) for row in rows]
 
 
+async def search_facts(
+    embedding: list[float],
+    *,
+    limit: int = 10,
+    threshold: float = 0.3,
+    text_query: str | None = None,
+) -> list[dict]:
+    """Search atomic facts by embedding similarity, optionally with text matching."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Check if table exists and has data
+        has_facts = await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM memory_facts WHERE embedding IS NOT NULL LIMIT 1)"
+        )
+        if not has_facts:
+            return []
+
+        if text_query:
+            # Hybrid: vector + text
+            rows = await conn.fetch(
+                """
+                SELECT f.id, f.content, f.memory_id, f.quality_score, f.created_at,
+                       1 - (f.embedding::halfvec(1024) <=> $1::halfvec(1024)) as similarity
+                FROM memory_facts f
+                WHERE f.embedding IS NOT NULL
+                  AND LENGTH(f.content) > 30
+                  AND f.content ILIKE '%' || $3 || '%'
+                ORDER BY f.embedding::halfvec(1024) <=> $1::halfvec(1024)
+                LIMIT $2
+                """,
+                embedding, limit * 2, text_query,
+            )
+            if len(rows) < limit:
+                # Fall back to pure vector if text match too few
+                rows = await conn.fetch(
+                    """
+                    SELECT f.id, f.content, f.memory_id, f.quality_score, f.created_at,
+                           1 - (f.embedding::halfvec(1024) <=> $1::halfvec(1024)) as similarity
+                    FROM memory_facts f
+                    WHERE f.embedding IS NOT NULL
+                      AND LENGTH(f.content) > 30
+                    ORDER BY f.embedding::halfvec(1024) <=> $1::halfvec(1024)
+                    LIMIT $2
+                    """,
+                    embedding, limit,
+                )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT f.id, f.content, f.memory_id, f.quality_score, f.created_at,
+                       1 - (f.embedding::halfvec(1024) <=> $1::halfvec(1024)) as similarity
+                FROM memory_facts f
+                WHERE f.embedding IS NOT NULL
+                  AND LENGTH(f.content) > 30
+                ORDER BY f.embedding::halfvec(1024) <=> $1::halfvec(1024)
+                LIMIT $2
+                """,
+                embedding, limit,
+            )
+        return [
+            {**_row_to_dict(r), "similarity": float(r["similarity"])}
+            for r in rows
+            if float(r["similarity"]) >= threshold
+        ]
+
+
+async def get_memory_facts(memory_id: str) -> list[dict]:
+    """Get all facts extracted from a specific memory."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, content, quality_score, created_at
+            FROM memory_facts
+            WHERE memory_id = $1 AND LENGTH(content) > 30
+            ORDER BY created_at
+            """,
+            UUID(memory_id),
+        )
+        return [_row_to_dict(r) for r in rows]
+
+
 async def get_memory_entities(memory_id: str) -> list[dict]:
     """Get all entities linked to a memory."""
     pool = await get_pool()
