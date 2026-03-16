@@ -80,6 +80,7 @@
           <MemoryDetail
             :memory="selectedMemory"
             :entities="selectedEntities"
+            :facts="selectedFacts"
             @update="handleUpdate"
             @delete="handleDelete"
           />
@@ -108,6 +109,7 @@ const {
   memories,
   selectedMemory,
   selectedEntities,
+  selectedFacts,
   loading,
   detailLoading,
   searchQuery,

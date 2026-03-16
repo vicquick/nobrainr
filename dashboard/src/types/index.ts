@@ -105,6 +105,15 @@ export interface SystemHealth {
   quality_unscored: number
 }
 
+export interface Fact {
+  id: string
+  content: string
+  memory_id: string
+  quality_score: number | null
+  created_at: string
+  similarity?: number
+}
+
 export interface ChatSources {
   memories: Array<{ id: string; summary: string | null; content: string }>
   entities: Array<{ id: string; name: string; entity_type: string }>
