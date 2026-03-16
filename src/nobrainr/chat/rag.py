@@ -30,10 +30,15 @@ def _sse(event_type: str, data: dict) -> str:
     return f"data: {json.dumps({'type': event_type, **data})}\n\n"
 
 
-def _build_context(memories: list[dict], entities: list[dict]) -> str:
+def _build_context(memories: list[dict], entities: list[dict], facts: list[dict] | None = None) -> str:
     parts: list[str] = []
+    # Facts first — most precise, token-efficient context
+    if facts:
+        parts.append("FACTS (atomic knowledge):")
+        for i, f in enumerate(facts, 1):
+            parts.append(f"  [{i}] {sanitize_context(f['content'], 200)}")
     if memories:
-        parts.append("MEMORIES:")
+        parts.append("\nMEMORIES:")
         for i, m in enumerate(memories, 1):
             summary = m.get("summary") or m["content"][:300]
             cat = m.get("category") or "uncategorized"
@@ -333,7 +338,17 @@ async def stream_chat_response(
     )
     context_memories = all_memories[: settings.chat_max_context_memories]
 
-    yield _sse("thinking", {"status": f"Found {len(all_memories)} memories, building context..."})
+    # 5b. Search facts for more precise context (Mem0-style)
+    matched_facts = []
+    try:
+        matched_facts = await queries.search_facts(
+            embedding=embedding, limit=10, threshold=0.35, text_query=clean,
+        )
+    except Exception:
+        pass
+
+    fact_count = len(matched_facts)
+    yield _sse("thinking", {"status": f"Found {len(all_memories)} memories + {fact_count} facts, building context..."})
 
     # 6. Collect linked entities from context memories (parallel, not serial)
     async def _fetch_entities(mem_id: str) -> list[dict]:
@@ -373,7 +388,7 @@ async def stream_chat_response(
             )
         except Exception:
             pass
-    context = _build_context(context_memories, list(entity_map.values())) + stats_summary
+    context = _build_context(context_memories, list(entity_map.values()), matched_facts) + stats_summary
     llm_messages = [
         {"role": "system", "content": SYSTEM_PROMPT.format(context=context)},
     ]
