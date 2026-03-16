@@ -1,12 +1,13 @@
 import { ref } from 'vue'
 import api from '@/api/client'
-import type { Memory, Entity } from '@/types'
+import type { Memory, Entity, Fact } from '@/types'
 import { useStatsStore } from '@/stores/stats'
 
 export function useMemories() {
   const memories = ref<Memory[]>([])
   const selectedMemory = ref<Memory | null>(null)
   const selectedEntities = ref<Entity[]>([])
+  const selectedFacts = ref<Fact[]>([])
   const loading = ref(false)
   const detailLoading = ref(false)
   const searchQuery = ref('')
@@ -32,6 +33,13 @@ export function useMemories() {
       const { data } = await api.get<{ memory: Memory; entities: Entity[] }>(`/api/memories/${id}`)
       selectedMemory.value = data.memory
       selectedEntities.value = data.entities
+      // Fetch facts for this memory
+      try {
+        const factsRes = await api.get<{ facts: Fact[] }>(`/api/memories/${id}/facts`)
+        selectedFacts.value = factsRes.data.facts
+      } catch {
+        selectedFacts.value = []
+      }
     } finally {
       detailLoading.value = false
     }
@@ -65,6 +73,7 @@ export function useMemories() {
     memories,
     selectedMemory,
     selectedEntities,
+    selectedFacts,
     loading,
     detailLoading,
     searchQuery,

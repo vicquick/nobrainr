@@ -2025,6 +2025,30 @@ async def graph_search(
     return await _graph_search(query, limit=limit, depth=depth, include_cold=include_cold)
 
 
+@mcp.tool()
+async def fact_search(
+    query: str,
+    limit: int = 10,
+    threshold: float = 0.3,
+) -> dict:
+    """Search atomic facts extracted from memories (Mem0-style).
+
+    Facts are short, self-contained statements distilled from longer memories.
+    They are independently embedded and searchable, making them ideal for
+    precise factual lookups.
+
+    Args:
+        query: Search query for matching facts.
+        limit: Maximum number of facts to return (default 10).
+        threshold: Minimum similarity threshold (default 0.3).
+    """
+    emb = await embed_text(query)
+    facts = await queries.search_facts(
+        emb, limit=limit, threshold=threshold, text_query=query
+    )
+    return {"facts": facts, "total": len(facts), "query": query}
+
+
 # ──────────────────────────────────────────────
 # Entry points
 # ──────────────────────────────────────────────

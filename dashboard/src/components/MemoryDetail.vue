@@ -117,6 +117,23 @@
           </div>
         </div>
 
+        <!-- Facts -->
+        <div v-if="facts && facts.length" class="mb-5">
+          <div class="text-caption text-medium-emphasis mb-2 text-uppercase" style="letter-spacing: 0.5px;">
+            Facts <span class="text-caption" style="opacity: 0.5;">({{ facts.length }})</span>
+          </div>
+          <div class="d-flex flex-column ga-1">
+            <div
+              v-for="fact in facts"
+              :key="fact.id"
+              class="fact-item pa-2 rounded"
+            >
+              <v-icon icon="mdi-lightning-bolt" size="14" color="amber" class="mr-1" style="vertical-align: text-top;" />
+              <span class="text-body-2">{{ fact.content }}</span>
+            </div>
+          </div>
+        </div>
+
         <!-- Entities -->
         <div v-if="entities && entities.length" class="mb-5">
           <div class="text-caption text-medium-emphasis mb-2 text-uppercase" style="letter-spacing: 0.5px;">Entities</div>
@@ -162,12 +179,13 @@
 
 <script setup lang="ts">
 import { ref, reactive, watch, computed } from 'vue'
-import type { Memory, Entity } from '@/types'
+import type { Memory, Entity, Fact } from '@/types'
 import EntityBadge from './EntityBadge.vue'
 
 const props = defineProps<{
   memory: Memory
   entities?: Entity[]
+  facts?: Fact[]
 }>()
 
 const emit = defineEmits<{
@@ -251,5 +269,10 @@ function handleDelete() {
 }
 .stat-block {
   min-width: 100px;
+}
+.fact-item {
+  background: rgba(255, 191, 0, 0.04);
+  border: 1px solid rgba(255, 191, 0, 0.1);
+  line-height: 1.5;
 }
 </style>
