@@ -85,7 +85,7 @@ async def distill_text(
                     "num_predict": 200,
                     "num_ctx": 8192,
                 },
-                "keep_alive": "5m",
+                "keep_alive": "24h",
             })
             resp.raise_for_status()
             data = resp.json()
