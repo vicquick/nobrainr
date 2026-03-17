@@ -47,7 +47,7 @@ async def expand_query(query: str) -> list[str]:
             temperature=0.3,
             num_ctx=512,
             timeout=15.0,
-            keep_alive="5m",
+            keep_alive="24h",
             think=False,
         )
         variants = result.get("queries", [])

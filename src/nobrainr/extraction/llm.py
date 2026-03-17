@@ -29,7 +29,7 @@ async def ollama_chat(
     temperature: float = 0.1,
     num_ctx: int = 8192,
     timeout: float = 180.0,
-    keep_alive: str = "5m",
+    keep_alive: str = "24h",
     think: bool = False,
 ) -> dict:
     """Send a structured-output chat request to Ollama.
@@ -127,7 +127,7 @@ async def ollama_generate(
     temperature: float = 0.3,
     num_ctx: int = 2048,
     timeout: float = 60.0,
-    keep_alive: str = "5m",
+    keep_alive: str = "24h",
     max_tokens: int = 512,
 ) -> str:
     """Generate plain text from Ollama (no structured output).
