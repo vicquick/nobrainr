@@ -774,7 +774,7 @@ async def _import_code_structure(
 
 
 async def import_github(
-    owner: str = "vicquick",
+    owner: str = "",
     *,
     repos: list[str] | None = None,
     source_machine: str | None = None,
