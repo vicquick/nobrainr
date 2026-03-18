@@ -1594,7 +1594,7 @@ async def community_detection() -> dict:
     """Detect entity communities using Louvain and generate summaries."""
     from nobrainr.services.communities import detect_communities, generate_community_summaries
 
-    result = await detect_communities(min_community_size=3, resolution=2.5)
+    result = await detect_communities(min_community_size=3, resolution=1.0)
     if result["communities"] > 0:
         summary_result = await generate_community_summaries(max_communities=50)
         result["summaries"] = summary_result
