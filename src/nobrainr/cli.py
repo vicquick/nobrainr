@@ -503,7 +503,7 @@ def re_embed(model, dimensions, batch_size, yes):
 
 
 @main.command("import-github")
-@click.argument("owner", default="vicquick")
+@click.argument("owner")
 @click.option("--repos", help="Comma-separated repo names (default: all)")
 @click.option("--machine", "-m", help="Machine name for provenance")
 @click.option("--no-commits", is_flag=True, help="Skip commit history")

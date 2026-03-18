@@ -1722,11 +1722,13 @@ async def github_sync() -> dict:
 
     Relies on source_ref dedup in the importer — only new items are stored.
     """
+    if not settings.github_owner:
+        return {"skipped": True, "reason": "NOBRAINR_GITHUB_OWNER not configured"}
     try:
         from nobrainr.importers.github import import_github
 
         result = await import_github(
-            owner="vicquick",
+            owner=settings.github_owner,
             source_machine=settings.source_machine or _hostname(),
             include_commits=True,
             include_issues=True,
