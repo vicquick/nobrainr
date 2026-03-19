@@ -57,6 +57,26 @@ def _patch_mcp_session_init_race():
 _patch_mcp_session_init_race()
 
 
+async def _warm_graph_cache():
+    """Background task: pre-compute graph layout cache on startup."""
+    import os
+    from nobrainr.dashboard.api import _GRAPH_CACHE_PATH
+    if os.path.exists(_GRAPH_CACHE_PATH):
+        return  # already cached (shouldn't happen after redeploy, but be safe)
+    try:
+        await asyncio.sleep(10)  # let DB pool settle
+        from nobrainr.dashboard.api import api_graph
+        from starlette.testclient import TestClient
+        from starlette.requests import Request
+        # Build a fake request with refresh=true
+        scope = {"type": "http", "method": "GET", "path": "/api/graph", "query_string": b"refresh=true", "headers": []}
+        request = Request(scope)
+        await api_graph(request)
+        logger.info("Graph layout cache pre-warmed on startup")
+    except Exception:
+        logger.warning("Graph cache pre-warm failed (will compute on first request)")
+
+
 async def _auto_backfill():
     """Background task: extract entities from any unprocessed memories on startup."""
     if not settings.extraction_enabled:
@@ -123,6 +143,9 @@ async def lifespan(app):
 
     # Fire-and-forget backfill for any unextracted memories
     backfill_task = asyncio.create_task(_auto_backfill())
+
+    # Pre-warm graph layout cache (runs in background, ~60s)
+    asyncio.create_task(_warm_graph_cache())
 
     # Start background scheduler for maintenance + feedback integration
     if settings.scheduler_enabled:
