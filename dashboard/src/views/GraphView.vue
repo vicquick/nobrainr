@@ -138,7 +138,7 @@ const nodeCount = ref(0)
 const edgeCount = ref(0)
 const communityCount = ref(0)
 const focusedLabel = ref('')
-const viewMode = ref<'communities' | 'entities'>('communities')
+const viewMode = ref<'communities' | 'entities'>('entities')
 const drillCommunityId = ref<number | null>(null)
 
 const panelOpen = computed(() => !!selectedNode.value && !mobile.value)
