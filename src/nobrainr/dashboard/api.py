@@ -129,6 +129,158 @@ async def api_graph(request: Request) -> JSONResponse:
     return JSONResponse(data)
 
 
+_COMMUNITY_CACHE_PATH = "/tmp/nobrainr_community_graph_cache.json"
+
+
+async def api_graph_communities(request: Request) -> JSONResponse:
+    """Community-level meta-graph — each node is a community bubble.
+    Returns positions computed from entity centroids, inter-community edges,
+    and community metadata (title, summary, member_count, top entities)."""
+    import os
+    import time as _time
+    import json as _json
+
+    # Serve from cache if available (max 6h — matches community_detection interval)
+    if os.path.exists(_COMMUNITY_CACHE_PATH):
+        cache_age = _time.time() - os.path.getmtime(_COMMUNITY_CACHE_PATH)
+        if cache_age < 21600:
+            try:
+                with open(_COMMUNITY_CACHE_PATH, "r") as f:
+                    return JSONResponse(_json.load(f))
+            except Exception:
+                pass
+
+    # Build from full graph cache + community summaries
+    from nobrainr.db.pool import get_pool
+    pool = await get_pool()
+
+    # Get community summaries
+    async with pool.acquire() as conn:
+        summaries = await conn.fetch(
+            "SELECT community_id, title, summary, member_count, key_topics "
+            "FROM community_summaries ORDER BY member_count DESC"
+        )
+        summary_map = {}
+        for s in summaries:
+            summary_map[s["community_id"]] = {
+                "title": s["title"] or f"Community {s['community_id']}",
+                "summary": s["summary"] or "",
+                "member_count": s["member_count"],
+                "key_topics": s["key_topics"] if s["key_topics"] else [],
+            }
+
+        # Get top entities per community (top 5 by mention_count)
+        top_entities = await conn.fetch("""
+            SELECT e.community_id, e.canonical_name, e.entity_type, e.mention_count
+            FROM entities e
+            WHERE e.community_id IS NOT NULL
+            ORDER BY e.community_id, e.mention_count DESC
+        """)
+        community_top = {}
+        for row in top_entities:
+            c = row["community_id"]
+            if c not in community_top:
+                community_top[c] = []
+            if len(community_top[c]) < 5:
+                community_top[c].append({
+                    "name": row["canonical_name"],
+                    "type": row["entity_type"],
+                    "mentions": row["mention_count"],
+                })
+
+    # Compute community centroids from the full graph cache
+    if not os.path.exists(_GRAPH_CACHE_PATH):
+        return JSONResponse({"nodes": [], "edges": [], "error": "Graph cache not ready"})
+
+    with open(_GRAPH_CACHE_PATH, "r") as f:
+        full_graph = _json.load(f)
+
+    # Group nodes by community, compute centroids
+    from collections import defaultdict
+    community_nodes = defaultdict(list)
+    for node in full_graph.get("nodes", []):
+        c = node["data"].get("community", -1)
+        if c >= 0:
+            community_nodes[c].append(node["data"])
+
+    # Build community meta-nodes
+    TYPE_COLORS = {
+        "person": "#7b8ec8", "project": "#6ba87a", "technology": "#9585c4",
+        "concept": "#c4a46a", "file": "#7a8290", "config": "#b09060",
+        "error": "#c46b6b", "location": "#6b9e8f", "organization": "#7d92b0",
+    }
+    nodes = []
+    for c_id, members in community_nodes.items():
+        if len(members) < 3:
+            continue
+        # Centroid position
+        cx = sum(m["x"] for m in members) / len(members)
+        cy = sum(m["y"] for m in members) / len(members)
+        # Dominant type
+        type_counts = defaultdict(int)
+        for m in members:
+            type_counts[m.get("type", "concept")] += 1
+        dominant_type = max(type_counts, key=type_counts.get)
+
+        meta = summary_map.get(c_id, {})
+        title = meta.get("title", f"Cluster {c_id}")
+        top = community_top.get(c_id, [])
+
+        nodes.append({
+            "data": {
+                "id": f"c{c_id}",
+                "community_id": c_id,
+                "label": title,
+                "x": cx,
+                "y": cy,
+                "size": len(members),
+                "type": dominant_type,
+                "color": TYPE_COLORS.get(dominant_type, "#6b7280"),
+                "summary": meta.get("summary", ""),
+                "member_count": len(members),
+                "top_entities": top,
+                "key_topics": meta.get("key_topics", []),
+            }
+        })
+
+    # Build inter-community edges from the full graph edges
+    edge_weights = defaultdict(int)
+    node_community = {}
+    for node in full_graph.get("nodes", []):
+        c = node["data"].get("community", -1)
+        if c >= 0:
+            node_community[node["data"]["id"]] = c
+    for edge in full_graph.get("edges", []):
+        sc = node_community.get(edge["data"]["source"], -1)
+        tc = node_community.get(edge["data"]["target"], -1)
+        if sc >= 0 and tc >= 0 and sc != tc:
+            pair = (min(sc, tc), max(sc, tc))
+            edge_weights[pair] += 1
+
+    edges = []
+    for (c1, c2), weight in edge_weights.items():
+        if weight >= 3:  # only show meaningful inter-community connections
+            edges.append({
+                "data": {
+                    "id": f"e-c{c1}-c{c2}",
+                    "source": f"c{c1}",
+                    "target": f"c{c2}",
+                    "weight": weight,
+                }
+            })
+
+    result = {"nodes": nodes, "edges": edges}
+
+    # Cache
+    try:
+        with open(_COMMUNITY_CACHE_PATH, "w") as f:
+            _json.dump(result, f)
+    except Exception:
+        pass
+
+    return JSONResponse(result)
+
+
 async def api_memories(request: Request) -> JSONResponse:
     """Search/list memories."""
     q = request.query_params.get("q", "").strip()
@@ -746,6 +898,7 @@ api_routes = [
     Route("/api/tts", api_tts, methods=["POST"]),
     Route("/api/chat", api_chat, methods=["POST"]),
     Route("/api/graph", api_graph),
+    Route("/api/graph/communities", api_graph_communities),
     Route("/api/memories", api_memories),
     Route("/api/memories/{memory_id}", api_memory_detail, methods=["GET"]),
     Route("/api/memories/{memory_id}", api_memory_update, methods=["POST"]),
