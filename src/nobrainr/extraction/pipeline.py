@@ -44,6 +44,11 @@ _GENERIC_NAMES = frozenset({
     "comment", "request_changes", "review", "pull request", "issue",
     "error", "warning", "info", "debug", "log", "output", "input",
     "data", "result", "response", "request", "query", "search",
+    # Python/JS builtins — too fundamental to be knowledge entities
+    "int", "str", "float", "bool", "list", "dict", "set", "tuple",
+    "len", "ord", "pow", "sum", "min", "max", "abs", "map", "zip",
+    "any", "all", "type", "print", "range", "open", "super", "iter",
+    "next", "hash", "repr", "eval", "exec", "chr", "hex", "oct", "bin",
     # Python/JS runtime objects
     "session", "venv", "__pycache__", "self", "cls", "args", "kwargs",
     "module", "package", "class", "method", "variable", "parameter",
@@ -52,12 +57,23 @@ _GENERIC_NAMES = frozenset({
     # HTML element IDs — too granular for knowledge graph
     "div", "span", "button", "form", "table", "body", "header", "footer",
     "container", "wrapper", "content", "sidebar", "modal", "dialog",
+    # German common words (from German-language conversations)
+    "länge", "wand", "weg", "bau", "alt", "neu", "zahl", "fläche",
+    "breite", "höhe", "name", "text", "datum", "art", "typ", "form",
+    "ort", "raum", "haus", "stadt", "land", "user", "tab",
+    # Common abbreviations that aren't real entities
+    "num", "val", "var", "obj", "arr", "idx", "tmp", "cfg",
+    "src", "dst", "msg", "req", "res", "ctx", "env", "cmd",
+    "arg", "fmt", "buf", "ptr", "ref", "err", "col", "row",
+    "key", "sql", "url", "uri", "csv", "xml", "svg", "pdf",
+    "img", "btn", "nav", "app", "lib", "doc", "sys", "pid",
+    "uid", "gid", "tls", "ssh", "dns", "tcp", "udp", "ftp",
 })
 
 
 def _is_noise_entity(name: str) -> bool:
     """Return True if this entity name is noise and should be skipped."""
-    if len(name) <= 2:
+    if len(name) <= 3:
         return True
     if _NOISE_RE.match(name):
         return True
