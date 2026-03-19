@@ -2,7 +2,32 @@
   <v-container fluid class="fill-height pa-0 d-flex flex-column">
     <!-- Compact toolbar -->
     <div class="d-flex align-center ga-2 px-3 py-1 toolbar">
-      <div class="pills-scroll">
+      <!-- View mode toggle -->
+      <v-btn-toggle v-model="viewMode" mandatory density="compact" variant="outlined" class="view-toggle mr-2">
+        <v-btn value="communities" size="x-small">
+          <v-icon size="14" class="mr-1">mdi-circle-multiple-outline</v-icon>
+          Topics
+        </v-btn>
+        <v-btn value="entities" size="x-small">
+          <v-icon size="14" class="mr-1">mdi-graph-outline</v-icon>
+          Entities
+        </v-btn>
+      </v-btn-toggle>
+
+      <!-- Back button when drilled into a community -->
+      <v-btn
+        v-if="drillCommunityId !== null"
+        size="x-small"
+        variant="tonal"
+        color="primary"
+        @click="exitDrill"
+        class="mr-2"
+      >
+        <v-icon size="14" class="mr-1">mdi-arrow-left</v-icon>
+        All topics
+      </v-btn>
+
+      <div v-if="viewMode === 'entities'" class="pills-scroll">
         <button
           v-for="type in entityTypes"
           :key="type"
@@ -35,7 +60,13 @@
     <!-- Status bar -->
     <div class="d-flex align-center ga-3 px-3 py-0 status-bar">
       <span class="text-caption text-medium-emphasis" style="font-variant-numeric: tabular-nums; font-size: 10px;">
-        {{ nodeCount.toLocaleString() }} nodes · {{ edgeCount.toLocaleString() }} edges · {{ communityCount }} clusters
+        <template v-if="viewMode === 'communities'">
+          {{ nodeCount.toLocaleString() }} topics · {{ edgeCount.toLocaleString() }} connections
+        </template>
+        <template v-else>
+          {{ nodeCount.toLocaleString() }} nodes · {{ edgeCount.toLocaleString() }} edges · {{ communityCount }} clusters
+          <span v-if="drillCommunityId !== null" class="ml-1">(filtered to 1 topic)</span>
+        </template>
         <span v-if="graphStale" class="ml-2" style="color: #c4a46a;">· updated available</span>
       </span>
       <v-spacer />
@@ -98,7 +129,7 @@ const entityTypes = Object.keys(TYPE_COLORS)
 const { mobile } = useDisplay()
 const chatStore = useChatStore()
 
-const { graphData, selectedNode, loading, fetchGraph, fetchNodeDetail, clearSelection } = useGraph()
+const { graphData, communityGraphData, selectedNode, loading, fetchGraph, fetchCommunityGraph, fetchNodeDetail, clearSelection } = useGraph()
 
 const sigmaContainer = ref<HTMLElement | null>(null)
 const searchQuery = ref('')
@@ -107,6 +138,8 @@ const nodeCount = ref(0)
 const edgeCount = ref(0)
 const communityCount = ref(0)
 const focusedLabel = ref('')
+const viewMode = ref<'communities' | 'entities'>('communities')
+const drillCommunityId = ref<number | null>(null)
 
 const panelOpen = computed(() => !!selectedNode.value && !mobile.value)
 const showMobilePanel = computed({
@@ -258,7 +291,14 @@ function initSigma() {
 
   const communities = new Set<number>()
 
-  for (const node of graphData.value.nodes) {
+  // When drilled into a community, only show that community's entities
+  const drillFilter = drillCommunityId.value
+  const filteredNodes = drillFilter !== null
+    ? graphData.value.nodes.filter(n => n.data.community === drillFilter)
+    : graphData.value.nodes
+  const filteredNodeIds = new Set(filteredNodes.map(n => n.data.id))
+
+  for (const node of filteredNodes) {
     const mc = node.data.mention_count || 1
     communities.add(node.data.community)
     graph.addNode(node.data.id, {
@@ -273,7 +313,11 @@ function initSigma() {
     })
   }
 
-  for (const edge of graphData.value.edges) {
+  const filteredEdges = drillFilter !== null
+    ? graphData.value.edges.filter(e => filteredNodeIds.has(e.data.source) && filteredNodeIds.has(e.data.target))
+    : graphData.value.edges
+
+  for (const edge of filteredEdges) {
     if (graph.hasNode(edge.data.source) && graph.hasNode(edge.data.target)) {
       try {
         graph.addEdge(edge.data.source, edge.data.target, {
@@ -481,6 +525,170 @@ function initSigma() {
   })
 }
 
+function initCommunitySigma() {
+  if (!sigmaContainer.value || !communityGraphData.value) return
+
+  if (renderer) {
+    renderer.kill()
+    renderer = null
+  }
+  focusedNode = null
+  focusedNeighbors.clear()
+  focusedLabel.value = ''
+  chatFocusedNodes.clear()
+  chatFocusedNeighbors.clear()
+
+  graph = new Graph()
+
+  for (const node of communityGraphData.value.nodes) {
+    const size = Math.max(8, Math.min(60, Math.sqrt(node.data.size) * 3))
+    graph.addNode(node.data.id, {
+      label: node.data.label,
+      x: node.data.x,
+      y: node.data.y,
+      size,
+      color: node.data.color,
+      labelColor: 'rgba(255, 255, 255, 0.85)',
+      nodeType: node.data.type,
+      community: node.data.community_id,
+      communityId: node.data.community_id,
+      memberCount: node.data.member_count,
+      summary: node.data.summary,
+      topEntities: node.data.top_entities,
+    })
+  }
+
+  for (const edge of communityGraphData.value.edges) {
+    if (graph.hasNode(edge.data.source) && graph.hasNode(edge.data.target)) {
+      try {
+        graph.addEdge(edge.data.source, edge.data.target, {
+          size: Math.max(1, Math.min(4, Math.sqrt(edge.data.weight) * 0.5)),
+          color: 'rgba(255, 255, 255, 0.06)',
+        })
+      } catch { /* dup */ }
+    }
+  }
+
+  nodeCount.value = graph.order
+  edgeCount.value = graph.size
+
+  renderer = new Sigma(graph, sigmaContainer.value, {
+    defaultNodeType: 'bordered',
+    nodeProgramClasses: { bordered: BorderedNodeProgram },
+    defaultEdgeType: 'line',
+    edgeProgramClasses: { line: EdgeLineProgram },
+    enableEdgeEvents: false,
+    drawLabel: drawLabelWithBg,
+    renderLabels: true,
+    labelColor: { attribute: 'labelColor', defaultValue: 'rgba(255, 255, 255, 0.85)' },
+    labelSize: 13,
+    labelFont: '"Inter", system-ui, sans-serif',
+    labelWeight: '600',
+    labelDensity: 0.5,
+    labelGridCellSize: 120,
+    labelRenderedSizeThreshold: 4,
+    defaultNodeColor: '#6b7280',
+    defaultEdgeColor: 'rgba(255, 255, 255, 0.06)',
+    stagePadding: 60,
+    zIndex: true,
+    enableNodeHoverHighlighting: false,
+
+    nodeReducer(node, data) {
+      const res = { ...data }
+      if (hoveredNode === node) {
+        res.forceLabel = true
+        res.labelColor = '#000000'
+        res.labelBgColor = 'rgba(255, 255, 255, 0.92)'
+        res.size = (res.size as number) * 1.15
+      }
+      // Search filter
+      if (searchMatches.size > 0) {
+        if (searchMatches.has(node)) {
+          res.forceLabel = true
+          res.zIndex = 1
+        } else {
+          res.color = 'rgba(60, 60, 70, 0.15)'
+          res.size = 3
+          res.label = ''
+        }
+      }
+      return res
+    },
+
+    edgeReducer(edge, data) {
+      const res = { ...data }
+      if (searchMatches.size > 0) {
+        const [src, tgt] = graph!.extremities(edge)
+        if (!searchMatches.has(src) && !searchMatches.has(tgt)) {
+          res.hidden = true
+        }
+      }
+      return res
+    },
+  })
+
+  renderer.on('enterNode', ({ node }) => {
+    hoveredNode = node
+    sigmaContainer.value!.style.cursor = 'pointer'
+    renderer?.refresh()
+  })
+  renderer.on('leaveNode', () => {
+    hoveredNode = null
+    sigmaContainer.value!.style.cursor = 'default'
+    renderer?.refresh()
+  })
+
+  // Click community → drill into entity view for that community
+  renderer.on('clickNode', async ({ node }) => {
+    const communityId = graph!.getNodeAttribute(node, 'communityId')
+    if (communityId !== undefined) {
+      drillIntoCommunity(communityId)
+    }
+  })
+
+  renderer.on('clickStage', () => {
+    // nothing to do in community view
+  })
+}
+
+async function drillIntoCommunity(communityId: number) {
+  drillCommunityId.value = communityId
+  viewMode.value = 'entities'
+  // fetchGraph will load full graph; we filter in initSigma via drillCommunityId
+  await fetchGraph()
+  await nextTick()
+  requestAnimationFrame(() => {
+    initSigma()
+    loading.value = false
+  })
+}
+
+async function exitDrill() {
+  drillCommunityId.value = null
+  viewMode.value = 'communities'
+  await switchToCommunityView()
+}
+
+async function switchToCommunityView() {
+  loading.value = true
+  await fetchCommunityGraph()
+  await nextTick()
+  requestAnimationFrame(() => {
+    initCommunitySigma()
+    loading.value = false
+  })
+}
+
+async function switchToEntityView() {
+  loading.value = true
+  await fetchGraph()
+  await nextTick()
+  requestAnimationFrame(() => {
+    initSigma()
+    loading.value = false
+  })
+}
+
 function lighten(hex: string, amount: number): string {
   if (hex.startsWith('rgba') || hex.startsWith('rgb(')) return hex
   const h = hex.replace('#', '')
@@ -608,15 +816,24 @@ async function refreshGraph() {
   chatFocusedNeighbors.clear()
   activeTypes.value = new Set(entityTypes)
   graphStale.value = false
+  drillCommunityId.value = null
   unfocusNode()
   clearSelection()
-  await fetchGraph()
-  await nextTick()
-  requestAnimationFrame(() => {
-    initSigma()
-    loading.value = false
-  })
+  if (viewMode.value === 'communities') {
+    await switchToCommunityView()
+  } else {
+    await switchToEntityView()
+  }
 }
+
+// Watch view mode changes (from toggle button)
+watch(viewMode, async (mode) => {
+  if (mode === 'communities' && drillCommunityId.value === null) {
+    await switchToCommunityView()
+  } else if (mode === 'entities' && drillCommunityId.value === null) {
+    await switchToEntityView()
+  }
+})
 
 // SSE: don't rebuild the graph while the user is looking at it — just track staleness
 const graphStale = ref(false)
@@ -642,10 +859,18 @@ function waitForLayout(): Promise<void> {
 }
 
 onMounted(async () => {
-  await fetchGraph()
+  if (viewMode.value === 'communities') {
+    await fetchCommunityGraph()
+  } else {
+    await fetchGraph()
+  }
   await nextTick()
   await waitForLayout()
-  initSigma()
+  if (viewMode.value === 'communities') {
+    initCommunitySigma()
+  } else {
+    initSigma()
+  }
   loading.value = false
 
   // ResizeObserver: auto-resize Sigma when container changes (panel open/close, window resize)
@@ -787,5 +1012,14 @@ onUnmounted(() => {
 }
 .type-pill.active .type-dot {
   opacity: 0.9;
+}
+.view-toggle {
+  flex-shrink: 0;
+}
+.view-toggle :deep(.v-btn) {
+  font-size: 11px !important;
+  text-transform: none !important;
+  letter-spacing: 0 !important;
+  min-width: 70px !important;
 }
 </style>
