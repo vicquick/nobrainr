@@ -26,6 +26,11 @@ ENTITY RULES:
 - Fewer high-quality entities are MUCH better than many low-quality ones.
 - If the text is a simple commit message with no meaningful entities, return empty lists.
 
+TEMPORAL ANCHORING:
+- When dates or timeframes are mentioned, include them in entity descriptions.
+- Prefer "what happened" over "what was planned" — extract outcomes, not intentions.
+- If both an old and new state are described, capture the transition (e.g. "replaced X with Y").
+
 RELATIONSHIP RULES — this is critical for a connected graph:
 - For EVERY pair of extracted entities, actively consider whether a relationship exists.
 - Extract relationships that are explicitly stated OR reasonably implied by context.

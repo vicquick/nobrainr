@@ -283,6 +283,9 @@ class Scheduler:
                 raise
             except Exception:
                 logger.exception("LLM job '%s' failed", name)
+            # Fairness yield: after releasing semaphore, give other jobs a chance
+            # to acquire it before this job's next sleep→acquire cycle
+            await asyncio.sleep(5)
             await asyncio.sleep(interval_seconds)
 
     @staticmethod
