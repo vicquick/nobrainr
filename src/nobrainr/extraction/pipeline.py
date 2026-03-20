@@ -106,6 +106,39 @@ def _is_noise_entity(name: str) -> bool:
     return False
 
 
+_NOISE_CONTENT_RE = re.compile(
+    r"^(ok|okay|sure|thanks|thank you|yes|no|yep|nope|got it|understood|"
+    r"right|alright|cool|nice|great|good|fine|hmm|hm|ah|oh|lol|haha|"
+    r"👍|👌|✅|❌|🙏|😊|🤔)\s*[.!?]*$",
+    re.IGNORECASE,
+)
+_SYSTEM_LINE_RE = re.compile(
+    r"^(\[system\]|\[routing\]|HEARTBEAT|ping|pong|timestamp:|session:|"
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})",
+    re.IGNORECASE,
+)
+
+
+def _prefilter_content(text: str) -> str | None:
+    """Pre-filter content before LLM extraction. Returns None if content is noise."""
+    if not text or len(text.strip()) < 30:
+        return None
+
+    # Strip system/routing lines
+    lines = text.split("\n")
+    clean_lines = [ln for ln in lines if not _SYSTEM_LINE_RE.match(ln.strip())]
+    cleaned = "\n".join(clean_lines).strip()
+
+    if not cleaned or len(cleaned) < 30:
+        return None
+
+    # Single-line noise check (acknowledgments, emojis)
+    if _NOISE_CONTENT_RE.match(cleaned):
+        return None
+
+    return cleaned
+
+
 async def process_memory(
     memory_id: str,
     content: str,
@@ -120,6 +153,14 @@ async def process_memory(
     5. Mark extraction as done (or failed on error)
     """
     try:
+        # Pre-filter: skip noise content before wasting GPU on extraction
+        filtered_content = _prefilter_content(content)
+        if filtered_content is None:
+            await set_extraction_status(memory_id, "done")
+            logger.debug("Skipped extraction for %s — content is noise/too short", memory_id)
+            return
+        content = filtered_content
+
         await set_extraction_status(memory_id, "pending")
 
         # Fetch neighborhood context: embed the memory, find nearby entities

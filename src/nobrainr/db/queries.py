@@ -189,6 +189,13 @@ async def search_memories(
         )
         results = [_row_to_dict(row) for row in rows]
 
+        # Dynamic recall thresholding: drop results below 50% of top score
+        if results:
+            top_sim = max(float(r.get("similarity", 0)) for r in results)
+            if top_sim > 0:
+                dynamic_floor = top_sim * 0.5
+                results = [r for r in results if float(r.get("similarity", 0)) >= dynamic_floor]
+
         if results:
             result_ids = [UUID(r["id"]) for r in results]
             await conn.execute(
@@ -326,6 +333,13 @@ async def _hybrid_search_rrf(
             d = _row_to_dict(row)
             d["rrf_score"] = rrf_scores[rid]
             results.append(d)
+
+        # Dynamic recall thresholding: drop results below 50% of top score
+        if results:
+            top_sim = max(float(r.get("similarity", 0)) for r in results)
+            if top_sim > 0:
+                dynamic_floor = top_sim * 0.5
+                results = [r for r in results if float(r.get("similarity", 0)) >= dynamic_floor]
 
         if results:
             result_ids = [UUID(r["id"]) for r in results]
@@ -1463,11 +1477,18 @@ async def search_facts(
                 """,
                 embedding, limit,
             )
-        return [
+        results = [
             {**_row_to_dict(r), "similarity": float(r["similarity"])}
             for r in rows
             if float(r["similarity"]) >= threshold
         ]
+        # Dynamic recall thresholding: drop results below 50% of top score
+        if results:
+            top_sim = max(r["similarity"] for r in results)
+            if top_sim > 0:
+                dynamic_floor = top_sim * 0.5
+                results = [r for r in results if r["similarity"] >= dynamic_floor]
+        return results
 
 
 async def get_memory_facts(memory_id: str) -> list[dict]:
