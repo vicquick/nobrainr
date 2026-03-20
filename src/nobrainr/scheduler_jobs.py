@@ -774,10 +774,13 @@ Each fact MUST be:
 - Self-contained (understandable without the original text)
 - Specific (include names, versions, exact details)
 - Actionable (useful for someone looking up this information)
+- Outcome-focused (what happened or what IS, not what was planned or intended)
+- Temporally anchored when dates are available (e.g. "As of March 2026, X uses Y")
 
 Do NOT extract:
 - Vague statements ("things went well", "it was discussed")
 - Opinions or subjective assessments
+- Plans or intentions that may not have been executed ("we should...", "planning to...")
 - Facts that require the original context to understand
 - Duplicate facts with slight rewording
 

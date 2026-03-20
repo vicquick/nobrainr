@@ -102,9 +102,9 @@ class Settings(BaseSettings):
     # Extraction quality
     quality_interval_hours: float = 4.0
     quality_batch_size: int = 20
-    # Memory quality scoring (LLM-assessed)
-    quality_scoring_interval_hours: float = 0.5
-    quality_scoring_batch_size: int = 30
+    # Memory quality scoring (LLM-assessed) — aggressive to clear 78% unscored backlog
+    quality_scoring_interval_hours: float = 0.25
+    quality_scoring_batch_size: int = 60
     # Knowledge crawl
     knowledge_crawl_enabled: bool = True
     knowledge_crawl_interval_hours: float = 3.0
