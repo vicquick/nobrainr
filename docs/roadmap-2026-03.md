@@ -6,7 +6,7 @@
 
 ## Phase 1: Search Quality (Quick Wins)
 
-### 1.1 Dynamic Recall Thresholding
+### 1.1 Dynamic Recall Thresholding — COMPLETED (60a257f)
 **Priority:** HIGH | **Effort:** ~10 lines | **Impact:** Major search quality improvement
 
 Drop search results below 50% of the top result's similarity score. Currently we use a fixed threshold (0.3) which lets irrelevant results through.
@@ -14,7 +14,7 @@ Drop search results below 50% of the top result's similarity score. Currently we
 **Files:** `db/queries.py` (search_memories, search_facts)
 **Inspiration:** Mem0 PR #4302 — raised auto-recall threshold to 0.6 and added dynamic scoring
 
-### 1.2 Pre-Extraction Content Filtering
+### 1.2 Pre-Extraction Content Filtering — COMPLETED (60a257f)
 **Priority:** HIGH | **Effort:** ~30 lines | **Impact:** Save GPU time, prevent noise at source
 
 Filter noise from ChatGPT conversations BEFORE sending to gemma3 for extraction. Currently we filter entities AFTER extraction — wasting GPU on noise content.
@@ -27,7 +27,7 @@ Add to the distill pipeline:
 **Files:** `services/distill.py`, `extraction/pipeline.py`
 **Inspiration:** Mem0 PR #4302 — `isNoiseMessage` → `isGenericAssistantMessage` → `stripNoiseFromContent`
 
-### 1.3 Temporal Anchoring in Extraction
+### 1.3 Temporal Anchoring in Extraction — COMPLETED (60a257f)
 **Priority:** MEDIUM | **Effort:** ~15 lines | **Impact:** Better temporal awareness in search
 
 Add timestamps to extraction prompts so extracted entities and relations carry temporal context. "Victor used QGIS in March 2026" vs just "Victor uses QGIS".
@@ -68,14 +68,14 @@ Microsoft's DRIFT search combines community summaries with entity-level search. 
 
 ## Phase 3: Quality Scoring & Cleanup
 
-### 3.1 Accelerate Quality Scoring
+### 3.1 Accelerate Quality Scoring — COMPLETED (60a257f)
 **Priority:** HIGH | **Effort:** Config change | **Impact:** Get 78% unscored → 0%
 
 Increase `quality_scoring_batch_size` from 30 → 100 and interval from 0.5h → 0.25h once ChatGPT distill backlog clears. The 78% unscored gap means we can't effectively filter by quality.
 
 **Files:** `config.py`
 
-### 3.2 Outcome-Over-Intent Extraction
+### 3.2 Outcome-Over-Intent Extraction — COMPLETED (60a257f)
 **Priority:** MEDIUM | **Effort:** ~10 lines prompt change | **Impact:** Higher quality extracted facts
 
 Modify extraction prompt to prefer "what happened" over "what was planned". Currently the LLM extracts intentions and plans as facts, which age poorly.
@@ -97,7 +97,7 @@ Modify extraction prompt to prefer "what happened" over "what was planned". Curr
 
 ## Phase 4: Performance & Scalability
 
-### 4.1 Semaphore Fairness
+### 4.1 Semaphore Fairness — COMPLETED (60a257f)
 **Priority:** MEDIUM | **Effort:** ~30 lines | **Impact:** Even GPU distribution across jobs
 
 Add a cooldown or round-robin mechanism so extraction doesn't monopolize the GPU semaphore for hours. Currently extraction runs continuously and starves other LLM jobs (facts, community summaries, quality scoring).
