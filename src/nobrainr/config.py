@@ -9,9 +9,10 @@ class Settings(BaseSettings):
     # PostgreSQL
     database_url: str = "postgresql://nobrainr:nobrainr@localhost:5432/nobrainr"
 
-    # Ollama
+    # LLM inference (llama-server for GPU, Ollama for embeddings)
+    llm_server_url: str = "http://llama-server:8080"
     ollama_url: str = "http://localhost:11434"
-    embedding_model: str = "snowflake-arctic-embed2"
+    embedding_model: str = "qwen3-embedding-cpu"
     embedding_dimensions: int = 1024
 
     # MCP Server
@@ -48,7 +49,7 @@ class Settings(BaseSettings):
     max_content_length: int = 50000  # 50KB max memory content
 
     # Extraction (knowledge graph)
-    extraction_model: str = "gemma3:12b"
+    extraction_model: str = "qwen3.5:35b"
     extraction_enabled: bool = True
 
     # Chat (RAG)
@@ -70,7 +71,7 @@ class Settings(BaseSettings):
     source_machine: str = ""
 
     # LLM scheduler jobs — BALANCED MODE: fact extraction + graph evolution
-    scheduler_llm_model: str = "gemma3:12b"
+    scheduler_llm_model: str = "qwen3.5:35b"
     summarize_interval_hours: float = 1.0
     summarize_batch_size: int = 20
     consolidation_interval_hours: float = 2.0
@@ -86,7 +87,7 @@ class Settings(BaseSettings):
     chatgpt_distill_interval_hours: float = 2.0  # 2h — backlog done, free GPU for fact extraction
     chatgpt_distill_batch_size: int = 30
     chatgpt_distill_concurrency: int = 1
-    chatgpt_distill_model: str = "gemma3:12b"
+    chatgpt_distill_model: str = "qwen3.5:35b"
     # Fact extraction (NEW — Mem0-style atomic facts)
     fact_extraction_interval_hours: float = 0.5  # 30min — high priority during initial backfill
     fact_extraction_batch_size: int = 20
