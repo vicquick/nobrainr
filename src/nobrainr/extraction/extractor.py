@@ -12,9 +12,9 @@ You are a precise entity and relationship extractor for a knowledge graph. \
 Extract clearly identifiable, specific, named entities and ALL factual relationships \
 between them — both explicit and reasonably implied.
 
-Entity types: person, project, technology, concept, file, config, error, location, \
-organization, service, database, command, container.
-Relationship types: uses, depends_on, fixes, part_of, created_by, \
+Entity entity_types: person, project, technology, concept, file, config, error, location, \
+organization, service, database, command, container, package.
+Relationship relationship_types: uses, depends_on, fixes, part_of, created_by, \
 deployed_on, configured_with, replaces, conflicts_with, runs_on, implements.
 
 ENTITY RULES:
@@ -49,26 +49,26 @@ Confidence calibration:
 Example input: "Fixed the Docker networking issue by adding nobrainr to the mcp network. \
 The pgvector container is now reachable on port 5432."
 Example output:
-entities: [{name: "Docker", type: "technology", description: "Container runtime"}, \
-{name: "nobrainr", type: "service", description: "Memory and knowledge graph service"}, \
-{name: "mcp", type: "config", description: "Docker network for MCP services"}, \
-{name: "pgvector", type: "container", description: "PostgreSQL + pgvector database"}]
-relationships: [{source: "nobrainr", target: "mcp", type: "deployed_on", confidence: 1.0}, \
-{source: "pgvector", target: "mcp", type: "deployed_on", confidence: 1.0}, \
-{source: "nobrainr", target: "pgvector", type: "depends_on", confidence: 0.8}, \
-{source: "pgvector", target: "Docker", type: "runs_on", confidence: 0.8}, \
-{source: "nobrainr", target: "Docker", type: "runs_on", confidence: 0.8}]
+entities: [{name: "Docker", entity_type: "technology", description: "Container runtime"}, \
+{name: "nobrainr", entity_type: "service", description: "Memory and knowledge graph service"}, \
+{name: "mcp", entity_type: "config", description: "Docker network for MCP services"}, \
+{name: "pgvector", entity_type: "container", description: "PostgreSQL + pgvector database"}]
+relationships: [{source: "nobrainr", target: "mcp", relationship_type: "deployed_on", confidence: 1.0}, \
+{source: "pgvector", target: "mcp", relationship_type: "deployed_on", confidence: 1.0}, \
+{source: "nobrainr", target: "pgvector", relationship_type: "depends_on", confidence: 0.8}, \
+{source: "pgvector", target: "Docker", relationship_type: "runs_on", confidence: 0.8}, \
+{source: "nobrainr", target: "Docker", relationship_type: "runs_on", confidence: 0.8}]
 
 Example input: "Switched from nomic-embed-text to snowflake-arctic-embed2 for embeddings. \
 Updated the HNSW indexes in pgvector to 1024 dimensions."
 Example output:
-entities: [{name: "nomic-embed-text", type: "technology", description: "768d embedding model"}, \
-{name: "snowflake-arctic-embed2", type: "technology", description: "1024d embedding model"}, \
-{name: "pgvector", type: "database", description: "PostgreSQL vector extension"}, \
-{name: "HNSW", type: "concept", description: "Approximate nearest neighbor index type"}]
-relationships: [{source: "snowflake-arctic-embed2", target: "nomic-embed-text", type: "replaces", confidence: 1.0}, \
-{source: "pgvector", target: "HNSW", type: "uses", confidence: 1.0}, \
-{source: "pgvector", target: "snowflake-arctic-embed2", type: "configured_with", confidence: 0.8}]\
+entities: [{name: "nomic-embed-text", entity_type: "technology", description: "768d embedding model"}, \
+{name: "snowflake-arctic-embed2", entity_type: "technology", description: "1024d embedding model"}, \
+{name: "pgvector", entity_type: "database", description: "PostgreSQL vector extension"}, \
+{name: "HNSW", entity_type: "concept", description: "Approximate nearest neighbor index type"}]
+relationships: [{source: "snowflake-arctic-embed2", target: "nomic-embed-text", relationship_type: "replaces", confidence: 1.0}, \
+{source: "pgvector", target: "HNSW", relationship_type: "uses", confidence: 1.0}, \
+{source: "pgvector", target: "snowflake-arctic-embed2", relationship_type: "configured_with", confidence: 0.8}]\
 """
 
 
