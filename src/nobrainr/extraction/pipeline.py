@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import re
 from typing import Callable
 
@@ -164,21 +165,24 @@ async def process_memory(
         await set_extraction_status(memory_id, "pending")
 
         # Fetch neighborhood context: embed the memory, find nearby entities
+        # Skip when NOBRAINR_SKIP_EXTRACTION_EMBED=true (avoids model swap during bulk backfill)
         known_entities = None
-        try:
-            mem_embedding = await embed_text(content[:1500])  # quick embed for lookup
-            nearby = await get_nearby_entities_for_memory(
-                mem_embedding, limit=15, min_mentions=2,
-            )
-            if nearby:
-                known_entities = [
-                    {"name": e["name"], "entity_type": e["entity_type"],
-                     "description": e.get("description", "")}
-                    for e in nearby
-                    if e.get("similarity", 0) > 0.3  # only reasonably relevant
-                ]
-        except Exception:
-            logger.debug("Neighborhood lookup failed for %s, proceeding without", memory_id)
+        skip_embed = os.environ.get("NOBRAINR_SKIP_EXTRACTION_EMBED", "").lower() in ("true", "1", "yes")
+        if not skip_embed:
+            try:
+                mem_embedding = await embed_text(content[:1500])  # quick embed for lookup
+                nearby = await get_nearby_entities_for_memory(
+                    mem_embedding, limit=15, min_mentions=2,
+                )
+                if nearby:
+                    known_entities = [
+                        {"name": e["name"], "entity_type": e["entity_type"],
+                         "description": e.get("description", "")}
+                        for e in nearby
+                        if e.get("similarity", 0) > 0.3  # only reasonably relevant
+                    ]
+            except Exception:
+                logger.debug("Neighborhood lookup failed for %s, proceeding without", memory_id)
 
         result = await extract_entities(content, known_entities=known_entities)
 
@@ -193,12 +197,16 @@ async def process_memory(
         clean_names = {e.name for e in clean_entities}
 
         # Batch-embed all entities at once (context-enriched: "type: name - description")
+        # Skip when NOBRAINR_SKIP_EXTRACTION_EMBED=true (bulk backfill mode)
         if clean_entities:
             embed_texts = []
             for entity in clean_entities:
                 desc = entity.description or entity.name
                 embed_texts.append(f"{entity.entity_type}: {entity.name} - {desc}")
-            embeddings = await embed_batch(embed_texts)
+            if skip_embed:
+                embeddings = [None] * len(embed_texts)
+            else:
+                embeddings = await embed_batch(embed_texts)
 
             for entity, embedding in zip(clean_entities, embeddings):
                 entity_id = await find_or_create_entity(
