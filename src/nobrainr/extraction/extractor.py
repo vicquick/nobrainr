@@ -24,7 +24,10 @@ ENTITY RULES:
 - NEVER extract "Co-Authored-By" AI model names from commit messages.
 - Entity names must be specific: "PostgreSQL" not "database", "Vue.js" not "frontend".
 - Fewer high-quality entities are MUCH better than many low-quality ones.
-- If the text is a simple commit message with no meaningful entities, return empty lists.
+- For commit messages: extract project names, feature names, and technologies mentioned.
+  "feat: Price Archive, WebSocket live updates" → Price Archive (feature), WebSocket (technology).
+- For source code: extract project name, key classes/components, frameworks used.
+  Only return empty if the code is a trivial init file or re-export with no meaningful content.
 
 TEMPORAL ANCHORING:
 - When dates or timeframes are mentioned, include them in entity descriptions.
