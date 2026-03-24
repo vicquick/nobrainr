@@ -1,8 +1,9 @@
-"""Shared Ollama chat helper for LLM-powered tasks."""
+"""LLM inference helper — supports llama-server (primary) and Ollama (fallback)."""
 
 import asyncio
 import json
 import logging
+import re
 
 import httpx
 
@@ -10,14 +11,65 @@ from nobrainr.config import settings
 
 logger = logging.getLogger("nobrainr")
 
-_client: httpx.AsyncClient | None = None
+_llm_client: httpx.AsyncClient | None = None
+_ollama_client: httpx.AsyncClient | None = None
 
 
-def _get_client() -> httpx.AsyncClient:
-    global _client
-    if _client is None or _client.is_closed:
-        _client = httpx.AsyncClient(base_url=settings.ollama_url, timeout=180.0)
-    return _client
+def _get_llm_client() -> httpx.AsyncClient:
+    """Client for llama-server (GPU LLM inference)."""
+    global _llm_client
+    if _llm_client is None or _llm_client.is_closed:
+        _llm_client = httpx.AsyncClient(
+            base_url=settings.llm_server_url, timeout=300.0
+        )
+    return _llm_client
+
+
+def _get_ollama_client() -> httpx.AsyncClient:
+    """Client for Ollama (embeddings only)."""
+    global _ollama_client
+    if _ollama_client is None or _ollama_client.is_closed:
+        _ollama_client = httpx.AsyncClient(
+            base_url=settings.ollama_url, timeout=180.0
+        )
+    return _ollama_client
+
+
+def _extract_json(content: str) -> dict:
+    """Extract JSON from LLM response that may contain markdown or preamble."""
+    cleaned = content.strip()
+
+    # Direct parse
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # Strip markdown code blocks
+    md_match = re.search(r'```(?:json)?\s*\n(.+?)\n\s*```', cleaned, re.DOTALL)
+    if md_match:
+        try:
+            return json.loads(md_match.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+
+    # Find first { to last }
+    first_brace = cleaned.find('{')
+    last_brace = cleaned.rfind('}')
+    if first_brace != -1 and last_brace > first_brace:
+        json_str = cleaned[first_brace:last_brace + 1]
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            # Try Python dict (single quotes)
+            import ast
+            try:
+                return ast.literal_eval(json_str)
+            except (ValueError, SyntaxError):
+                pass
+
+    # No JSON found — return empty extraction result
+    return {"entities": [], "relationships": []}
 
 
 async def ollama_chat(
@@ -28,89 +80,117 @@ async def ollama_chat(
     model: str | None = None,
     temperature: float = 0.1,
     num_ctx: int = 8192,
-    timeout: float = 180.0,
+    timeout: float = 300.0,
     keep_alive: str = "24h",
     think: bool = False,
 ) -> dict:
-    """Send a structured-output chat request to Ollama.
+    """Send a structured-output request to llama-server (OpenAI-compatible API).
+
+    Uses /v1/chat/completions for GPU-accelerated inference via llama-server.
+    Falls back to robust JSON extraction from free-form responses.
 
     Args:
         system: System prompt.
         user: User message.
-        schema: JSON schema for structured output.
-        model: Ollama model name (defaults to settings.extraction_model).
+        schema: JSON schema (used as documentation in prompt, not as format constraint).
+        model: Ignored (llama-server serves a single model).
         temperature: LLM temperature.
-        num_ctx: Context window size.
+        num_ctx: Context window size (managed by llama-server config).
         timeout: HTTP timeout in seconds.
-        keep_alive: How long to keep the model loaded.
-        think: Enable model thinking/reasoning (disable for simple structured tasks).
+        keep_alive: Ignored (llama-server keeps model loaded permanently).
+        think: Enable model thinking/reasoning (disable for structured tasks).
 
     Returns:
         Parsed JSON dict from the LLM response.
-
-    Raises:
-        Exception on HTTP or parsing errors.
     """
-    client = _get_client()
+    client = _get_llm_client()
+
     payload = {
-        "model": model or settings.extraction_model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        "format": schema,
+        "max_tokens": 2000,
+        "temperature": temperature,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
         "stream": False,
-        "think": think,
-        "options": {
-            "temperature": temperature,
-            "num_ctx": num_ctx,
-        },
-        "keep_alive": keep_alive,
     }
+
+    # Disable thinking for structured output (saves tokens + time)
+    if not think:
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
 
     retryable_status = {404, 503, 502, 429}
     last_exc: Exception | None = None
     for attempt in range(5):
         try:
-            resp = await client.post("/api/chat", json=payload, timeout=timeout)
+            resp = await client.post(
+                "/v1/chat/completions", json=payload, timeout=timeout
+            )
             if resp.status_code in retryable_status:
-                last_exc = httpx.HTTPStatusError(
-                    f"HTTP {resp.status_code} on attempt {attempt + 1}",
-                    request=resp.request, response=resp,
-                )
                 wait = 2 ** attempt
                 logger.warning(
-                    "Ollama /api/chat returned %d (attempt %d/5), retrying in %ds",
+                    "llama-server returned %d (attempt %d/5), retrying in %ds",
                     resp.status_code, attempt + 1, wait,
+                )
+                last_exc = httpx.HTTPStatusError(
+                    f"HTTP {resp.status_code}",
+                    request=resp.request, response=resp,
                 )
                 await asyncio.sleep(wait)
                 continue
             resp.raise_for_status()
+
+            raw_text = resp.text
+            if not raw_text or not raw_text.strip():
+                wait = 2 ** attempt
+                logger.warning(
+                    "llama-server empty body (attempt %d/5), retrying in %ds",
+                    attempt + 1, wait,
+                )
+                last_exc = ValueError("Empty response body")
+                await asyncio.sleep(wait)
+                continue
+
             data = resp.json()
-            content = data["message"]["content"]
+            content = (
+                data.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
+
             if not content or not content.strip():
                 wait = 2 ** attempt
                 logger.warning(
-                    "Ollama returned empty content (attempt %d/5), retrying in %ds",
+                    "llama-server empty content (attempt %d/5), retrying in %ds",
                     attempt + 1, wait,
                 )
-                last_exc = ValueError("Empty LLM response")
+                last_exc = ValueError("Empty LLM content")
                 await asyncio.sleep(wait)
                 continue
-            return json.loads(content)
+
+            return _extract_json(content)
+
         except json.JSONDecodeError as exc:
             wait = 2 ** attempt
             logger.warning(
-                "Ollama returned malformed JSON (attempt %d/5), retrying in %ds: %.80s",
+                "llama-server malformed JSON (attempt %d/5), retrying in %ds: %.80s",
                 attempt + 1, wait, str(exc),
             )
             last_exc = exc
             await asyncio.sleep(wait)
-            continue
-        except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as exc:
+        except (
+            httpx.ConnectError,
+            httpx.ReadTimeout,
+            httpx.WriteTimeout,
+            httpx.PoolTimeout,
+            httpx.RemoteProtocolError,
+        ) as exc:
             wait = 2 ** attempt
             logger.warning(
-                "Ollama /api/chat %s (attempt %d/5), retrying in %ds",
+                "llama-server %s (attempt %d/5), retrying in %ds",
                 type(exc).__name__, attempt + 1, wait,
             )
             await asyncio.sleep(wait)
@@ -130,48 +210,50 @@ async def ollama_generate(
     keep_alive: str = "24h",
     max_tokens: int = 512,
 ) -> str:
-    """Generate plain text from Ollama (no structured output).
+    """Generate plain text using llama-server.
 
     Used for HyDE hypothetical document generation and query decomposition.
     """
-    client = _get_client()
+    client = _get_llm_client()
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
     payload = {
-        "model": model or settings.scheduler_llm_model,
         "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
         "stream": False,
-        "think": False,
-        "options": {
-            "temperature": temperature,
-            "num_ctx": num_ctx,
-            "num_predict": max_tokens,
-        },
-        "keep_alive": keep_alive,
+        "chat_template_kwargs": {"enable_thinking": False},
     }
 
-    retryable_status = {404, 503, 502, 429}
     last_exc: Exception | None = None
     for attempt in range(3):
         try:
-            resp = await client.post("/api/chat", json=payload, timeout=timeout)
-            if resp.status_code in retryable_status:
-                wait = 2 ** attempt
-                logger.warning("ollama_generate %d (attempt %d/3)", resp.status_code, attempt + 1)
-                last_exc = httpx.HTTPStatusError(
-                    f"HTTP {resp.status_code}", request=resp.request, response=resp,
-                )
-                await asyncio.sleep(wait)
-                continue
+            resp = await client.post(
+                "/v1/chat/completions", json=payload, timeout=timeout
+            )
             resp.raise_for_status()
-            content = resp.json()["message"]["content"]
+            content = (
+                resp.json()
+                .get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
             return content.strip() if content else ""
-        except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as exc:
+        except (
+            httpx.ConnectError,
+            httpx.ReadTimeout,
+            httpx.WriteTimeout,
+            httpx.PoolTimeout,
+            httpx.RemoteProtocolError,
+        ) as exc:
             wait = 2 ** attempt
-            logger.warning("ollama_generate %s (attempt %d/3)", type(exc).__name__, attempt + 1)
+            logger.warning(
+                "ollama_generate %s (attempt %d/3)",
+                type(exc).__name__, attempt + 1,
+            )
             last_exc = exc
             await asyncio.sleep(wait)
 
