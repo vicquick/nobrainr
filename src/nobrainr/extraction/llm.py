@@ -41,7 +41,11 @@ def _extract_json(content: str) -> dict:
 
     # Direct parse
     try:
-        return json.loads(cleaned)
+        parsed = json.loads(cleaned)
+        # Model sometimes returns a bare list instead of {"entities": [...]}
+        if isinstance(parsed, list):
+            return {"entities": parsed, "relationships": []}
+        return parsed
     except json.JSONDecodeError:
         pass
 
@@ -50,6 +54,17 @@ def _extract_json(content: str) -> dict:
     if md_match:
         try:
             return json.loads(md_match.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+
+    # Find first [ — might be a bare list
+    first_bracket = cleaned.find('[')
+    last_bracket = cleaned.rfind(']')
+    if first_bracket != -1 and last_bracket > first_bracket and (cleaned.find('{') == -1 or first_bracket < cleaned.find('{')):
+        try:
+            parsed = json.loads(cleaned[first_bracket:last_bracket + 1])
+            if isinstance(parsed, list):
+                return {"entities": parsed, "relationships": []}
         except json.JSONDecodeError:
             pass
 
