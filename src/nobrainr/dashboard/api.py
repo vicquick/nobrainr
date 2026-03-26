@@ -893,10 +893,138 @@ async def api_facts_stats(request: Request) -> JSONResponse:
         return JSONResponse({"total_facts": 0, "coverage_pct": 0})
 
 
+_GALAXY_CACHE_PATH = "/tmp/nobrainr_galaxy_cache.json"
+
+
+async def api_galaxy(request: Request) -> JSONResponse:
+    """3D galaxy visualization data — PCA-reduced embeddings for all memories.
+
+    Returns flat arrays for efficient Three.js InstancedBufferGeometry consumption.
+    Caches the PCA result for 1 hour.
+    """
+    import json
+    import os
+    import time as _time
+
+    # Serve from cache if available and fresh (max 1h)
+    force = request.query_params.get("refresh", "").lower() == "true"
+    if not force and os.path.exists(_GALAXY_CACHE_PATH):
+        age = _time.time() - os.path.getmtime(_GALAXY_CACHE_PATH)
+        if age < 3600:
+            with open(_GALAXY_CACHE_PATH) as f:
+                return JSONResponse(json.load(f))
+
+    from nobrainr.db.pool import get_pool
+
+    pool = await get_pool()
+    # Limit to manageable size for UMAP — sample by importance
+    limit = int(request.query_params.get("limit", "10000"))
+    limit = min(limit, 50000)
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT id, embedding::float4[]::float8[] as emb, category, tier,
+                   COALESCE(summary, LEFT(content, 80)) as summary,
+                   source_type, importance
+            FROM memories
+            WHERE embedding IS NOT NULL
+            ORDER BY COALESCE(importance, 0.5) DESC, created_at DESC
+            LIMIT $1
+        """, limit)
+
+    if not rows:
+        return JSONResponse({"count": 0, "positions": [], "categories": [], "ids": []})
+
+    import numpy as np
+
+    count = len(rows)
+    dim = len(rows[0]["emb"])
+    matrix = np.zeros((count, dim), dtype=np.float32)
+    categories = []
+    tiers = []
+    ids = []
+    summaries = []
+    importances = []
+
+    for i, row in enumerate(rows):
+        emb = row["emb"]
+        if emb and len(emb) == dim:
+            matrix[i] = emb
+        categories.append(row["category"] or "other")
+        tiers.append(row["tier"] if row["tier"] is not None else 2)
+        ids.append(str(row["id"]))
+        summaries.append(row["summary"] or "")
+        importances.append(float(row["importance"]) if row["importance"] else 0.5)
+
+    # Dimensionality reduction: PCA → 50d → UMAP → 3d
+    log.info("Galaxy: reducing %d points from %dd to 3d...", count, dim)
+
+    # Step 1: PCA to 50d (fast, removes noise dimensions)
+    from sklearn.decomposition import PCA as SkPCA
+
+    pca_dim = min(50, dim, count - 1)
+    pca = SkPCA(n_components=pca_dim)
+    pca50 = pca.fit_transform(matrix)
+    log.info("Galaxy: PCA %dd → %dd (%.1f%% variance)", dim, pca_dim,
+             pca.explained_variance_ratio_.sum() * 100)
+
+    # Step 2: UMAP to 3d (preserves local + global structure)
+    try:
+        from umap import UMAP
+        reducer = UMAP(
+            n_components=3,
+            n_neighbors=15,
+            min_dist=0.1,
+            metric="euclidean",  # faster than cosine on PCA-reduced data
+            random_state=42,
+            n_epochs=200,  # default 500, trade some quality for speed
+            n_jobs=-1,  # use all CPU cores
+            low_memory=True,
+        )
+        coords = reducer.fit_transform(pca50)
+        log.info("Galaxy: UMAP → 3d complete")
+    except ImportError:
+        log.warning("Galaxy: umap-learn not installed, falling back to PCA-only 3d")
+        pca3 = SkPCA(n_components=3)
+        coords = pca3.fit_transform(pca50)
+    except Exception as exc:
+        log.warning("Galaxy: UMAP failed (%s), falling back to PCA-only 3d", exc)
+        pca3 = SkPCA(n_components=3)
+        coords = pca3.fit_transform(pca50)
+
+    # Normalize to [-1, 1] range
+    max_abs = np.abs(coords).max()
+    if max_abs > 0:
+        coords = (coords / max_abs).astype(np.float32)
+
+    # Flatten for JSON transfer
+    positions = coords.flatten().tolist()
+
+    result = {
+        "count": count,
+        "positions": positions,
+        "categories": categories,
+        "tiers": tiers,
+        "ids": ids,
+        "summaries": summaries,
+        "importances": importances,
+    }
+
+    # Cache
+    try:
+        with open(_GALAXY_CACHE_PATH, "w") as f:
+            json.dump(result, f)
+    except Exception:
+        pass
+
+    return JSONResponse(result)
+
+
 api_routes = [
     Route("/api/transcribe", api_transcribe, methods=["POST"]),
     Route("/api/tts", api_tts, methods=["POST"]),
     Route("/api/chat", api_chat, methods=["POST"]),
+    Route("/api/galaxy", api_galaxy),
     Route("/api/graph", api_graph),
     Route("/api/graph/communities", api_graph_communities),
     Route("/api/memories", api_memories),

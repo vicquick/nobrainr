@@ -5,7 +5,12 @@ const router = createRouter({
   routes: [
     {
       path: '/',
-      redirect: '/graph',
+      redirect: '/galaxy',
+    },
+    {
+      path: '/galaxy',
+      name: 'galaxy',
+      component: () => import('@/views/GalaxyView.vue'),
     },
     {
       path: '/graph',

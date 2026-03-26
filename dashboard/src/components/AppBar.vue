@@ -122,6 +122,7 @@ const chatStore = useChatStore()
 const drawer = ref(false)
 
 const navLinks = [
+  { to: '/galaxy', label: 'Galaxy', icon: 'mdi-creation' },
   { to: '/graph', label: 'Graph', icon: 'mdi-graph-outline' },
   { to: '/memories', label: 'Memories', icon: 'mdi-brain' },
   { to: '/timeline', label: 'Timeline', icon: 'mdi-timeline-clock-outline' },
