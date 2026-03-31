@@ -35,55 +35,83 @@ def _get_ollama_client() -> httpx.AsyncClient:
     return _ollama_client
 
 
+def _normalize_list(parsed: object) -> dict:
+    """Wrap a bare list in the expected extraction result structure."""
+    if isinstance(parsed, list):
+        return {"entities": parsed, "relationships": []}
+    return parsed  # type: ignore[return-value]
+
+
+# Regex to quote bare JS object keys: {name: "val"} → {"name": "val"}
+# Matches word chars at key positions (after { , [ or start-of-line) followed by :
+_JS_KEY_RE = re.compile(
+    r'([\[{,\n]|^)\s*([a-zA-Z_]\w*)\s*:', re.MULTILINE,
+)
+
+
+def _quote_js_keys(text: str) -> str:
+    """Convert JS-like object notation to valid JSON by quoting bare keys.
+
+    Handles LLM output like:
+        entities: [{name: "Docker", entity_type: "technology"}]
+    Converting to:
+        {"entities": [{"name": "Docker", "entity_type": "technology"}]}
+    """
+    s = text.strip()
+    # Wrap in {} if it starts with a bare key (top-level assignments like `entities: [...]`)
+    if s and not s.startswith('{') and not s.startswith('['):
+        s = '{' + s + '}'
+    s = _JS_KEY_RE.sub(r'\1"\2":', s)
+    return s
+
+
+def _try_parse(text: str) -> dict | None:
+    """Try JSON parse, then JS-key-quoting fallback. Returns None on failure."""
+    try:
+        return _normalize_list(json.loads(text))
+    except (json.JSONDecodeError, ValueError):
+        pass
+    try:
+        return _normalize_list(json.loads(_quote_js_keys(text)))
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return None
+
+
 def _extract_json(content: str) -> dict:
-    """Extract JSON from LLM response that may contain markdown or preamble."""
+    """Extract JSON from LLM response that may contain markdown, preamble, or JS notation."""
     cleaned = content.strip()
 
-    # Direct parse
-    try:
-        parsed = json.loads(cleaned)
-        # Model sometimes returns a bare list instead of {"entities": [...]}
-        if isinstance(parsed, list):
-            return {"entities": parsed, "relationships": []}
-        return parsed
-    except json.JSONDecodeError:
-        pass
+    # 1. Direct parse (valid JSON or JS-key-quoted)
+    result = _try_parse(cleaned)
+    if result is not None:
+        return result
 
-    # Strip markdown code blocks
+    # 2. Strip markdown code blocks
     md_match = re.search(r'```(?:json)?\s*\n(.+?)\n\s*```', cleaned, re.DOTALL)
     if md_match:
-        try:
-            return json.loads(md_match.group(1).strip())
-        except json.JSONDecodeError:
-            pass
+        result = _try_parse(md_match.group(1).strip())
+        if result is not None:
+            return result
 
-    # Find first [ — might be a bare list
-    first_bracket = cleaned.find('[')
-    last_bracket = cleaned.rfind(']')
-    if first_bracket != -1 and last_bracket > first_bracket and (cleaned.find('{') == -1 or first_bracket < cleaned.find('{')):
-        try:
-            parsed = json.loads(cleaned[first_bracket:last_bracket + 1])
-            if isinstance(parsed, list):
-                return {"entities": parsed, "relationships": []}
-        except json.JSONDecodeError:
-            pass
-
-    # Find first { to last }
+    # 3. Find first { to last } (skip preamble text)
     first_brace = cleaned.find('{')
     last_brace = cleaned.rfind('}')
     if first_brace != -1 and last_brace > first_brace:
-        json_str = cleaned[first_brace:last_brace + 1]
-        try:
-            return json.loads(json_str)
-        except json.JSONDecodeError:
-            # Try Python dict (single quotes)
-            import ast
-            try:
-                return ast.literal_eval(json_str)
-            except (ValueError, SyntaxError):
-                pass
+        result = _try_parse(cleaned[first_brace:last_brace + 1])
+        if result is not None:
+            return result
 
-    # No JSON found — return empty extraction result
+    # 4. Find first [ to last ] — bare list
+    first_bracket = cleaned.find('[')
+    last_bracket = cleaned.rfind(']')
+    if first_bracket != -1 and last_bracket > first_bracket:
+        result = _try_parse(cleaned[first_bracket:last_bracket + 1])
+        if result is not None:
+            return result
+
+    # Nothing worked
+    logger.warning("Failed to parse LLM response as JSON: %.300s", cleaned)
     return {"entities": [], "relationships": []}
 
 
@@ -125,13 +153,17 @@ async def ollama_chat(
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        "max_tokens": 2000,
+        "max_tokens": 4096,
         "temperature": temperature,
         "top_p": 0.95,
         "top_k": 20,
         "min_p": 0.0,
         "stream": False,
     }
+
+    # Force structured JSON output when a schema is provided
+    if schema:
+        payload["response_format"] = {"type": "json_object"}
 
     # Disable thinking for structured output (saves tokens + time)
     if not think:
