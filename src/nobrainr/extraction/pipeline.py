@@ -242,9 +242,14 @@ async def process_memory(
 
         await set_extraction_status(memory_id, "done")
 
+        stored_rels = sum(
+            1 for r in result.relationships
+            if r.source in entity_id_map and r.target in entity_id_map
+            and r.source in clean_names and r.target in clean_names
+        )
         logger.info(
-            "Extracted %d entities, %d relationships from memory %s",
-            len(result.entities), len(result.relationships), memory_id,
+            "Extracted %d entities (%d raw), %d relationships from memory %s",
+            len(clean_entities), len(result.entities), stored_rels, memory_id,
         )
 
     except Exception:
