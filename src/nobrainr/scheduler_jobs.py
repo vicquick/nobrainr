@@ -1717,6 +1717,47 @@ async def cooccurrence_linking() -> dict:
 
 
 # ──────────────────────────────────────────────
+# Hub dampening (entity specificity scoring)
+# ──────────────────────────────────────────────
+
+
+async def hub_dampening() -> dict:
+    """Compute IDF-like specificity scores for all entities.
+
+    Entities appearing in many memories (Python, Docker) get low specificity.
+    Niche entities (pgRouting, IfcOpenShell) get high specificity.
+    Used by co-occurrence linking to skip hub-hub pairs and by graph search
+    to weight results by specificity.
+    """
+    result = await queries.compute_entity_specificity()
+    result["ran_at"] = datetime.now().isoformat()
+    return result
+
+
+# ──────────────────────────────────────────────
+# Cross-community bridge detection
+# ──────────────────────────────────────────────
+
+
+async def bridge_detection() -> dict:
+    """Find entities that bridge multiple communities in the knowledge graph.
+
+    Bridge entities are the most valuable nodes — they connect different topic
+    clusters and enable cross-domain knowledge discovery. Requires community_detection
+    to have run at least once.
+    """
+    bridges = await queries.find_bridge_entities(min_communities=2, limit=200)
+    return {
+        "bridges_found": len(bridges),
+        "top_bridges": [
+            {"name": b["name"], "type": b["entity_type"], "communities": b["communities_bridged"]}
+            for b in bridges[:10]
+        ],
+        "ran_at": datetime.now().isoformat(),
+    }
+
+
+# ──────────────────────────────────────────────
 # GitHub incremental sync
 # ──────────────────────────────────────────────
 
