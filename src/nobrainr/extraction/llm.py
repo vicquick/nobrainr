@@ -161,10 +161,6 @@ async def ollama_chat(
         "stream": False,
     }
 
-    # Force structured JSON output when a schema is provided
-    if schema:
-        payload["response_format"] = {"type": "json_object"}
-
     # Disable thinking for structured output (saves tokens + time)
     if not think:
         payload["chat_template_kwargs"] = {"enable_thinking": False}
