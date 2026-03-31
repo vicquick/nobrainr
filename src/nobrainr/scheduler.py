@@ -11,29 +11,40 @@ logger = logging.getLogger("nobrainr")
 
 INITIAL_DELAY_SECONDS = 60
 
-# Staggered initial delays for LLM jobs (seconds)
+# Staggered initial delays for LLM jobs (seconds).
+# Designed for post-extraction graph optimization:
+#   Phase 1: Clean the graph (dedup, connect, describe, cluster)
+#   Phase 2: Score and consolidate memories
+#   Phase 3: Generate new knowledge
+#   Phase 4: External sources (web crawl, GitHub)
+#   Phase 5: Meta (health, optimization)
 LLM_JOB_DELAYS = {
-    "chatgpt_distill": 30,         # highest priority — clear backlog first
-    "fact_extraction": 1 * 60,     # high priority — build fact layer
-    "auto_summarize": 2 * 60,
-    "insight_extraction": 4 * 60,
-    "entity_enrichment": 6 * 60,
-    "entity_merging": 7 * 60,
-    "consolidation": 8 * 60,
-    "synthesis": 10 * 60,
-    "contradiction_detection": 12 * 60,
-    "extraction_quality": 14 * 60,
-    "cross_machine_insights": 16 * 60,
-    "knowledge_crawl": 18 * 60,
-    "quality_scoring": 1 * 60,  # start fast — lots of unscored memories
-    "entity_web_research": 20 * 60,
-    "freshness_recrawl": 22 * 60,
-    "interest_expansion": 25 * 60,
-    "system_pulse": 28 * 60,
-    "auto_optimize": 30 * 60,
-    "community_detection": 32 * 60,
-    "cooccurrence_linking": 9 * 60,  # after entity_merging, before synthesis
-    "github_sync": 35 * 60,  # after other jobs settle
+    # === Phase 1: Graph cleanup (immediate — highest priority) ===
+    "entity_merging": 30,           # deduplicate entities FIRST
+    "quality_scoring": 1 * 60,      # score memories (parallel — lots of backlog)
+    "cooccurrence_linking": 2 * 60, # build cross-branch connections
+    "entity_enrichment": 4 * 60,    # describe entities for search
+    "community_detection": 6 * 60,  # cluster the cleaned graph
+    # === Phase 2: Memory quality ===
+    "auto_summarize": 8 * 60,
+    "extraction_quality": 10 * 60,
+    "consolidation": 12 * 60,
+    "fact_extraction": 3 * 60,      # high priority — build fact layer
+    # === Phase 3: Knowledge growth ===
+    "chatgpt_distill": 14 * 60,
+    "insight_extraction": 16 * 60,
+    "synthesis": 18 * 60,
+    "contradiction_detection": 20 * 60,
+    "cross_machine_insights": 22 * 60,
+    # === Phase 4: External sources ===
+    "knowledge_crawl": 24 * 60,
+    "entity_web_research": 26 * 60,
+    "freshness_recrawl": 28 * 60,
+    "interest_expansion": 30 * 60,
+    # === Phase 5: Meta ===
+    "system_pulse": 32 * 60,
+    "auto_optimize": 34 * 60,
+    "github_sync": 36 * 60,
 }
 
 # Per-job timeout for LLM operations
@@ -64,6 +75,9 @@ class Scheduler:
             {"name": "feedback_integration", "interval_hours": settings.feedback_interval_hours, "type": "sql"},
             {"name": "memory_decay", "interval_hours": settings.decay_interval_hours, "type": "sql"},
             {"name": "auto_tier", "interval_hours": 6.0, "type": "sql"},
+            {"name": "entity_pruning", "interval_hours": 4.0, "type": "sql"},
+            {"name": "hub_dampening", "interval_hours": 4.0, "type": "sql"},
+            {"name": "bridge_detection", "interval_hours": 6.0, "type": "sql"},
             {"name": "monitor_health", "interval_hours": settings.monitoring_interval_hours, "type": "system"},
             {"name": "email_digest", "interval_hours": 24.0, "type": "system"},
         ]
@@ -131,7 +145,21 @@ class Scheduler:
                 self._run_periodic(
                     "entity_pruning",
                     self._job_entity_pruning,
-                    12.0 * 3600,  # every 12 hours — prune noise entities
+                    4.0 * 3600,  # every 4 hours — aggressive pruning post-extraction
+                )
+            ),
+            asyncio.create_task(
+                self._run_periodic(
+                    "hub_dampening",
+                    self._job_hub_dampening,
+                    4.0 * 3600,  # every 4 hours — recompute entity specificity
+                )
+            ),
+            asyncio.create_task(
+                self._run_periodic(
+                    "bridge_detection",
+                    self._job_bridge_detection,
+                    6.0 * 3600,  # every 6 hours — after community_detection
                 )
             ),
         ]
@@ -216,7 +244,7 @@ class Scheduler:
                 )
             )
 
-        sql_count = 4 + (2 if settings.monitoring_enabled else 0)
+        sql_count = 7 + (2 if settings.monitoring_enabled else 0)
         logger.info(
             "Scheduler started with %d LLM jobs + %d SQL jobs. "
             "monitoring=%s (%.1fh), "
@@ -327,6 +355,18 @@ class Scheduler:
         """Prune noise entities (<=1 memory link, older than 24h, no meaningful relations)."""
         from nobrainr import scheduler_jobs
         return await scheduler_jobs.entity_pruning()
+
+    @staticmethod
+    async def _job_hub_dampening() -> dict:
+        """Compute IDF-like specificity scores for all entities."""
+        from nobrainr import scheduler_jobs
+        return await scheduler_jobs.hub_dampening()
+
+    @staticmethod
+    async def _job_bridge_detection() -> dict:
+        """Find entities that bridge multiple communities."""
+        from nobrainr import scheduler_jobs
+        return await scheduler_jobs.bridge_detection()
 
 
 # Module-level singleton

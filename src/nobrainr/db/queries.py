@@ -1672,7 +1672,39 @@ async def get_duplicate_entities(limit: int = 10) -> list[dict]:
                 remaining,
             )
 
-        return [_row_to_dict(r) for r in list(name_dupes) + list(embed_dupes)]
+        # Strategy 3: Fuzzy name matching — strip non-alphanum chars, compare
+        # Catches: "IFC Open Shell" vs "IfcOpenShell" vs "ifc-open-shell"
+        remaining2 = limit - len(name_dupes) - len(embed_dupes)
+        fuzzy_dupes = []
+        if remaining2 > 0:
+            fuzzy_dupes = await conn.fetch(
+                """
+                SELECT a.id AS id_a, a.name AS name_a, a.entity_type AS type_a,
+                       a.mention_count AS mentions_a,
+                       (SELECT COUNT(*) FROM entity_memories em WHERE em.entity_id = a.id) AS mem_count_a,
+                       b.id AS id_b, b.name AS name_b, b.entity_type AS type_b,
+                       b.mention_count AS mentions_b,
+                       (SELECT COUNT(*) FROM entity_memories em WHERE em.entity_id = b.id) AS mem_count_b,
+                       0.95::float AS similarity
+                FROM entities a
+                JOIN entities b ON a.id < b.id
+                WHERE a.canonical_name != b.canonical_name
+                  AND LOWER(REGEXP_REPLACE(a.name, '[^a-zA-Z0-9]', '', 'g'))
+                    = LOWER(REGEXP_REPLACE(b.name, '[^a-zA-Z0-9]', '', 'g'))
+                  AND LENGTH(REGEXP_REPLACE(a.name, '[^a-zA-Z0-9]', '', 'g')) >= 4
+                  AND NOT EXISTS (
+                      SELECT 1 FROM agent_events
+                      WHERE event_type = 'entity_merge_checked'
+                        AND metadata->>'id_a' = a.id::text
+                        AND metadata->>'id_b' = b.id::text
+                  )
+                ORDER BY a.mention_count + b.mention_count DESC
+                LIMIT $1
+                """,
+                remaining2,
+            )
+
+        return [_row_to_dict(r) for r in list(name_dupes) + list(embed_dupes) + list(fuzzy_dupes)]
 
 
 async def merge_entities(winner_id: str, loser_id: str) -> None:
@@ -1805,6 +1837,107 @@ async def prune_noise_entities(*, min_age_hours: int = 24) -> dict:
         orphan_relations = int(orphan_result.split()[-1]) if orphan_result else 0
 
     return {"entities_pruned": pruned, "orphan_relations_removed": orphan_relations}
+
+
+async def compute_entity_specificity() -> dict:
+    """Compute IDF-like specificity scores for all entities.
+
+    specificity = ln(total_memories / max(memory_links, 1))
+    High specificity = rare, niche entity (IfcOpenShell, pgRouting) = valuable
+    Low specificity = generic hub (Python, Docker) = less valuable for linking
+
+    Also ensures the 'specificity' column exists (self-healing schema).
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Self-healing: add column if it doesn't exist
+        await conn.execute("""
+            DO $$ BEGIN
+                ALTER TABLE entities ADD COLUMN IF NOT EXISTS specificity float;
+            EXCEPTION WHEN duplicate_column THEN NULL;
+            END $$;
+        """)
+
+        total_memories = await conn.fetchval("SELECT count(*) FROM memories")
+        if total_memories == 0:
+            return {"updated": 0}
+
+        result = await conn.execute(
+            """
+            UPDATE entities e SET specificity = LN(
+                $1::float / GREATEST(
+                    (SELECT count(*) FROM entity_memories em WHERE em.entity_id = e.id),
+                    1
+                )
+            )
+            """,
+            total_memories,
+        )
+        updated = int(result.split()[-1]) if result else 0
+
+        # Create index for specificity-aware queries
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_entities_specificity
+            ON entities (specificity) WHERE specificity IS NOT NULL
+        """)
+
+        return {"updated": updated, "total_memories_base": total_memories}
+
+
+async def find_bridge_entities(min_communities: int = 2, limit: int = 100) -> list[dict]:
+    """Find entities that bridge multiple communities in the knowledge graph.
+
+    Bridge entities connect different topic clusters — they are the most
+    valuable nodes for cross-domain search and knowledge discovery.
+    Requires community_detection to have run first (community_id set on entities).
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT e.id, e.name, e.entity_type, e.community_id,
+                   COUNT(DISTINCT other.community_id) AS communities_bridged,
+                   ARRAY_AGG(DISTINCT other.community_id ORDER BY other.community_id)
+                       FILTER (WHERE other.community_id IS NOT NULL) AS community_ids
+            FROM entities e
+            JOIN entity_relations er
+                ON er.source_entity_id = e.id OR er.target_entity_id = e.id
+            JOIN entities other
+                ON other.id = CASE
+                    WHEN er.source_entity_id = e.id THEN er.target_entity_id
+                    ELSE er.source_entity_id
+                END
+            WHERE e.community_id IS NOT NULL
+              AND other.community_id IS NOT NULL
+              AND other.community_id != e.community_id
+            GROUP BY e.id, e.name, e.entity_type, e.community_id
+            HAVING COUNT(DISTINCT other.community_id) >= $1
+            ORDER BY COUNT(DISTINCT other.community_id) DESC
+            LIMIT $2
+            """,
+            min_communities,
+            limit,
+        )
+
+        bridges = [_row_to_dict(r) for r in rows]
+
+        # Store bridge scores in entity metadata
+        if bridges:
+            for b in bridges:
+                await conn.execute(
+                    """
+                    UPDATE entities SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+                        'bridge_score', $2::int,
+                        'bridge_communities', $3::int[]
+                    )
+                    WHERE id = $1
+                    """,
+                    UUID(b["id"]),
+                    b["communities_bridged"],
+                    b["community_ids"],
+                )
+
+        return bridges
 
 
 async def get_timeline_memories(
@@ -2497,8 +2630,12 @@ async def auto_tier_memories() -> dict:
 async def get_unlinked_cooccurrences(
     min_shared: int = 3,
     limit: int = 50,
+    max_memory_links: int = 300,
 ) -> list[dict]:
     """Find entity pairs co-occurring in min_shared+ memories with no relationship.
+
+    Filters out hub entities (>max_memory_links memories) to avoid noise like
+    "Python relates_to Docker" that drowns real signal.
 
     Returns rows with: entity_a_id, entity_a_name, entity_a_type,
                        entity_b_id, entity_b_name, entity_b_type,
@@ -2508,7 +2645,13 @@ async def get_unlinked_cooccurrences(
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            WITH cooccurrences AS (
+            WITH non_hub_entities AS (
+                SELECT entity_id
+                FROM entity_memories
+                GROUP BY entity_id
+                HAVING count(*) <= $3
+            ),
+            cooccurrences AS (
                 SELECT
                     em1.entity_id AS a_id,
                     em2.entity_id AS b_id,
@@ -2518,6 +2661,8 @@ async def get_unlinked_cooccurrences(
                 JOIN entity_memories em2
                     ON em1.memory_id = em2.memory_id
                    AND em1.entity_id < em2.entity_id
+                WHERE em1.entity_id IN (SELECT entity_id FROM non_hub_entities)
+                  AND em2.entity_id IN (SELECT entity_id FROM non_hub_entities)
                 GROUP BY em1.entity_id, em2.entity_id
                 HAVING count(DISTINCT em1.memory_id) >= $1
             ),
@@ -2542,6 +2687,7 @@ async def get_unlinked_cooccurrences(
             """,
             min_shared,
             limit,
+            max_memory_links,
         )
 
         # Fetch sample content for LLM context (up to 3 memories per pair)
