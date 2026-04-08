@@ -147,6 +147,20 @@ async def lifespan(app):
     # Pre-warm graph layout cache (runs in background, ~60s)
     asyncio.create_task(_warm_graph_cache())
 
+    # Pre-warm the cross-encoder reranker so the first user search doesn't
+    # pay the 2-5s cold-start of loading BAAI/bge-reranker-v2-m3 from HF.
+    async def _warm_reranker():
+        try:
+            from nobrainr.services import reranker
+            # Trigger lazy load in a worker thread — model init is CPU-bound
+            # and blocks ~2-5s.
+            if settings.reranker_enabled:
+                await asyncio.to_thread(reranker._get_st_reranker)
+                logger.info("Reranker pre-warmed: %s", settings.reranker_model)
+        except Exception:
+            logger.warning("Reranker pre-warm failed — will load on first search")
+    asyncio.create_task(_warm_reranker())
+
     # Start background scheduler for maintenance + feedback integration
     if settings.scheduler_enabled:
         from nobrainr.scheduler import scheduler

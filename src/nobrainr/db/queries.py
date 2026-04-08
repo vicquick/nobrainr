@@ -187,7 +187,7 @@ async def search_memories(
                    1 - (embedding <=> $1::{_VEC}) AS similarity,
                    memory_relevance($1::{_VEC}, embedding, created_at, importance, stability, access_count, now(), quality_score) AS relevance
             FROM candidates
-            ORDER BY memory_relevance($1::{_VEC}, embedding, created_at, importance, stability, access_count, now(), quality_score) DESC
+            ORDER BY relevance DESC
             LIMIT $3
             """,
             *params,
@@ -293,7 +293,7 @@ async def _hybrid_search_rrf(
                    1 - (embedding <=> $1::{_VEC}) AS similarity,
                    memory_relevance($1::{_VEC}, embedding, created_at, importance, stability, access_count, now(), quality_score) AS relevance
             FROM vec_candidates
-            ORDER BY memory_relevance($1::{_VEC}, embedding, created_at, importance, stability, access_count, now(), quality_score) DESC
+            ORDER BY relevance DESC
             LIMIT $3
             """,
             embedding, threshold, overfetch,
@@ -859,8 +859,18 @@ async def store_memory_outcome(
 
 
 async def integrate_feedback_scores() -> int:
-    """Adjust importance based on memory_outcomes feedback. Needs 2+ entries per memory.
-    Positive ratio adjusts importance by ±0.1 max. Returns count updated."""
+    """Adjust importance based on memory_outcomes feedback.
+
+    Only trust feedback that shows variance. The pre-2026-04-09 version would
+    UP-rank any memory with 2+ positive votes — which meant our 88K
+    auto-generated "was_useful=true" records silently inflated importance
+    on every memory the agent touched, without real signal.
+
+    New rule: a memory must have >=5 feedback events AND at least one
+    negative vote before the importance adjustment fires. This way the
+    only memories that move are those the agent has actually disagreed
+    with — which is where the signal actually is.
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
         result = await conn.execute(
@@ -877,10 +887,12 @@ async def integrate_feedback_scores() -> int:
             FROM (
                 SELECT memory_id,
                        COUNT(*) AS total,
-                       COUNT(*) FILTER (WHERE was_useful) ::real / COUNT(*) AS positive_ratio
+                       COUNT(*) FILTER (WHERE was_useful) ::real / COUNT(*) AS positive_ratio,
+                       COUNT(*) FILTER (WHERE NOT was_useful) AS neg_count
                 FROM memory_outcomes
                 GROUP BY memory_id
-                HAVING COUNT(*) >= 2
+                HAVING COUNT(*) >= 5
+                   AND COUNT(*) FILTER (WHERE NOT was_useful) >= 1
             ) fb
             WHERE m.id = fb.memory_id
             """
