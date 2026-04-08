@@ -310,6 +310,11 @@ async def api_memories(request: Request) -> JSONResponse:
 
     if q:
         embedding = await embed_text(q)
+        # Hybrid search (vector + BM25 RRF) + cross-encoder rerank, matching
+        # the MCP memory_search code path. The dashboard previously did
+        # vector-only with no rerank, so the same query against the API
+        # returned worse results than against MCP — confusing for any agent
+        # comparing the two.
         memories = await queries.search_memories(
             embedding=embedding,
             limit=limit,
@@ -317,9 +322,16 @@ async def api_memories(request: Request) -> JSONResponse:
             tags=tags,
             category=category,
             source_machine=source_machine,
+            text_query=q,
         )
         if min_quality is not None:
             memories = [m for m in memories if (m.get("quality_score") or 0) >= min_quality]
+        if memories and settings.reranker_enabled:
+            try:
+                from nobrainr.services.reranker import rerank
+                memories = await rerank(q, memories, limit=limit)
+            except Exception:
+                log.exception("Reranker failed in dashboard search; returning unranked")
     else:
         memories = await queries.query_memories(
             tags=tags,
