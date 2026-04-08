@@ -45,6 +45,9 @@ LLM_JOB_DELAYS = {
     "system_pulse": 32 * 60,
     "auto_optimize": 34 * 60,
     "github_sync": 36 * 60,
+    # Retrieval-quality backfill — prioritise early after deploy while there's
+    # a backlog, then self-throttles once the queue drains.
+    "contextual_prefix_backfill": 5 * 60,
 }
 
 # Per-job timeout for LLM operations
@@ -103,6 +106,7 @@ class Scheduler:
             {"name": "community_detection", "interval_hours": settings.community_detection_interval_hours, "type": "llm"},
             {"name": "cooccurrence_linking", "interval_hours": settings.cooccurrence_interval_hours, "type": "llm"},
             {"name": "github_sync", "interval_hours": settings.github_sync_interval_hours, "type": "llm"},
+            {"name": "contextual_prefix_backfill", "interval_hours": 2.0, "type": "llm"},
         ]
         return sql_jobs + llm_jobs
 
@@ -233,6 +237,8 @@ class Scheduler:
              settings.cooccurrence_interval_hours * 3600),
             ("github_sync", scheduler_jobs.github_sync,
              settings.github_sync_interval_hours * 3600),
+            ("contextual_prefix_backfill", scheduler_jobs.contextual_prefix_backfill,
+             2.0 * 3600),  # every 2h; each run processes 25 chunks, auto-idles when empty
         ]
 
         for name, job_func, interval in llm_jobs:

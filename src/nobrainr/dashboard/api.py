@@ -97,10 +97,16 @@ async def api_graph(request: Request) -> JSONResponse:
         data["edges"] = [e for e in data["edges"]
                          if e["data"]["source"] in keep_ids and e["data"]["target"] in keep_ids]
 
-    # Compute layout server-side
+    # Compute layout server-side. spring_layout / kamada_kawai are pure-Python
+    # CPU work that blocks for 10+ minutes on the full graph — push them off
+    # the event loop so the ASGI worker can keep serving requests during
+    # startup warmup and manual refreshes.
+    import asyncio
     from nobrainr.layout import compute_graph_layout
 
-    layout = compute_graph_layout(data["nodes"], data["edges"])
+    layout = await asyncio.to_thread(
+        compute_graph_layout, data["nodes"], data["edges"],
+    )
 
     # Inject positions + community into node data
     for node in data["nodes"]:

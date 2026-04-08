@@ -79,8 +79,8 @@ async def decide_write_action(
     content: str,
     embedding: list[float],
     *,
-    similarity_threshold: float = 0.85,
-    candidate_limit: int = 5,
+    similarity_threshold: float = 0.78,
+    candidate_limit: int = 10,
 ) -> dict:
     """Decide what to do with a new memory based on similar existing ones.
 
