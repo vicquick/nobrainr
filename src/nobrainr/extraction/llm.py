@@ -208,29 +208,61 @@ def _extract_json(content: str, schema: dict | None = None) -> dict:
     return {"entities": [], "relationships": []}
 
 
+def _wrap_schema_strict(schema: dict) -> dict:
+    """Return a copy of the schema with additionalProperties:false injected.
+
+    llama-server's response_format json_schema "strict" mode requires
+    additionalProperties:false on every object. We inject it recursively so
+    callers don't have to remember.
+    """
+    if not isinstance(schema, dict):
+        return schema
+    out = dict(schema)
+    if out.get("type") == "object":
+        out.setdefault("additionalProperties", False)
+        props = out.get("properties")
+        if isinstance(props, dict):
+            out["properties"] = {k: _wrap_schema_strict(v) for k, v in props.items()}
+    elif out.get("type") == "array":
+        items = out.get("items")
+        if isinstance(items, dict):
+            out["items"] = _wrap_schema_strict(items)
+    return out
+
+
 async def ollama_chat(
     system: str,
     user: str,
     schema: dict,
     *,
     model: str | None = None,
-    temperature: float = 0.1,
+    temperature: float = 0.7,
     num_ctx: int = 8192,
     timeout: float = 300.0,
     keep_alive: str = "24h",
     think: bool = False,
 ) -> dict:
-    """Send a structured-output request to llama-server (OpenAI-compatible API).
+    """Send a schema-constrained request to llama-server (OpenAI-compatible API).
 
-    Uses /v1/chat/completions for GPU-accelerated inference via llama-server.
-    Falls back to robust JSON extraction from free-form responses.
+    Uses /v1/chat/completions with ``response_format: json_schema`` for
+    grammar-constrained decoding. Confirmed working with
+    Qwen3.5-35B-A3B-UD-Q4_K_XL on llama.cpp build b8580 (2026-04-09):
+    the ``json_schema`` variant takes a different code path than the broken
+    ``json_object`` variant and honours the schema cleanly, including enums.
+
+    Falls back to robust JSON extraction + natural-language salvage on the
+    (rare) occasions the server drops the schema constraint.
+
+    Sampling defaults match Qwen3 team's official non-thinking-mode params
+    (temp=0.7, top_p=0.8, top_k=20, min_p=0) per the Qwen3 model card.
 
     Args:
         system: System prompt.
         user: User message.
-        schema: JSON schema (used as documentation in prompt, not as format constraint).
+        schema: JSON schema — passed as ``response_format.json_schema.schema``
+            AND summarised in the prompt for double-reinforcement.
         model: Ignored (llama-server serves a single model).
-        temperature: LLM temperature.
+        temperature: LLM temperature (default matches Qwen3 official params).
         num_ctx: Context window size (managed by llama-server config).
         timeout: HTTP timeout in seconds.
         keep_alive: Ignored (llama-server keeps model loaded permanently).
@@ -241,23 +273,31 @@ async def ollama_chat(
     """
     client = _get_llm_client()
 
-    payload = {
+    payload: dict = {
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
         "max_tokens": 4096,
         "temperature": temperature,
-        "top_p": 0.95,
+        "top_p": 0.8,
         "top_k": 20,
         "min_p": 0.0,
         "stream": False,
     }
 
-    # NOTE: llama-server's response_format={"type":"json_object"} grammar is
-    # incompatible with Qwen3.5-35B-A3B (produces empty content with
-    # finish_reason=length — all logits masked). Instead, _extract_json() below
-    # uses a natural-language salvage parser for decision-style prompts.
+    # Grammar-constrained decoding via OpenAI-compatible json_schema.
+    # Works on current llama.cpp build; injects additionalProperties:false
+    # recursively so "strict" mode is safe for all in-repo schemas.
+    if schema:
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "structured_output",
+                "strict": True,
+                "schema": _wrap_schema_strict(schema),
+            },
+        }
 
     # Disable thinking for structured output (saves tokens + time)
     if not think:

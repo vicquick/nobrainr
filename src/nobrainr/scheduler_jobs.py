@@ -799,17 +799,25 @@ async def fact_extraction() -> dict:
 
     # Find memories without facts
     async with pool.acquire() as conn:
-        # Auto-create table if not exists
-        await conn.execute("""
+        # Auto-create table if not exists. Canonical schema lives in
+        # db/schema.py — keep this DDL in sync (embedding_model added
+        # 2026-04-09 so the embedding-safeguard works across re-embeds).
+        await conn.execute(f"""
             CREATE TABLE IF NOT EXISTS memory_facts (
                 id UUID PRIMARY KEY DEFAULT uuidv7(),
                 memory_id UUID NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
                 content TEXT NOT NULL,
                 embedding vector(1024),
+                embedding_model text DEFAULT '{settings.embedding_model}',
                 quality_score REAL,
                 created_at TIMESTAMPTZ DEFAULT now()
             )
         """)
+        await conn.execute(
+            f"""ALTER TABLE memory_facts
+                ADD COLUMN IF NOT EXISTS embedding_model text
+                DEFAULT '{settings.embedding_model}'"""
+        )
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_facts_memory ON memory_facts(memory_id)")
 
         rows = await conn.fetch("""
@@ -837,7 +845,6 @@ async def fact_extraction() -> dict:
                 system=FACT_SYSTEM_PROMPT,
                 user=content[:4000],
                 schema=FACT_EXTRACTION_SCHEMA,
-                temperature=0.1,
                 num_ctx=8192,
                 timeout=60.0,
                 think=False,
@@ -1786,3 +1793,110 @@ async def github_sync() -> dict:
     except Exception:
         logger.exception("GitHub sync failed")
         return {"error": "sync failed", "ran_at": datetime.now().isoformat()}
+
+
+# ──────────────────────────────────────────────
+# Contextual-prefix backfill (Anthropic Contextual Retrieval)
+# ──────────────────────────────────────────────
+
+async def contextual_prefix_backfill() -> dict:
+    """Backfill contextual prefixes + re-embed chunks that predate the feature.
+
+    Anthropic's Contextual Retrieval research shows a 35-49% failure reduction
+    when each chunk's embedding is prefixed with a short "where does this chunk
+    live in the document" sentence. ``services/memory.py`` generates these
+    prefixes for new chunked writes but a backlog of ~1200 chunks exists from
+    before the feature was enabled. This job works through that backlog in
+    batches and auto-stops when nothing is left.
+
+    Runs every 2h with batch_size=25. Safe to re-run; idempotent on prefixes
+    (checks metadata ? 'contextual_prefix').
+    """
+    from nobrainr.db.pool import get_pool
+    from nobrainr.embeddings.ollama import embed_text
+    from nobrainr.services.memory import _generate_chunk_context
+
+    pool = await get_pool()
+    batch_size = 25
+
+    async with pool.acquire() as conn:
+        # Chunks missing a contextual prefix
+        candidates = await conn.fetch(
+            """
+            SELECT id, content, tags, category, metadata, source_ref
+            FROM memories
+            WHERE metadata ? 'chunk_index'
+              AND metadata ? 'document_id'
+              AND NOT (metadata ? 'contextual_prefix')
+              AND tier < 3
+            ORDER BY created_at DESC
+            LIMIT $1
+            """,
+            batch_size,
+        )
+
+    if not candidates:
+        return {"status": "idle", "processed": 0, "ran_at": datetime.now().isoformat()}
+
+    processed = 0
+    failed = 0
+    for row in candidates:
+        memory_id = row["id"]
+        content = row["content"]
+        meta = dict(row["metadata"] or {})
+        doc_title = meta.get("document_title") or row["source_ref"] or "Document"
+
+        try:
+            # Build a document summary from the first chunk of the same document
+            async with pool.acquire() as conn:
+                first_chunk = await conn.fetchval(
+                    """
+                    SELECT content
+                    FROM memories
+                    WHERE metadata->>'document_id' = $1
+                    ORDER BY (metadata->>'chunk_index')::int ASC
+                    LIMIT 1
+                    """,
+                    meta["document_id"],
+                )
+            doc_summary = f"{doc_title}. {(first_chunk or content)[:500]}"
+
+            prefix = await _generate_chunk_context(doc_summary, content)
+            if not prefix:
+                failed += 1
+                continue
+
+            # Re-embed in context-enriched form (mirrors store_memory_with_extraction)
+            tags = list(row["tags"] or [])
+            category = row["category"]
+            embed_parts = [prefix]
+            if category:
+                embed_parts.append(category)
+            if tags:
+                embed_parts.append(", ".join(tags))
+            embed_input = ". ".join(embed_parts) + ". " + content
+            new_embedding = await embed_text(embed_input)
+
+            meta["contextual_prefix"] = prefix
+            await queries.update_memory(
+                str(memory_id),
+                embedding=new_embedding,
+                metadata=meta,
+                _changed_by="scheduler:contextual_prefix_backfill",
+                _change_type="contextual_prefix_backfill",
+                _change_reason="Backfilled Anthropic-style contextual prefix and re-embedded",
+            )
+            processed += 1
+        except Exception:
+            logger.exception("Contextual prefix backfill failed for memory %s", memory_id)
+            failed += 1
+
+        await _yield_to_live_requests()
+
+    return {
+        "status": "processed",
+        "processed": processed,
+        "failed": failed,
+        "batch_size": batch_size,
+        "ran_at": datetime.now().isoformat(),
+    }
