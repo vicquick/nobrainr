@@ -1,8 +1,16 @@
 """GraphRAG community detection — find clusters of related entities.
 
-Uses the Louvain algorithm on the entity_relations graph to identify
-densely connected communities. Each community gets an LLM-generated
-summary for hierarchical retrieval.
+Uses the **Leiden** algorithm (Traag et al. 2019, CWTS) on the entity_relations
+graph to identify densely connected communities. Leiden guarantees that each
+cluster is internally connected — unlike Louvain, which can produce clusters
+that fall apart as soon as one bridging node is moved out. On our graph
+(a handful of hubs bridging otherwise-isolated communities) this difference
+matters in practice.
+
+Falls back to Louvain if ``leidenalg``/``igraph`` are not importable, so the
+service keeps working in environments that haven't rebuilt the container yet.
+
+Each community gets an LLM-generated summary for hierarchical retrieval.
 """
 
 import logging
@@ -13,6 +21,65 @@ from nobrainr.db.pool import get_pool
 from nobrainr.extraction.llm import ollama_chat
 
 logger = logging.getLogger("nobrainr")
+
+
+def _run_leiden(
+    nodes: list[str],
+    edges: list[tuple[str, str, float]],
+    *,
+    resolution: float,
+) -> list[set[str]]:
+    """Run Leiden via ``leidenalg`` + ``igraph``. Returns communities as sets of node IDs."""
+    import igraph as ig
+    import leidenalg
+
+    # Build igraph graph with stable node-id → vertex-index map
+    idx_of = {nid: i for i, nid in enumerate(nodes)}
+    g = ig.Graph(n=len(nodes), directed=False)
+    ig_edges = []
+    weights = []
+    for src, tgt, w in edges:
+        i = idx_of.get(src)
+        j = idx_of.get(tgt)
+        if i is None or j is None or i == j:
+            continue
+        ig_edges.append((i, j))
+        weights.append(float(w))
+    g.add_edges(ig_edges)
+    g.es["weight"] = weights
+
+    partition = leidenalg.find_partition(
+        g,
+        leidenalg.RBConfigurationVertexPartition,
+        weights="weight",
+        resolution_parameter=resolution,
+        seed=42,
+        n_iterations=-1,  # iterate until convergence (Leiden's key property)
+    )
+    return [{nodes[i] for i in members} for members in partition]
+
+
+def _run_louvain(
+    nodes: list[str],
+    edges: list[tuple[str, str, float]],
+    *,
+    resolution: float,
+) -> list[set[str]]:
+    """Fallback: networkx Louvain when leidenalg isn't installed."""
+    g = nx.Graph()
+    for nid in nodes:
+        g.add_node(nid)
+    for src, tgt, w in edges:
+        if g.has_edge(src, tgt):
+            g[src][tgt]["weight"] += float(w)
+        else:
+            g.add_edge(src, tgt, weight=float(w))
+    return [
+        set(c)
+        for c in nx.community.louvain_communities(
+            g, weight="weight", resolution=resolution, seed=42,
+        )
+    ]
 
 SUMMARY_SCHEMA = {
     "type": "object",
@@ -59,25 +126,27 @@ async def detect_communities(
     if not edges:
         return {"communities": 0, "entities_assigned": 0, "singleton_entities": len(entities), "largest_community_size": 0}
 
-    # Build networkx graph
-    G = nx.Graph()
-    entity_map = {e["id"]: e for e in entities}
-    for e in entities:
-        G.add_node(str(e["id"]))
+    # Flatten raw inputs once, then hand off to the chosen backend.
+    node_ids = [str(e["id"]) for e in entities]
+    edge_tuples: list[tuple[str, str, float]] = [
+        (str(e["source_entity_id"]), str(e["target_entity_id"]), float(e["confidence"] or 1.0))
+        for e in edges
+    ]
 
-    for edge in edges:
-        src = str(edge["source_entity_id"])
-        tgt = str(edge["target_entity_id"])
-        weight = float(edge["confidence"] or 1.0)
-        if G.has_edge(src, tgt):
-            G[src][tgt]["weight"] += weight
-        else:
-            G.add_edge(src, tgt, weight=weight)
-
-    # Run Louvain community detection
-    communities = nx.community.louvain_communities(
-        G, weight="weight", resolution=resolution, seed=42,
-    )
+    algo = "leiden"
+    try:
+        communities = _run_leiden(node_ids, edge_tuples, resolution=resolution)
+    except ImportError:
+        logger.warning(
+            "leidenalg/igraph not installed — falling back to Louvain. "
+            "Install `leidenalg` + `python-igraph` for guaranteed connected clusters."
+        )
+        communities = _run_louvain(node_ids, edge_tuples, resolution=resolution)
+        algo = "louvain_fallback"
+    except Exception:
+        logger.exception("Leiden failed unexpectedly, falling back to Louvain")
+        communities = _run_louvain(node_ids, edge_tuples, resolution=resolution)
+        algo = "louvain_fallback"
 
     # Filter out singleton/tiny communities
     valid_communities = [c for c in communities if len(c) >= min_community_size]
@@ -116,8 +185,8 @@ async def detect_communities(
     largest = max(len(c) for c in valid_communities) if valid_communities else 0
 
     logger.info(
-        "Community detection: %d communities, %d entities assigned, %d singletons, largest=%d",
-        len(valid_communities), assigned, singleton, largest,
+        "Community detection (%s): %d communities, %d entities assigned, %d singletons, largest=%d",
+        algo, len(valid_communities), assigned, singleton, largest,
     )
 
     return {
@@ -125,6 +194,7 @@ async def detect_communities(
         "entities_assigned": assigned,
         "singleton_entities": singleton,
         "largest_community_size": largest,
+        "algorithm": algo,
     }
 
 
@@ -180,7 +250,6 @@ async def generate_community_summaries(*, max_communities: int = 50) -> dict:
                 ),
                 user=f"Community members:\n{context}",
                 schema=SUMMARY_SCHEMA,
-                temperature=0.1,
                 num_ctx=2048,
                 timeout=120.0,
                 think=False,
