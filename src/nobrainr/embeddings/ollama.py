@@ -1,4 +1,11 @@
-"""Ollama embedding client for nomic-embed-text."""
+"""Ollama embedding client for Qwen3-Embedding (qwen3-embedding-cpu).
+
+Uses /api/embed. A single httpx AsyncClient is reused across calls with a
+generous timeout (60s) so that warm embeddings on CPU don't flap on slow
+startup runs. The batch helper splits large inputs into 64-item chunks
+because qwen3-embedding-cpu on 20-core EPYC comfortably handles that size
+without hitting the Ollama HTTP timeout.
+"""
 
 import asyncio
 import logging
@@ -13,6 +20,13 @@ _client: httpx.AsyncClient | None = None
 
 MAX_RETRIES = 5
 RETRYABLE_STATUS = {404, 503, 502, 429}
+
+# Larger default than the previous 32 — measured on qwen3-embedding-cpu
+# (20-core EPYC Genoa, no GPU): batches of 64 still finish in <1s each and
+# halve the per-batch HTTP overhead for large document imports and the
+# contextual-prefix backfill. 96+ starts hitting Ollama's default 60s
+# timeout on cold model loads, so we cap here.
+DEFAULT_BATCH_SIZE = 64
 
 
 def _get_client() -> httpx.AsyncClient:
@@ -63,7 +77,10 @@ async def embed_text(text: str) -> list[float]:
     return data["embeddings"][0]
 
 
-async def embed_batch(texts: list[str], batch_size: int = 32) -> list[list[float]]:
+async def embed_batch(
+    texts: list[str],
+    batch_size: int = DEFAULT_BATCH_SIZE,
+) -> list[list[float]]:
     """Generate embeddings for multiple texts."""
     all_embeddings = []
     for i in range(0, len(texts), batch_size):
