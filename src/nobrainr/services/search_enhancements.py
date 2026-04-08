@@ -150,7 +150,6 @@ async def global_search(query: str, *, max_communities: int = 30) -> dict:
                 system="Rate how relevant this knowledge graph community is to the query. Score 0.0-1.0.",
                 user=f"Query: {query}\n\nCommunity: {title}\nSummary: {summary}\nTopics: {topics}\nEntities: {top_entities}",
                 schema=RELEVANCE_SCHEMA,
-                temperature=0.1,
                 num_ctx=1024,
                 timeout=15.0,
                 think=False,
