@@ -47,7 +47,7 @@ src/nobrainr/              # Python backend
 ├── services/
 │   ├── memory.py          # store_memory_with_extraction(), store_document_chunked()
 │   ├── chunking.py        # Text chunking with configurable overlap
-│   └── reranker.py        # Cross-encoder reranking via flashrank (optional)
+│   └── reranker.py        # Cross-encoder reranking via flashrank (always installed)
 ├── embeddings/
 │   └── ollama.py          # Ollama API client (embed_text, embed_batch)
 ├── extraction/
@@ -209,8 +209,10 @@ This enables safe model migration via `nobrainr re-embed --model <new-model>`.
 
 ### Reranking (optional)
 
-When `NOBRAINR_RERANKER_ENABLED=true`, search overfetches 3x results and reranks with a cross-encoder
-(flashrank, ONNX, CPU-only, ~100ms for 30 docs). Install with `pip install nobrainr[reranker]`.
+When `NOBRAINR_RERANKER_ENABLED=true` (default), search overfetches 5x results and reranks with a
+cross-encoder (flashrank, ONNX, CPU-only, ~100ms for 30 docs). flashrank is now a hard dependency
+since the default model `ms-marco-MiniLM-L-12-v2` is small (~34 MB) and the quality lift is large.
+The model is auto-downloaded from HuggingFace on first use and cached at `/tmp/`.
 
 ## Memory Versioning (Audit Trail)
 
@@ -407,8 +409,7 @@ uv run ruff check src/
 # Test
 uv run pytest
 
-# Install with reranker support
-uv sync --extra reranker
+# flashrank is in main deps; uv sync installs everything needed
 ```
 
 ## Configuration Reference (Retrieval)

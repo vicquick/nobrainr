@@ -34,6 +34,10 @@ dependencies = [
     "pymupdf>=1.25.0",
     "umap-learn>=0.5.0",
     "scikit-learn>=1.4.0",
+    # Cross-encoder reranking (ONNX, CPU). Was optional but reranker_enabled
+    # defaults to True, so making it always-installed prevents silent degradation
+    # to "truncate to limit" when the module is missing.
+    "flashrank>=0.2.10",
 ]
 
 [project.urls]
@@ -43,9 +47,6 @@ Issues = "https://github.com/vicquick/nobrainr/issues"
 Changelog = "https://github.com/vicquick/nobrainr/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-reranker = [
-    "flashrank>=0.2.0",
-]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
