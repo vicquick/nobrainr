@@ -78,8 +78,90 @@ def _try_parse(text: str) -> dict | None:
     return None
 
 
-def _extract_json(content: str) -> dict:
-    """Extract JSON from LLM response that may contain markdown, preamble, or JS notation."""
+# Regex for decision-style natural language answers.
+# Matches paragraph-style Qwen3.5 outputs like:
+#   "**Yes, these entities refer to the same real-world thing.**"
+#   "No, these entities should NOT be merged."
+#   "Decision: Do Not Merge"
+#   "The answer is UPDATE."
+_NL_DECISION_RE = re.compile(
+    r'(?:\*\*)?\b'
+    r'(yes(?:,?\s+(?:these|they|the))?|'
+    r'no(?:,?\s+(?:these|they|the|do\s*not|should\s*not))?|'
+    r'(?:decision|answer|verdict)\s*[:—-]\s*(?:do\s*not\s*merge|merge|no|yes|'
+    r'add|update|supersede|noop))\b',
+    re.IGNORECASE,
+)
+
+_NL_ACTION_RE = re.compile(
+    r'\*\*\s*(ADD|UPDATE|SUPERSEDE|NOOP|MERGE|DO\s*NOT\s*MERGE)\s*\*\*|'
+    r'\b(ADD|UPDATE|SUPERSEDE|NOOP)\b',
+)
+
+
+def _salvage_nl_decision(content: str, schema: dict) -> dict | None:
+    """Salvage a decision-style response from natural-language LLM output.
+
+    Qwen3.5-35B-A3B frequently ignores JSON instructions for decision prompts
+    and emits paragraph-style answers instead. This function maps those answers
+    back to the expected JSON structure when the schema has a known shape.
+
+    Recognized shapes (by required fields):
+      - should_merge (bool): entity_merging — yes/no decisions
+      - action (enum):       dedup — ADD/UPDATE/SUPERSEDE/NOOP
+      - is_valid (bool):     extraction_quality
+      - relationship (str):  cooccurrence_linking — relationship type
+    """
+    props = (schema or {}).get("properties", {}) if isinstance(schema, dict) else {}
+    required = set((schema or {}).get("required", []) if isinstance(schema, dict) else [])
+
+    lower = content.lower()
+
+    # Shape 1: should_merge boolean (entity_merging)
+    if "should_merge" in props or "should_merge" in required:
+        m = _NL_DECISION_RE.search(content)
+        if m:
+            word = m.group(1).lower()
+            if word.startswith("no") or "do not merge" in word or "do_not_merge" in word:
+                return {"should_merge": False, "reason": content[:200]}
+            if word.startswith("yes") or word.endswith("merge"):
+                return {"should_merge": True, "reason": content[:200]}
+        # Fallback: look for bare "yes"/"no" at start of line
+        stripped = content.lstrip("* \n\t").lower()
+        if stripped.startswith("yes"):
+            return {"should_merge": True, "reason": content[:200]}
+        if stripped.startswith("no"):
+            return {"should_merge": False, "reason": content[:200]}
+        # Last-chance: scan anywhere for "should not be merged" / "do not merge" /
+        # "not be merged" (all NO) vs "should be merged" / "same" + affirmative
+        if re.search(r'(?i)(should\s+not|do\s+not|not\s+be|should\s*n\'?t)\s+(?:be\s+)?merge', content):
+            return {"should_merge": False, "reason": content[:200]}
+        if re.search(r'(?i)(should\s+be\s+merged|are\s+the\s+same|refer\s+to\s+the\s+same)', content):
+            return {"should_merge": True, "reason": content[:200]}
+
+    # Shape 2: action enum (dedup write-path)
+    if "action" in props or "action" in required:
+        m = _NL_ACTION_RE.search(content.upper())
+        if m:
+            action = (m.group(1) or m.group(2) or "").replace(" ", "").upper()
+            if action == "DONOTMERGE":
+                action = "NOOP"
+            if action in ("ADD", "UPDATE", "SUPERSEDE", "NOOP"):
+                return {"action": action, "reason": content[:200]}
+
+    # Shape 3: is_valid boolean (extraction_quality)
+    if "is_valid" in props or "is_valid" in required:
+        if "yes" in lower[:50] or "valid" in lower[:50] and "not" not in lower[:50]:
+            return {"is_valid": True, "confidence": 0.7, "reason": content[:200]}
+        if "no" in lower[:50] or "not valid" in lower[:50] or "invalid" in lower[:50]:
+            return {"is_valid": False, "confidence": 0.7, "reason": content[:200]}
+
+    return None
+
+
+def _extract_json(content: str, schema: dict | None = None) -> dict:
+    """Extract JSON from LLM response that may contain markdown, preamble,
+    JS notation, or paragraph-style natural language."""
     cleaned = content.strip()
 
     # 1. Direct parse (valid JSON or JS-key-quoted)
@@ -110,6 +192,17 @@ def _extract_json(content: str) -> dict:
         if result is not None:
             return result
 
+    # 5. Natural-language salvage for decision-style prompts where Qwen3.5
+    # emits paragraph answers like "**Yes, these entities are the same.**"
+    if schema is not None:
+        nl_result = _salvage_nl_decision(cleaned, schema)
+        if nl_result is not None:
+            logger.info(
+                "NL salvage: recovered %s from paragraph-style LLM response",
+                list(nl_result.keys()),
+            )
+            return nl_result
+
     # Nothing worked
     logger.warning("Failed to parse LLM response as JSON: %.300s", cleaned)
     return {"entities": [], "relationships": []}
@@ -126,7 +219,6 @@ async def ollama_chat(
     timeout: float = 300.0,
     keep_alive: str = "24h",
     think: bool = False,
-    json_mode: bool = True,
 ) -> dict:
     """Send a structured-output request to llama-server (OpenAI-compatible API).
 
@@ -143,14 +235,6 @@ async def ollama_chat(
         timeout: HTTP timeout in seconds.
         keep_alive: Ignored (llama-server keeps model loaded permanently).
         think: Enable model thinking/reasoning (disable for structured tasks).
-        json_mode: Default True. Forces llama-server to grammar-constrain
-            output to valid JSON via response_format. Adds a small per-token
-            overhead but is mandatory for decision-style prompts (entity_merging,
-            cooccurrence_linking, etc.) where Qwen3.5 otherwise emits
-            paragraph-style natural language like "**Yes, these entities...**"
-            that no fallback parser can recover. Extraction-style callers where
-            the _quote_js_keys fallback already handles JS-notation output
-            reliably should pass json_mode=False to skip the grammar overhead.
 
     Returns:
         Parsed JSON dict from the LLM response.
@@ -170,10 +254,10 @@ async def ollama_chat(
         "stream": False,
     }
 
-    # Force strict JSON output for decision-style prompts (entity_merging,
-    # cooccurrence_linking, etc.) where Qwen3.5 otherwise emits natural language.
-    if json_mode:
-        payload["response_format"] = {"type": "json_object"}
+    # NOTE: llama-server's response_format={"type":"json_object"} grammar is
+    # incompatible with Qwen3.5-35B-A3B (produces empty content with
+    # finish_reason=length — all logits masked). Instead, _extract_json() below
+    # uses a natural-language salvage parser for decision-style prompts.
 
     # Disable thinking for structured output (saves tokens + time)
     if not think:
@@ -228,7 +312,7 @@ async def ollama_chat(
                 await asyncio.sleep(wait)
                 continue
 
-            return _extract_json(content)
+            return _extract_json(content, schema)
 
         except json.JSONDecodeError as exc:
             wait = 2 ** attempt
