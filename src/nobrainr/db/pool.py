@@ -31,11 +31,17 @@ async def get_pool() -> asyncpg.Pool:
 async def _init_connection(conn: asyncpg.Connection) -> None:
     await register_vector(conn)
     await conn.execute("SET hnsw.ef_search = 200")
-    # pgvector 0.8.0+: iterative scan for filtered vector queries
+    # pgvector 0.8.0+: iterative scan for filtered vector queries. The valid
+    # values are 'off', 'relaxed_order' (approximate), 'strict_order' (exact).
+    # Our hybrid search already re-ranks with full-precision memory_relevance
+    # so we want speed over strict order here. 'on' silently becomes a no-op,
+    # which is why queries with filters sometimes missed obvious hits on the
+    # previous config.
     try:
-        await conn.execute("SET hnsw.iterative_scan = on")
+        await conn.execute("SET hnsw.iterative_scan = 'relaxed_order'")
+        await conn.execute("SET hnsw.max_scan_tuples = 20000")
     except Exception:
-        pass  # older pgvector versions don't support this
+        pass  # older pgvector versions don't support these
 
 
 async def close_pool() -> None:
