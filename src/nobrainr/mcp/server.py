@@ -334,12 +334,15 @@ async def memory_search(
         except Exception:
             pass  # Fall back to original embeddings
 
-    # Always overfetch for quality re-ranking (halfvec scan is cheap)
-    # With reranker or multi-query: 5x. Otherwise: 3x.
+    # Anthropic Contextual Retrieval recipe: retrieve top-150 → rerank to top-20
+    # for the best recall/precision trade-off (≈67% failure-rate reduction).
+    # The cross-encoder is the only thing that can recover relevant items
+    # buried at rank 50-150 in the vector pass, so we feed it everything.
+    # Cap at 200 so a single oversized search can't OOM the executor.
     if settings.reranker_enabled or len(all_queries) > 1:
-        fetch_limit = limit * 5
+        fetch_limit = min(max(limit * 15, 60), 200)
     else:
-        fetch_limit = limit * 3
+        fetch_limit = max(limit * 5, 30)
 
     # Search with each query embedding
     search_coros = [
