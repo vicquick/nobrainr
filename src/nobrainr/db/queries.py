@@ -1814,12 +1814,44 @@ async def mark_entity_merge_checked(id_a: str, id_b: str) -> None:
 
 
 async def prune_noise_entities(*, min_age_hours: int = 24) -> dict:
-    """Delete low-value entities: linked to only 1 memory, older than min_age_hours.
+    """Delete extraction-noise entities — SURGICAL version.
 
-    Single-memory entities that survive long enough without being linked to more
-    memories are noise. Relations between noise entities are also noise — they were
-    created in the same extraction pass and don't represent independent knowledge.
+    Prior versions of this function deleted anything with <=1 memory link after
+    72h. On a research-heavy corpus that meant 46% of all entities (~19K of 42K)
+    including valuable niche content (academic paper titles, German urban-planning
+    terms, species names, rare-but-real organizations). Permanent loss.
+
+    This version restricts to entity_types that are almost always extraction noise
+    when single-mentioned:
+      command, config, file, container, commit, composable, function
+
+    These types catch:
+      CLI tokens      ("apt-get", "bash", "build:prod", "__bytes__")
+      config keys     ("settings", "CX42", "DEFAULT_REPLACEMENTS")
+      filenames       ("README", "requirements.txt", ".gitignore" — but bridges excluded)
+      container names (throwaway docker container names)
+      git hashes      (full SHA extracted as "entity")
+      Vue composable function names
+      Generic function names
+
+    Guards (all required):
+      1. entity_type IN noise_types           — only types listed above
+      2. created_at < NOW() - min_age_hours  — gives new entities a grace period
+      3. mention_count <= 1                   — multi-mentioned entities are real
+      4. bridge_score IS NULL                 — cross-community bridges stay,
+                                                even if in a "noise" type
+                                                (e.g. README, Dockerfile, curl)
+      5. name not in pending-memory content   — don't remove what re-extraction
+                                                would rediscover
+
+    Valuable types (concept, technology, project, person, organization, location,
+    error, package, database, component, event, feature, service) are NEVER touched
+    by this job, no matter how few memory links they have.
     """
+    NOISE_TYPES = (
+        'command', 'config', 'file', 'container',
+        'commit', 'composable', 'function',
+    )
     pool = await get_pool()
     async with pool.acquire() as conn:
         # Log what will be pruned BEFORE deleting (lightweight — just names)
@@ -1827,30 +1859,36 @@ async def prune_noise_entities(*, min_age_hours: int = 24) -> dict:
             """
             SELECT e.name, e.entity_type
             FROM entities e
-            WHERE e.created_at < NOW() - make_interval(hours => $1)
+            WHERE e.entity_type = ANY($2::text[])
+              AND e.created_at < NOW() - make_interval(hours => $1)
               AND (SELECT COUNT(*) FROM entity_memories em WHERE em.entity_id = e.id) <= 1
+              AND (e.metadata->>'bridge_score' IS NULL)
             LIMIT 500
             """,
             min_age_hours,
+            list(NOISE_TYPES),
         )
         if pruned_names:
             import logging
             _log = logging.getLogger("nobrainr")
             names = [f"{r['name']}({r['entity_type']})" for r in pruned_names[:20]]
-            _log.info("Entity pruning: deleting %d entities (sample: %s)", len(pruned_names), ", ".join(names))
+            _log.info(
+                "Entity pruning (surgical): deleting up to %d entities (sample: %s)",
+                len(pruned_names), ", ".join(names),
+            )
 
-        # Smart prune: delete entities linked to <=1 memory, older than threshold,
-        # AND whose name doesn't appear in any unextracted memory content.
-        # This prevents pruning entities that will be re-discovered when
-        # pending memories are processed.
+        # Surgical prune: same guards as the sample query above. All 5 guards
+        # are in the SQL so we can't accidentally widen the scope.
         result = await conn.execute(
             """
             DELETE FROM entities
             WHERE id IN (
                 SELECT e.id
                 FROM entities e
-                WHERE e.created_at < NOW() - make_interval(hours => $1)
+                WHERE e.entity_type = ANY($2::text[])
+                  AND e.created_at < NOW() - make_interval(hours => $1)
                   AND (SELECT COUNT(*) FROM entity_memories em WHERE em.entity_id = e.id) <= 1
+                  AND (e.metadata->>'bridge_score' IS NULL)
                   AND NOT EXISTS (
                       SELECT 1 FROM memories m
                       WHERE (m.extraction_status IS NULL OR m.extraction_status = 'pending')
@@ -1860,6 +1898,7 @@ async def prune_noise_entities(*, min_age_hours: int = 24) -> dict:
             )
             """,
             min_age_hours,
+            list(NOISE_TYPES),
         )
         pruned = int(result.split()[-1]) if result else 0
 
