@@ -1245,6 +1245,24 @@ async def get_unextracted_memories(batch_size: int = 5) -> list[dict]:
 # Entity CRUD
 # ──────────────────────────────────────────────
 
+def _canonical_entity_name(name: str) -> str:
+    """Normalise an entity name for deduplication.
+
+    Lower-cases, strips whitespace, and *strips diacritics* so "Düsseldorf"
+    and "Dusseldorf" hash to the same canonical entity. Otherwise the same
+    place gets two graph nodes — one tagged from a German source and one
+    from an English source — and neither benefits from the other's mentions.
+    """
+    import unicodedata
+    s = name.strip().lower()
+    # NFKD decomposition → drop combining marks → ASCII-fold what we can.
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    # Common German ligatures that NFKD doesn't fold
+    s = s.replace("ß", "ss").replace("œ", "oe").replace("æ", "ae")
+    return s
+
+
 async def find_or_create_entity(
     name: str,
     entity_type: str,
@@ -1253,7 +1271,7 @@ async def find_or_create_entity(
     embedding: list[float] | None = None,
 ) -> str:
     """Find entity by canonical name or create it. Returns entity ID."""
-    canonical = name.lower().strip()
+    canonical = _canonical_entity_name(name)
     pool = await get_pool()
     async with pool.acquire() as conn:
         # Try to find existing
@@ -1379,7 +1397,7 @@ async def search_entities(
 
 async def get_entity_graph(entity_name: str, depth: int = 2, max_nodes: int = 200) -> dict:
     """Get entity and its connections via recursive CTE traversal."""
-    canonical = entity_name.lower().strip()
+    canonical = _canonical_entity_name(entity_name)
     pool = await get_pool()
     async with pool.acquire() as conn:
         # Find starting entity
