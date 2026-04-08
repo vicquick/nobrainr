@@ -939,5 +939,3 @@ watch(colorMode, () => {
 .galaxy-panel-enter-from { opacity: 0; transform: translateX(20px); }
 .galaxy-panel-leave-to { opacity: 0; transform: translateX(20px); }
 </style>
-</content>
-</invoke>

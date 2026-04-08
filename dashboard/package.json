@@ -16,9 +16,9 @@
     "graphology-layout-forceatlas2": "^0.10.1",
     "pinia": "^2.3.0",
     "sigma": "^3.0.0",
+    "three": "^0.172.0",
     "vue": "^3.5.13",
     "vue-router": "^4.5.0",
-    "three": "^0.172.0",
     "vuetify": "^3.10.0"
   },
   "devDependencies": {
@@ -30,4 +30,3 @@
     "vue-tsc": "^2.2.0"
   }
 }
-
