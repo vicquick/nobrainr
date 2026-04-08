@@ -119,7 +119,6 @@ async def extract_entities(
             schema=ExtractionResult.model_json_schema(),
             keep_alive="24h",
             think=False,
-            json_mode=False,  # extraction-style prompts, _quote_js_keys fallback handles it
         )
         return ExtractionResult.model_validate(parsed)
 
