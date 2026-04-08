@@ -1,13 +1,19 @@
 """Cross-encoder reranking for search results.
 
-Uses flashrank (ONNX-based, CPU-only) to rerank vector search results
-with a cross-encoder model.  The model is loaded lazily on first use
-and cached for subsequent calls.
+Two supported backends:
 
-Requires the ``reranker`` extra: ``pip install nobrainr[reranker]``
+- **sentence-transformers** (default): ``BAAI/bge-reranker-v2-m3`` cross-encoder.
+  Multilingual (100+ languages), best quality, ~560MB weights, ~200ms for 150 docs
+  on CPU. Matches Anthropic's Contextual Retrieval recipe (top-150 → top-20) where
+  recall is bounded by reranker quality rather than the vector candidate pool.
 
-When flashrank is not installed, ``rerank()`` falls back to truncating
-the input list (no-op reranking).
+- **flashrank**: ONNX ``ms-marco-MiniLM-L-12-v2`` — English-only, ~100ms for 30 docs,
+  ~34MB. Fallback for environments where torch cannot be installed.
+
+The reranker selection is lazy: the primary backend is loaded on first call and
+cached. If the primary backend fails to import (torch missing, model download
+fails, etc.), the module transparently falls back to flashrank. If neither is
+available, ``rerank()`` becomes a no-op (returns ``results[:limit]``).
 """
 
 from __future__ import annotations
@@ -20,7 +26,22 @@ from nobrainr.config import settings
 
 logger = logging.getLogger("nobrainr")
 
+# Probe results are memoised per process so we don't re-check imports on every
+# search. Values: None=unchecked, True=available, False=unavailable.
+_ST_AVAILABLE: bool | None = None
 _FLASHRANK_AVAILABLE: bool | None = None
+
+
+def _check_sentence_transformers() -> bool:
+    global _ST_AVAILABLE
+    if _ST_AVAILABLE is None:
+        try:
+            import sentence_transformers  # noqa: F401
+            _ST_AVAILABLE = True
+        except ImportError:
+            _ST_AVAILABLE = False
+            logger.info("sentence-transformers not installed — trying flashrank fallback")
+    return _ST_AVAILABLE
 
 
 def _check_flashrank() -> bool:
@@ -32,18 +53,93 @@ def _check_flashrank() -> bool:
         except ImportError:
             _FLASHRANK_AVAILABLE = False
             logger.warning(
-                "flashrank not installed — reranking disabled. "
-                "Install with: pip install nobrainr[reranker]"
+                "flashrank not installed either — reranking will be a no-op"
             )
     return _FLASHRANK_AVAILABLE
 
 
 @lru_cache(maxsize=1)
-def _get_ranker():
-    """Load the flashrank model (cached, thread-safe)."""
+def _get_st_reranker():
+    """Load the sentence-transformers CrossEncoder, cached for process lifetime."""
+    from sentence_transformers import CrossEncoder
+    logger.info("Loading sentence-transformers reranker: %s", settings.reranker_model)
+    # max_length=512 is the BGE reranker's training window.
+    # trust_remote_code is not needed for bge-reranker-v2-m3.
+    return CrossEncoder(settings.reranker_model, max_length=512, device="cpu")
+
+
+@lru_cache(maxsize=1)
+def _get_flashrank_reranker():
+    """Load the flashrank ONNX ranker, cached for process lifetime."""
     from flashrank import Ranker
-    logger.info("Loading reranker model: %s", settings.reranker_model)
-    return Ranker(model_name=settings.reranker_model)
+    logger.info("Loading flashrank reranker: %s", settings.reranker_fallback_model)
+    return Ranker(model_name=settings.reranker_fallback_model)
+
+
+def _build_passages(results: list[dict]) -> list[tuple[str, dict]]:
+    """Turn raw search results into (text, meta) tuples for scoring.
+
+    Prepends summary when present and truncates to ~1000 chars so we stay well
+    under the cross-encoder's 512-token window after tokenisation.
+    """
+    passages: list[tuple[str, dict]] = []
+    for r in results:
+        text = r.get("content", "")[:1000]
+        summary = r.get("summary", "")
+        if summary:
+            text = f"{summary}\n\n{text}"
+        passages.append((text, r))
+    return passages
+
+
+async def _rerank_sentence_transformers(
+    query: str,
+    results: list[dict],
+    limit: int,
+) -> list[dict]:
+    model = _get_st_reranker()
+    passages = _build_passages(results)
+    pairs = [(query, text) for text, _ in passages]
+
+    # The underlying .predict() is blocking CPU work — push it off the event loop.
+    loop = asyncio.get_running_loop()
+    scores = await loop.run_in_executor(
+        None,
+        lambda: model.predict(pairs, batch_size=16, show_progress_bar=False, convert_to_numpy=True),
+    )
+
+    scored = list(zip(scores, passages))
+    scored.sort(key=lambda s: float(s[0]), reverse=True)
+
+    reranked: list[dict] = []
+    for score, (_text, meta) in scored[:limit]:
+        meta["rerank_score"] = round(float(score), 4)
+        reranked.append(meta)
+    return reranked
+
+
+async def _rerank_flashrank(
+    query: str,
+    results: list[dict],
+    limit: int,
+) -> list[dict]:
+    from flashrank import RerankRequest
+
+    ranker = _get_flashrank_reranker()
+    passages_for_fr = []
+    for text, meta in _build_passages(results):
+        passages_for_fr.append({"id": meta.get("id", ""), "text": text, "meta": meta})
+
+    request = RerankRequest(query=query, passages=passages_for_fr)
+    loop = asyncio.get_running_loop()
+    ranked = await loop.run_in_executor(None, ranker.rerank, request)
+
+    reranked: list[dict] = []
+    for item in ranked[:limit]:
+        original = item.get("meta") or item["metadata"]
+        original["rerank_score"] = round(float(item["score"]), 4)
+        reranked.append(original)
+    return reranked
 
 
 async def rerank(
@@ -54,44 +150,34 @@ async def rerank(
 ) -> list[dict]:
     """Rerank search results using a cross-encoder.
 
-    Args:
-        query: The original search query.
-        results: List of memory dicts from search_memories().
-        limit: Return top-N after reranking.
+    Backend selection is controlled by ``NOBRAINR_RERANKER_BACKEND``:
 
-    Returns:
-        Reranked list of memory dicts, trimmed to *limit*.
+    - ``sentence-transformers`` (default): multilingual BGE reranker.
+    - ``flashrank``: English-only ONNX fallback.
+
+    On any backend failure the function returns ``results[:limit]`` so search
+    never fails because of the reranker.
     """
     if not results or len(results) <= 1:
         return results[:limit]
 
-    if not _check_flashrank():
-        return results[:limit]
+    backend = (settings.reranker_backend or "sentence-transformers").lower()
 
-    ranker = _get_ranker()
+    # Primary path
+    if backend == "sentence-transformers" and _check_sentence_transformers():
+        try:
+            return await _rerank_sentence_transformers(query, results, limit)
+        except Exception:
+            logger.exception(
+                "sentence-transformers reranker failed, falling back to flashrank"
+            )
 
-    # Build passages for the reranker — use content (truncated) + summary
-    from flashrank import RerankRequest
+    # Fallback / explicit choice
+    if _check_flashrank():
+        try:
+            return await _rerank_flashrank(query, results, limit)
+        except Exception:
+            logger.exception("flashrank reranker failed, falling through to no-op")
 
-    passages = []
-    for r in results:
-        text = r.get("content", "")[:1000]
-        summary = r.get("summary", "")
-        if summary:
-            text = f"{summary}\n\n{text}"
-        passages.append({"id": r.get("id", ""), "text": text, "meta": r})
-
-    request = RerankRequest(query=query, passages=passages)
-
-    # flashrank is synchronous — run in executor to avoid blocking the event loop
-    loop = asyncio.get_running_loop()
-    ranked = await loop.run_in_executor(None, ranker.rerank, request)
-
-    # Rebuild result list in reranked order
-    reranked: list[dict] = []
-    for item in ranked[:limit]:
-        original = item.get("meta") or item["metadata"]
-        original["rerank_score"] = round(float(item["score"]), 4)
-        reranked.append(original)
-
-    return reranked
+    # Last-ditch no-op
+    return results[:limit]

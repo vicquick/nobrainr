@@ -13,6 +13,17 @@ class Settings(BaseSettings):
     llm_server_url: str = "http://llama-server:8080"
     ollama_url: str = "http://localhost:11434"
     embedding_model: str = "qwen3-embedding-cpu"
+    # Additional labels that refer to bit-identical vectors. The search
+    # safeguard matches ANY of these so runtime-only tag drift (cpu vs gpu,
+    # :0.6b vs no suffix, :latest) never silently hides 95% of memories
+    # again the way it did on 2026-04-08.
+    embedding_model_aliases: list[str] = [
+        "qwen3-embedding-cpu",
+        "qwen3-embedding:0.6b",
+        "qwen3-embedding",
+        "qwen3-embedding:latest",
+        "qwen3-embedding-cpu:latest",
+    ]
     embedding_dimensions: int = 1024
 
     # MCP Server
@@ -40,9 +51,15 @@ class Settings(BaseSettings):
     chunk_context_window: int = 1  # fetch N adjacent chunks around search hits
     contextual_embeddings_enabled: bool = True  # prepend LLM-generated context to chunks before embedding
 
-    # Reranking
+    # Reranking.
+    #  - "sentence-transformers" (default): BAAI/bge-reranker-v2-m3, 100+ languages,
+    #    cross-encoder, ~560MB, CPU inference ~200ms for 150 docs. Best quality.
+    #  - "flashrank": ONNX, English-only MiniLM, ~100ms for 30 docs. Fallback for
+    #    environments that can't install torch.
     reranker_enabled: bool = True
-    reranker_model: str = "ms-marco-MiniLM-L-12-v2"
+    reranker_backend: str = "sentence-transformers"
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    reranker_fallback_model: str = "ms-marco-MiniLM-L-12-v2"  # flashrank name
 
     # Security
     cors_origins: list[str] = ["http://localhost:8420"]

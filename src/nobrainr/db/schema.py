@@ -5,6 +5,8 @@ from nobrainr.config import settings
 SCHEMA_SQL = f"""
 -- Extensions
 CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE EXTENSION IF NOT EXISTS unaccent;
 
 -- Memories: the core knowledge entries
 CREATE TABLE IF NOT EXISTS memories (
@@ -50,12 +52,22 @@ ALTER TABLE entities ADD COLUMN IF NOT EXISTS embedding_model text DEFAULT '{set
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS tier smallint DEFAULT 2;
 CREATE INDEX IF NOT EXISTS idx_memories_tier ON memories (tier);
 
--- HNSW index on halfvec for faster ANN search (~50% smaller than full-vector index)
--- snowflake-arctic-embed2 supports Matryoshka so halfvec(1024) preserves full quality
+-- HNSW index on halfvec for faster ANN search (~50% smaller than full-vector index).
+-- qwen3-embedding-cpu outputs unit-norm 1024d vectors, so halfvec loses negligible
+-- precision vs vector. Two indexes are maintained:
+--   * The full index covers include_cold=True searches (rare; used by a few
+--     GraphRAG paths).
+--   * The partial index (tier < 3) is what every day-to-day hybrid search
+--     actually walks — smaller graph, faster traversal, and pgvector 0.8+
+--     knows to prefer it when the query's WHERE clause narrows to tier<3.
 DROP INDEX IF EXISTS idx_memories_embedding_hnsw;
 CREATE INDEX IF NOT EXISTS idx_memories_embedding_halfvec_hnsw
     ON memories USING hnsw ((embedding::halfvec({settings.embedding_dimensions})) halfvec_cosine_ops)
     WITH (m = 24, ef_construction = 200);
+CREATE INDEX IF NOT EXISTS idx_memories_embedding_halfvec_hnsw_hot
+    ON memories USING hnsw ((embedding::halfvec({settings.embedding_dimensions})) halfvec_cosine_ops)
+    WITH (m = 24, ef_construction = 200)
+    WHERE tier < 3 AND embedding IS NOT NULL;
 
 -- GIN index for tag queries
 CREATE INDEX IF NOT EXISTS idx_memories_tags
@@ -81,9 +93,30 @@ CREATE INDEX IF NOT EXISTS idx_memories_extraction_status
 CREATE INDEX IF NOT EXISTS idx_memories_quality_score
     ON memories (quality_score) WHERE quality_score IS NULL;
 
--- Full-text search on content
+-- Full-text search on content. Uses 'simple' dictionary + unaccent so
+-- German/Dutch/Spanish/etc. memories index correctly. A wrapper expression
+-- is required (unaccent is not IMMUTABLE by default) — we create an
+-- IMMUTABLE wrapper and index through it. Old English-only index is
+-- dropped explicitly since its name did not previously match this one.
+DROP INDEX IF EXISTS idx_memories_content_fts_en;
+-- IMMUTABLE wrapper around unaccent(). The single-arg form uses the default
+-- 'unaccent' dictionary; the two-arg form needs a regdictionary, not text.
+-- STABLE would be accurate (unaccent itself is STABLE because it reads the
+-- dictionary) but we mark IMMUTABLE here so postgres lets us use it in index
+-- expressions — the dictionary is effectively read-only at runtime.
+-- IMPORTANT: schema-qualify 'public.unaccent' because CREATE INDEX runs with
+-- a restricted search_path and would otherwise fail with
+-- "function unaccent(text) does not exist".
+CREATE OR REPLACE FUNCTION nb_unaccent(text) RETURNS text
+    LANGUAGE sql IMMUTABLE PARALLEL SAFE STRICT
+    AS $$ SELECT public.unaccent($1) $$;
+DROP INDEX IF EXISTS idx_memories_content_fts;
 CREATE INDEX IF NOT EXISTS idx_memories_content_fts
-    ON memories USING gin (to_tsvector('english', content));
+    ON memories USING gin (to_tsvector('simple', nb_unaccent(content)));
+
+-- Trigram index for fast ILIKE / similarity() fallback (names, short queries)
+CREATE INDEX IF NOT EXISTS idx_memories_content_trgm
+    ON memories USING gin (content gin_trgm_ops);
 
 -- Index for timeline / recency queries
 CREATE INDEX IF NOT EXISTS idx_memories_created_at
@@ -452,9 +485,15 @@ CREATE TABLE IF NOT EXISTS memory_facts (
     memory_id UUID NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
     content TEXT NOT NULL,
     embedding vector({settings.embedding_dimensions}),
+    embedding_model text DEFAULT '{settings.embedding_model}',
     quality_score REAL,
     created_at TIMESTAMPTZ DEFAULT now()
 );
+ALTER TABLE memory_facts
+    ADD COLUMN IF NOT EXISTS embedding_model text DEFAULT '{settings.embedding_model}';
+-- Backfill any rows that existed before embedding_model column was added
+UPDATE memory_facts SET embedding_model = '{settings.embedding_model}'
+    WHERE embedding_model IS NULL;
 CREATE INDEX IF NOT EXISTS idx_facts_memory ON memory_facts(memory_id);
 CREATE INDEX IF NOT EXISTS idx_facts_created ON memory_facts(created_at DESC);
 """

@@ -135,13 +135,15 @@ async def search_memories(
     # Two-phase vector search: halfvec HNSW index scan for candidates → full-precision re-ranking
     # Only search memories embedded with the current model to avoid cross-model garbage
 
+    # ANY($4::text[]) so every equivalent model label matches — see
+    # settings.embedding_model_aliases.
     conditions = [
         "embedding IS NOT NULL",
-        f"(embedding_model IS NULL OR embedding_model = ${4})",
+        f"(embedding_model IS NULL OR embedding_model = ANY(${4}::text[]))",
     ]
     if not include_cold:
         conditions.append("tier < 3")
-    params: list = [vec, threshold, limit, _cfg.embedding_model]
+    params: list = [vec, threshold, limit, list(_cfg.embedding_model_aliases or [_cfg.embedding_model])]
     idx = 5
 
     if tags:
@@ -162,8 +164,11 @@ async def search_memories(
         idx += 1
 
     where = " AND ".join(conditions)
-    # Overfetch 3x via halfvec index, then re-rank with full-precision memory_relevance
-    overfetch = max(limit * 3, 20)
+    # Overfetch budget matches Anthropic Contextual Retrieval (top-150 → top-20
+    # reranked): 15× with reranker, 5× without (there's no cross-encoder to
+    # recover the tail so we don't want to pay for unused candidates).
+    overfetch_mult = 15 if _cfg.reranker_enabled else 5
+    overfetch = max(limit * overfetch_mult, 30)
 
     async with pool.acquire() as conn:
         rows = await conn.fetch(
@@ -257,8 +262,11 @@ async def _hybrid_search_rrf(
     include_cold: bool = False,
 ) -> list[dict]:
     """Hybrid search using Reciprocal Rank Fusion of vector + full-text results."""
-    overfetch = max(limit * 3, 20)
-    # Inner overfetch for halfvec candidate retrieval before re-ranking
+    # Anthropic's Contextual Retrieval recipe: retrieve top-150 → rerank to top-20.
+    # We mirror that when the reranker is enabled.
+    overfetch_mult = 15 if _cfg.reranker_enabled else 5
+    overfetch = max(limit * overfetch_mult, 30)
+    # Inner overfetch for halfvec candidate retrieval before full-precision re-rank
     inner_overfetch = overfetch * 3
     tier_filter = "" if include_cold else " AND tier < 3"
 
@@ -273,7 +281,7 @@ async def _hybrid_search_rrf(
                 SELECT *
                 FROM memories
                 WHERE embedding IS NOT NULL
-                  AND (embedding_model IS NULL OR embedding_model = $4)
+                  AND (embedding_model IS NULL OR embedding_model = ANY($4::text[]))
                   AND 1 - (embedding::{_HV} <=> $1::{_HV}) >= $2
                   {vec_extra}{tier_filter}
                 ORDER BY embedding::{_HV} <=> $1::{_HV}
@@ -288,10 +296,14 @@ async def _hybrid_search_rrf(
             ORDER BY memory_relevance($1::{_VEC}, embedding, created_at, importance, stability, access_count, now(), quality_score) DESC
             LIMIT $3
             """,
-            embedding, threshold, overfetch, _cfg.embedding_model, *vec_fparams,
+            embedding, threshold, overfetch,
+            list(_cfg.embedding_model_aliases or [_cfg.embedding_model]),
+            *vec_fparams,
         )
 
         # 2) Full-text search: $1=query, $2=overfetch, filters from $3+
+        # Multilingual 'simple' + unaccent: matches German/Dutch/Spanish/etc.
+        # content that the old English-only index silently mis-tokenised.
         fts_extra, fts_fparams, _ = _build_filter_clause(
             3, tags, category, source_type, source_machine,
         )
@@ -300,9 +312,11 @@ async def _hybrid_search_rrf(
             SELECT id, content, summary, source_type, source_machine, tags, category,
                    confidence, metadata, created_at, updated_at, importance, stability,
                    access_count, last_accessed_at, quality_score, embedding_model, tier,
-                   ts_rank(to_tsvector('english', content), plainto_tsquery('english', $1)) AS fts_rank
+                   ts_rank(to_tsvector('simple', nb_unaccent(content)),
+                           plainto_tsquery('simple', nb_unaccent($1))) AS fts_rank
             FROM memories
-            WHERE to_tsvector('english', content) @@ plainto_tsquery('english', $1)
+            WHERE to_tsvector('simple', nb_unaccent(content))
+                  @@ plainto_tsquery('simple', nb_unaccent($1))
               {fts_extra}{tier_filter}
             ORDER BY fts_rank DESC
             LIMIT $2
@@ -674,7 +688,10 @@ async def query_memories(
         idx += 1
 
     if text_query:
-        conditions.append(f"to_tsvector('english', content) @@ plainto_tsquery('english', ${idx})")
+        conditions.append(
+            f"to_tsvector('simple', nb_unaccent(content)) "
+            f"@@ plainto_tsquery('simple', nb_unaccent(${idx}))"
+        )
         params.append(text_query)
         idx += 1
 
@@ -1462,8 +1479,14 @@ async def search_facts(
     threshold: float = 0.3,
     text_query: str | None = None,
 ) -> list[dict]:
-    """Search atomic facts by embedding similarity, optionally with text matching."""
+    """Search atomic facts by embedding similarity, optionally with text matching.
+
+    Applies the same embedding_model safeguard as memories to prevent
+    cross-model garbage during re-embed migrations. Uses the alias list so
+    label drift (cpu/gpu, :0.6b, :latest) never hides valid facts.
+    """
     pool = await get_pool()
+    model_aliases = list(_cfg.embedding_model_aliases or [_cfg.embedding_model])
     async with pool.acquire() as conn:
         # Check if table exists and has data
         has_facts = await conn.fetchval(
@@ -1473,19 +1496,20 @@ async def search_facts(
             return []
 
         if text_query:
-            # Hybrid: vector + text
+            # Hybrid: vector + text match, multilingual via unaccent + trigram
             rows = await conn.fetch(
                 """
                 SELECT f.id, f.content, f.memory_id, f.quality_score, f.created_at,
                        1 - (f.embedding::halfvec(1024) <=> $1::halfvec(1024)) as similarity
                 FROM memory_facts f
                 WHERE f.embedding IS NOT NULL
+                  AND (f.embedding_model IS NULL OR f.embedding_model = ANY($4::text[]))
                   AND LENGTH(f.content) > 30
-                  AND f.content ILIKE '%' || $3 || '%'
+                  AND nb_unaccent(f.content) ILIKE '%' || nb_unaccent($3) || '%'
                 ORDER BY f.embedding::halfvec(1024) <=> $1::halfvec(1024)
                 LIMIT $2
                 """,
-                embedding, limit * 2, text_query,
+                embedding, limit * 2, text_query, model_aliases,
             )
             if len(rows) < limit:
                 # Fall back to pure vector if text match too few
@@ -1495,11 +1519,12 @@ async def search_facts(
                            1 - (f.embedding::halfvec(1024) <=> $1::halfvec(1024)) as similarity
                     FROM memory_facts f
                     WHERE f.embedding IS NOT NULL
+                      AND (f.embedding_model IS NULL OR f.embedding_model = ANY($3::text[]))
                       AND LENGTH(f.content) > 30
                     ORDER BY f.embedding::halfvec(1024) <=> $1::halfvec(1024)
                     LIMIT $2
                     """,
-                    embedding, limit,
+                    embedding, limit, model_aliases,
                 )
         else:
             rows = await conn.fetch(
@@ -1508,11 +1533,12 @@ async def search_facts(
                        1 - (f.embedding::halfvec(1024) <=> $1::halfvec(1024)) as similarity
                 FROM memory_facts f
                 WHERE f.embedding IS NOT NULL
+                  AND (f.embedding_model IS NULL OR f.embedding_model = ANY($3::text[]))
                   AND LENGTH(f.content) > 30
                 ORDER BY f.embedding::halfvec(1024) <=> $1::halfvec(1024)
                 LIMIT $2
                 """,
-                embedding, limit,
+                embedding, limit, model_aliases,
             )
         results = [
             {**_row_to_dict(r), "similarity": float(r["similarity"])}

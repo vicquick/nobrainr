@@ -34,10 +34,18 @@ dependencies = [
     "pymupdf>=1.25.0",
     "umap-learn>=0.5.0",
     "scikit-learn>=1.4.0",
-    # Cross-encoder reranking (ONNX, CPU). Was optional but reranker_enabled
-    # defaults to True, so making it always-installed prevents silent degradation
-    # to "truncate to limit" when the module is missing.
+    # Cross-encoder reranking.
+    # Primary: sentence-transformers with BAAI/bge-reranker-v2-m3 — multilingual
+    # (100+ languages including German/Dutch/Spanish that dominate a large slice
+    # of our corpus), cross-encoder, ~560MB weights. See services/reranker.py.
+    # Fallback: flashrank ONNX (English-only MiniLM) for environments where
+    # torch cannot be installed.
+    "sentence-transformers>=3.3.0",
     "flashrank>=0.2.10",
+    # Leiden community detection — strictly better than Louvain (guaranteed
+    # connected clusters, near-linear on dense hub graphs). See services/communities.py.
+    "leidenalg>=0.10.2",
+    "python-igraph>=0.11.6",
 ]
 
 [project.urls]
