@@ -763,22 +763,59 @@ async def normalize_categories(category_map: dict[str, str]) -> int:
     return total
 
 
-async def analyze_tables() -> None:
-    """Run ANALYZE on core tables + audit log retention (90 days)."""
+async def analyze_tables() -> dict:
+    """Run ANALYZE on core tables + apply retention to audit_log and memory_versions.
+
+    Returns counts of rows pruned so the scheduler can log them.
+
+    Retention policy:
+      - audit_log: 7 days. Aggressive because UPDATE-heavy scheduler jobs
+        generate ~100K audit rows/day.
+      - memory_versions: keep the 5 most-recent versions per memory_id.
+        Without this trimming, the table grows unbounded — observed 1496 versions
+        for a single memory after the 2026-03-31 to 2026-04-07 backfill.
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("ANALYZE memories")
         await conn.execute("ANALYZE entities")
         await conn.execute("ANALYZE entity_memories")
         await conn.execute("ANALYZE entity_relations")
-        # Audit log retention — keep 90 days, delete older
-        result = await conn.execute(
-            "DELETE FROM audit_log WHERE created_at < NOW() - INTERVAL '90 days'"
+
+        # Audit log retention — 7 days
+        audit_result = await conn.execute(
+            "DELETE FROM audit_log WHERE created_at < NOW() - INTERVAL '7 days'"
         )
-        cleaned = int(result.split()[-1]) if result else 0
-        if cleaned > 0:
+        audit_pruned = int(audit_result.split()[-1]) if audit_result else 0
+
+        # memory_versions retention — keep last 5 per memory_id
+        versions_result = await conn.execute(
+            """
+            DELETE FROM memory_versions
+            WHERE id IN (
+                SELECT id FROM (
+                    SELECT id, ROW_NUMBER() OVER (
+                        PARTITION BY memory_id ORDER BY version DESC
+                    ) AS rn
+                    FROM memory_versions
+                ) t
+                WHERE rn > 5
+            )
+            """
+        )
+        versions_pruned = int(versions_result.split()[-1]) if versions_result else 0
+
+        if audit_pruned or versions_pruned:
             import logging
-            logging.getLogger("nobrainr").info("Audit log retention: deleted %d entries older than 90 days", cleaned)
+            logging.getLogger("nobrainr").info(
+                "Retention: pruned %d audit_log rows (>7d) + %d memory_versions rows (keep-5)",
+                audit_pruned, versions_pruned,
+            )
+
+        return {
+            "audit_log_pruned": audit_pruned,
+            "memory_versions_pruned": versions_pruned,
+        }
 
 
 async def store_memory_outcome(
