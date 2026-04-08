@@ -126,6 +126,7 @@ async def ollama_chat(
     timeout: float = 300.0,
     keep_alive: str = "24h",
     think: bool = False,
+    json_mode: bool = True,
 ) -> dict:
     """Send a structured-output request to llama-server (OpenAI-compatible API).
 
@@ -142,6 +143,14 @@ async def ollama_chat(
         timeout: HTTP timeout in seconds.
         keep_alive: Ignored (llama-server keeps model loaded permanently).
         think: Enable model thinking/reasoning (disable for structured tasks).
+        json_mode: Default True. Forces llama-server to grammar-constrain
+            output to valid JSON via response_format. Adds a small per-token
+            overhead but is mandatory for decision-style prompts (entity_merging,
+            cooccurrence_linking, etc.) where Qwen3.5 otherwise emits
+            paragraph-style natural language like "**Yes, these entities...**"
+            that no fallback parser can recover. Extraction-style callers where
+            the _quote_js_keys fallback already handles JS-notation output
+            reliably should pass json_mode=False to skip the grammar overhead.
 
     Returns:
         Parsed JSON dict from the LLM response.
@@ -160,6 +169,11 @@ async def ollama_chat(
         "min_p": 0.0,
         "stream": False,
     }
+
+    # Force strict JSON output for decision-style prompts (entity_merging,
+    # cooccurrence_linking, etc.) where Qwen3.5 otherwise emits natural language.
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
 
     # Disable thinking for structured output (saves tokens + time)
     if not think:
