@@ -318,13 +318,16 @@ class Scheduler:
 
     @staticmethod
     async def _job_maintenance() -> dict:
-        """Recompute importance scores + decay stability + refresh planner stats."""
+        """Recompute importance + decay stability + analyze + apply retention
+        (audit_log >7d, memory_versions keep-5)."""
         importance_count = await queries.recompute_importance()
         decay_count = await queries.decay_stability()
-        await queries.analyze_tables()
+        retention = await queries.analyze_tables()
         return {
             "importance_recomputed": importance_count,
             "stability_decayed": decay_count,
+            "audit_log_pruned": retention["audit_log_pruned"],
+            "memory_versions_pruned": retention["memory_versions_pruned"],
             "ran_at": datetime.now().isoformat(),
         }
 
