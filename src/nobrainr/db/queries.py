@@ -72,9 +72,16 @@ async def find_similar_memories(
     threshold: float = 0.85,
     exclude_id: str | None = None,
 ) -> list[dict]:
-    """Find memories similar to the given embedding (for dedup checks)."""
+    """Find memories similar to the given embedding (for dedup checks).
+
+    Includes the embedding_model alias safeguard so dedup decisions are
+    not made against memories embedded with a stale or differently-tagged
+    model — that mismatch would let near-duplicates slip through ADD
+    even when an UPDATE-able twin exists.
+    """
     pool = await get_pool()
     vec = np.array(embedding, dtype=np.float32)
+    model_aliases = list(_cfg.embedding_model_aliases or [_cfg.embedding_model])
     async with pool.acquire() as conn:
         if exclude_id:
             rows = await conn.fetch(
@@ -82,11 +89,13 @@ async def find_similar_memories(
                 SELECT id, content, summary, tags, category,
                        1 - (embedding <=> $1) AS similarity
                 FROM memories
-                WHERE embedding IS NOT NULL AND id != $3
+                WHERE embedding IS NOT NULL
+                  AND (embedding_model IS NULL OR embedding_model = ANY($4::text[]))
+                  AND id != $3
                 ORDER BY embedding::{_HV} <=> $1::{_HV}
                 LIMIT $2
                 """,
-                vec, limit, UUID(exclude_id),
+                vec, limit, UUID(exclude_id), model_aliases,
             )
         else:
             rows = await conn.fetch(
@@ -95,10 +104,11 @@ async def find_similar_memories(
                        1 - (embedding <=> $1) AS similarity
                 FROM memories
                 WHERE embedding IS NOT NULL
+                  AND (embedding_model IS NULL OR embedding_model = ANY($3::text[]))
                 ORDER BY embedding::{_HV} <=> $1::{_HV}
                 LIMIT $2
                 """,
-                vec, limit,
+                vec, limit, model_aliases,
             )
         return [
             _row_to_dict(row)
@@ -1331,12 +1341,20 @@ async def search_entities(
     entity_type: str | None = None,
     limit: int = 10,
 ) -> list[dict]:
-    """Semantic search on entity embeddings."""
+    """Semantic search on entity embeddings.
+
+    Applies the same embedding_model alias safeguard as search_memories so
+    label drift can never silently hide most of the entity graph.
+    """
     pool = await get_pool()
     vec = np.array(embedding, dtype=np.float32)
-    conditions = ["embedding IS NOT NULL"]
-    params: list = [vec, limit]
-    idx = 3
+    model_aliases = list(_cfg.embedding_model_aliases or [_cfg.embedding_model])
+    conditions = [
+        "embedding IS NOT NULL",
+        "(embedding_model IS NULL OR embedding_model = ANY($3::text[]))",
+    ]
+    params: list = [vec, limit, model_aliases]
+    idx = 4
 
     if entity_type:
         conditions.append(f"entity_type = ${idx}")
