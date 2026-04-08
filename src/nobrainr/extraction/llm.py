@@ -192,14 +192,18 @@ def _extract_json(content: str, schema: dict | None = None) -> dict:
         if result is not None:
             return result
 
-    # 5. Natural-language salvage for decision-style prompts where Qwen3.5
-    # emits paragraph answers like "**Yes, these entities are the same.**"
+    # 5. Natural-language salvage for decision-style prompts where the model
+    # emits paragraph answers like "**Yes, these entities are the same.**".
+    # With response_format: json_schema now on the request path this branch
+    # should almost never fire — if it does, something is wrong (schema
+    # constraint dropped, old cached response, etc.) so we log at warning.
     if schema is not None:
         nl_result = _salvage_nl_decision(cleaned, schema)
         if nl_result is not None:
-            logger.info(
-                "NL salvage: recovered %s from paragraph-style LLM response",
-                list(nl_result.keys()),
+            logger.warning(
+                "NL salvage fired — grammar constraint bypassed somehow. Keys=%s, "
+                "first 120 chars of response: %.120s",
+                list(nl_result.keys()), cleaned,
             )
             return nl_result
 
