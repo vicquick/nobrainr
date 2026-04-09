@@ -151,11 +151,25 @@ async def detect_communities(
     # Filter out singleton/tiny communities
     valid_communities = [c for c in communities if len(c) >= min_community_size]
 
-    # Assign community IDs
+    # Assign community IDs using a STABLE hash of the sorted member set.
+    # Leidenalg (and networkx Louvain) label communities with iteration-order
+    # integers — the same semantic partition comes back with different int
+    # labels across runs, which defeats the delta-only audit optimisation
+    # below (every row looks "changed"). Hashing the sorted member UUIDs
+    # gives every cluster a content-addressed label: same members → same id,
+    # regardless of run order, so a stable partition writes zero audit rows.
+    # 31-bit cap keeps it within PostgreSQL's signed integer range;
+    # collision probability across a few hundred clusters is ~0.
+    import hashlib as _hashlib
     community_assignments: dict[str, int] = {}
-    for idx, members in enumerate(valid_communities):
+    for members in valid_communities:
+        sorted_members = sorted(members)
+        sig = _hashlib.md5(
+            "|".join(sorted_members).encode("utf-8"),
+        ).hexdigest()
+        comm_id = int(sig[:8], 16) & 0x7FFFFFFF  # 31-bit, fits in PG int
         for node_id in members:
-            community_assignments[node_id] = idx
+            community_assignments[node_id] = comm_id
 
     # Store community assignments in entities table using a SINGLE delta-only
     # bulk update. The previous pattern — "UPDATE entities SET community_id =
