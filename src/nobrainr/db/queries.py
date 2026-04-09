@@ -1997,6 +1997,14 @@ async def compute_entity_specificity() -> dict:
     Low specificity = generic hub (Python, Docker) = less valuable for linking
 
     Also ensures the 'specificity' column exists (self-healing schema).
+
+    Delta-only update path: we compute the new values in a CTE and only
+    UPDATE rows whose specificity changes by more than 0.0001 (well below
+    the resolution that matters for IDF ranking). The previous version
+    rewrote every row on every run, which blew up audit_log by ~38K writes
+    per 4-hour cycle (~230K/day). On steady-state runs this now typically
+    writes only the handful of entities that gained/lost memory links since
+    the previous cycle.
     """
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -2010,16 +2018,27 @@ async def compute_entity_specificity() -> dict:
 
         total_memories = await conn.fetchval("SELECT count(*) FROM memories")
         if total_memories == 0:
-            return {"updated": 0}
+            return {"updated": 0, "total_memories_base": 0}
 
         result = await conn.execute(
             """
-            UPDATE entities e SET specificity = LN(
-                $1::float / GREATEST(
-                    (SELECT count(*) FROM entity_memories em WHERE em.entity_id = e.id),
-                    1
-                )
+            WITH mention_counts AS (
+                SELECT entity_id, count(*) AS n
+                FROM entity_memories
+                GROUP BY entity_id
+            ),
+            new_values AS (
+                SELECT e.id,
+                       LN($1::float / GREATEST(COALESCE(mc.n, 0), 1)) AS new_spec
+                FROM entities e
+                LEFT JOIN mention_counts mc ON mc.entity_id = e.id
             )
+            UPDATE entities e
+            SET specificity = nv.new_spec
+            FROM new_values nv
+            WHERE e.id = nv.id
+              AND (e.specificity IS NULL
+                   OR abs(e.specificity - nv.new_spec) > 0.0001)
             """,
             total_memories,
         )
