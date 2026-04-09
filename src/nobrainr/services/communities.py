@@ -157,25 +157,60 @@ async def detect_communities(
         for node_id in members:
             community_assignments[node_id] = idx
 
-    # Store community assignments in entities table
+    # Store community assignments in entities table using a SINGLE delta-only
+    # bulk update. The previous pattern — "UPDATE entities SET community_id =
+    # NULL" followed by 34K individual UPDATEs — was writing ~72K audit_log
+    # rows per run (~250 MB/day) even when the partition barely changed, and
+    # the audit trigger fired on every one because the triggers treat any
+    # UPDATE as a row event. Delta-only + bulk UNNEST means only genuinely
+    # moved entities generate audit events. Typical steady-state run: <500
+    # audit rows instead of 72,000.
+    from uuid import UUID as _UUID
     async with pool.acquire() as conn:
-        # Ensure community_id column exists
-        await conn.execute("""
-            ALTER TABLE entities ADD COLUMN IF NOT EXISTS community_id integer
-        """)
-        # Clear old assignments
-        await conn.execute("UPDATE entities SET community_id = NULL")
+        await conn.execute(
+            "ALTER TABLE entities ADD COLUMN IF NOT EXISTS community_id integer"
+        )
 
-        # Batch update
-        for node_id_str, comm_id in community_assignments.items():
-            try:
-                from uuid import UUID
-                await conn.execute(
-                    "UPDATE entities SET community_id = $1 WHERE id = $2",
-                    comm_id, UUID(node_id_str),
-                )
-            except Exception:
-                continue
+        if community_assignments:
+            ids = []
+            cids = []
+            for node_id_str, comm_id in community_assignments.items():
+                try:
+                    ids.append(_UUID(node_id_str))
+                    cids.append(int(comm_id))
+                except (ValueError, TypeError):
+                    continue
+
+            # 1) NULL out entities that are currently in a community but no
+            # longer in the assignment map — only rows where the value
+            # actually changes get audited because the trigger short-circuits
+            # on OLD IS NOT DISTINCT FROM NEW.
+            await conn.execute(
+                """
+                UPDATE entities
+                SET community_id = NULL
+                WHERE community_id IS NOT NULL
+                  AND id <> ALL($1::uuid[])
+                """,
+                ids,
+            )
+            # 2) Apply new assignments, but only where the community_id is
+            # actually changing (IS DISTINCT FROM catches NULL→N and N→M).
+            await conn.execute(
+                """
+                UPDATE entities AS e
+                SET community_id = v.cid
+                FROM unnest($1::uuid[], $2::int[]) AS v(eid, cid)
+                WHERE e.id = v.eid
+                  AND e.community_id IS DISTINCT FROM v.cid
+                """,
+                ids, cids,
+            )
+        else:
+            # No communities at all — NULL out everyone with a stale assignment
+            await conn.execute(
+                "UPDATE entities SET community_id = NULL WHERE community_id IS NOT NULL"
+            )
 
     # Count singletons (entities in communities smaller than min_size)
     assigned = len(community_assignments)
