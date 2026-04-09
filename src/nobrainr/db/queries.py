@@ -2038,7 +2038,7 @@ async def compute_entity_specificity() -> dict:
             FROM new_values nv
             WHERE e.id = nv.id
               AND (e.specificity IS NULL
-                   OR abs(e.specificity - nv.new_spec) > 0.0001)
+                   OR abs(e.specificity - nv.new_spec) > 0.05)
             """,
             total_memories,
         )
