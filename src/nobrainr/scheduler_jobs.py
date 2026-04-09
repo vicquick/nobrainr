@@ -1838,12 +1838,25 @@ async def contextual_prefix_backfill() -> dict:
     if not candidates:
         return {"status": "idle", "processed": 0, "ran_at": datetime.now().isoformat()}
 
+    import json as _json
+
     processed = 0
     failed = 0
     for row in candidates:
         memory_id = row["id"]
         content = row["content"]
-        meta = dict(row["metadata"] or {})
+        # asyncpg returns JSONB as a string; the rest of the codebase uses
+        # json.loads(d["metadata"]) in _row_to_dict. Do the same here.
+        raw_meta = row["metadata"]
+        if isinstance(raw_meta, str):
+            try:
+                meta = _json.loads(raw_meta) or {}
+            except Exception:
+                meta = {}
+        elif isinstance(raw_meta, dict):
+            meta = dict(raw_meta)
+        else:
+            meta = {}
         doc_title = meta.get("document_title") or row["source_ref"] or "Document"
 
         try:
