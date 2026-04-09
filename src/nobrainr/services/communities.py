@@ -151,21 +151,28 @@ async def detect_communities(
     # Filter out singleton/tiny communities
     valid_communities = [c for c in communities if len(c) >= min_community_size]
 
-    # Assign community IDs using a STABLE hash of the sorted member set.
-    # Leidenalg (and networkx Louvain) label communities with iteration-order
-    # integers — the same semantic partition comes back with different int
-    # labels across runs, which defeats the delta-only audit optimisation
-    # below (every row looks "changed"). Hashing the sorted member UUIDs
-    # gives every cluster a content-addressed label: same members → same id,
-    # regardless of run order, so a stable partition writes zero audit rows.
-    # 31-bit cap keeps it within PostgreSQL's signed integer range;
-    # collision probability across a few hundred clusters is ~0.
+    # Assign community IDs using a STABLE hash of the cluster's top-K
+    # **core** members (sorted UUIDs, take the first 10). Rationale:
+    #
+    # v1 of this hash used all sorted members, which was perfectly stable
+    # when clusters were identical across runs — but flipped ENTIRELY
+    # when even one member was added/removed, because every member of
+    # that cluster then had a different community_id. A single merge into
+    # the 6,157-node giant cluster cascaded 6K+ entity UPDATEs per run.
+    #
+    # The top-10 sorted-UUID core is stable against any fringe membership
+    # change: a cluster's label only shifts when one of its 10 lowest-UUID
+    # members actually leaves/joins. UUID v7 is time-ordered so the
+    # first-10 corresponds to the longest-resident members of the cluster.
+    # Across hundreds of clusters the collision probability is negligible.
     import hashlib as _hashlib
+    SIGNATURE_K = 10
     community_assignments: dict[str, int] = {}
     for members in valid_communities:
         sorted_members = sorted(members)
+        core = sorted_members[:SIGNATURE_K]
         sig = _hashlib.md5(
-            "|".join(sorted_members).encode("utf-8"),
+            "|".join(core).encode("utf-8"),
         ).hexdigest()
         comm_id = int(sig[:8], 16) & 0x7FFFFFFF  # 31-bit, fits in PG int
         for node_id in members:
