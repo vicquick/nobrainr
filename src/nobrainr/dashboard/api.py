@@ -924,11 +924,14 @@ async def api_galaxy(request: Request) -> JSONResponse:
     import os
     import time as _time
 
-    # Serve from cache if available and fresh (max 1h)
+    # Serve from cache if available and fresh (default 30min).
+    # Both graph and galaxy are pre-warmed on startup so the first
+    # dashboard load never triggers a slow UMAP computation.
+    cache_ttl = 1800  # 30 minutes
     force = request.query_params.get("refresh", "").lower() == "true"
     if not force and os.path.exists(_GALAXY_CACHE_PATH):
         age = _time.time() - os.path.getmtime(_GALAXY_CACHE_PATH)
-        if age < 3600:
+        if age < cache_ttl:
             with open(_GALAXY_CACHE_PATH) as f:
                 return JSONResponse(json.load(f))
 
