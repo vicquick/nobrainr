@@ -147,6 +147,20 @@ async def lifespan(app):
     # Pre-warm graph layout cache (runs in background, ~60s)
     asyncio.create_task(_warm_graph_cache())
 
+    # Pre-warm UMAP galaxy cache so the first dashboard load is instant
+    async def _warm_galaxy():
+        try:
+            await asyncio.sleep(30)  # let DB + graph settle first
+            from nobrainr.dashboard.api import api_galaxy
+            from starlette.requests import Request
+            scope = {"type": "http", "method": "GET", "path": "/api/galaxy",
+                     "query_string": b"limit=10000", "headers": []}
+            await api_galaxy(Request(scope))
+            logger.info("Galaxy UMAP cache pre-warmed on startup")
+        except Exception:
+            logger.warning("Galaxy pre-warm failed (will compute on first request)")
+    asyncio.create_task(_warm_galaxy())
+
     # Pre-warm the cross-encoder reranker so the first user search doesn't
     # pay the 2-5s cold-start of loading BAAI/bge-reranker-v2-m3 from HF.
     async def _warm_reranker():
