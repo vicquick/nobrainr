@@ -1,8 +1,47 @@
-"""LLM inference helper — supports llama-server (primary) and Ollama (fallback)."""
+"""LLM inference helper — supports llama-server (primary) and Ollama (fallback).
+
+Retry + timeout policy (April 2026 industry standard, documented in Appendix H
+of OVERNIGHT_REPORT_2026-04-11.md + nobrainr memory
+``ollama-chat-retry-policy-2026-04-11``).
+
+Why the defaults below look the way they do:
+
+* **DEFAULT_LLM_TIMEOUT = 600s** matches OpenAI Python SDK default (10 min) and
+  llama.cpp server's own ``LLAMA_ARG_TIMEOUT`` default (600s). Qwen3.5-35B-A3B
+  is pinned at ``n_parallel=1`` because its hybrid SWA architecture invalidates
+  recurrent state between requests when slots > 1 (see nobrainr memory
+  ``id:019d3f0e``). With one slot, requests queue inside llama-server and wait
+  their turn. The client's job is to WAIT, not to retry.
+
+* **RETRYABLE_STATUSES = {429, 500, 502, 503, 504, 529}** — transient server
+  errors worth retrying. Matches OpenAI SDK (408/409/429/5xx) modulo Anthropic's
+  529 (overloaded_error). ``404`` is explicitly excluded because it almost
+  always signals a config error, not a transient condition.
+
+* **RETRYABLE_EXCEPTIONS** — ``ConnectError``, ``PoolTimeout``,
+  ``RemoteProtocolError`` only. Critically, ``httpx.ReadTimeout`` and
+  ``httpx.WriteTimeout`` are NOT retried: when the single-slot llama-server
+  queues a request, the client's read-timeout fires before the server returns.
+  Retrying pushes a DUPLICATE request onto the queue behind the still-running
+  first one, doubling load and strictly making things worse. This is the exact
+  cascade that caused quality_scoring / contextual_prefix_backfill /
+  entity_enrichment to time out 5+ times in 24h on 2026-04-10/11. Instead,
+  raise ReadTimeout so the caller lengthens its own timeout next time.
+
+* **Decorrelated jitter** (AWS Builders' Library canonical pattern since 2015):
+  ``sleep = min(cap, uniform(base, prev * 3))``. This beats raw exponential
+  backoff when multiple clients contend — which is exactly our pattern when
+  scheduler jobs and MCP user calls fire concurrently.
+
+* **DEFAULT_LLM_MAX_RETRIES = 2** (3 total attempts) matches OpenAI SDK default.
+  Before this change the retry count was 5 (unconfigurable) which amplified
+  the ReadTimeout cascade by ~3×.
+"""
 
 import asyncio
 import json
 import logging
+import random
 import re
 
 import httpx
@@ -11,16 +50,62 @@ from nobrainr.config import settings
 
 logger = logging.getLogger("nobrainr")
 
+# ──────────────────────────────────────────────
+# Retry + timeout policy (see module docstring for rationale)
+# ──────────────────────────────────────────────
+
+# Default per-request HTTP timeout. Matches OpenAI Python SDK + llama.cpp
+# server ``LLAMA_ARG_TIMEOUT`` default. The server-side queue for our single
+# slot can legitimately hold requests for minutes when multiple callers
+# contend; 10 minutes gives enough headroom for realistic bursts while the
+# job-level ``asyncio.wait_for(..., LLM_JOB_TIMEOUT=30*60)`` remains the
+# ultimate safety net in scheduler.py.
+DEFAULT_LLM_TIMEOUT = 600.0
+
+# Max retry attempts per call (total attempts = 1 + this). 2 matches OpenAI
+# Python SDK's default and is small enough to avoid amplifying load during
+# contention.
+DEFAULT_LLM_MAX_RETRIES = 2
+
+# HTTP statuses that indicate a transient server condition. 404 is NOT here
+# — it means the endpoint/model is wrong, not that we should retry. 529 is
+# Anthropic's overloaded_error, harmless to include for forward-compat.
+RETRYABLE_STATUSES = {429, 500, 502, 503, 504, 529}
+
+# httpx exceptions worth retrying. Importantly excludes ReadTimeout and
+# WriteTimeout — those mean "the client gave up waiting on a server that's
+# probably still working" and retrying makes the queue worse, not better.
+RETRYABLE_EXCEPTIONS = (
+    httpx.ConnectError,
+    httpx.PoolTimeout,
+    httpx.RemoteProtocolError,
+)
+
+# Decorrelated jitter parameters (AWS standard mode).
+_JITTER_BASE = 0.2   # min sleep
+_JITTER_CAP = 30.0   # max sleep per retry
+
+
+def _next_jitter_sleep(prev: float) -> float:
+    """Decorrelated-jitter backoff: ``min(cap, uniform(base, prev * 3))``."""
+    return min(_JITTER_CAP, random.uniform(_JITTER_BASE, max(_JITTER_BASE, prev) * 3))
+
+
 _llm_client: httpx.AsyncClient | None = None
 _ollama_client: httpx.AsyncClient | None = None
 
 
 def _get_llm_client() -> httpx.AsyncClient:
-    """Client for llama-server (GPU LLM inference)."""
+    """Client for llama-server (GPU LLM inference).
+
+    Base timeout matches ``DEFAULT_LLM_TIMEOUT`` so that calls without an
+    explicit per-request timeout still get the April-2026-standard 10-min
+    wait window instead of the previous 5-min one.
+    """
     global _llm_client
     if _llm_client is None or _llm_client.is_closed:
         _llm_client = httpx.AsyncClient(
-            base_url=settings.llm_server_url, timeout=300.0
+            base_url=settings.llm_server_url, timeout=DEFAULT_LLM_TIMEOUT
         )
     return _llm_client
 
@@ -242,7 +327,8 @@ async def ollama_chat(
     model: str | None = None,
     temperature: float = 0.7,
     num_ctx: int = 8192,
-    timeout: float = 300.0,
+    timeout: float = DEFAULT_LLM_TIMEOUT,
+    max_retries: int = DEFAULT_LLM_MAX_RETRIES,
     keep_alive: str = "24h",
     think: bool = False,
 ) -> dict:
@@ -307,37 +393,46 @@ async def ollama_chat(
     if not think:
         payload["chat_template_kwargs"] = {"enable_thinking": False}
 
-    retryable_status = {404, 503, 502, 429}
+    total_attempts = max_retries + 1
     last_exc: Exception | None = None
-    for attempt in range(5):
+    prev_sleep = _JITTER_BASE
+
+    for attempt in range(total_attempts):
         try:
             resp = await client.post(
-                "/v1/chat/completions", json=payload, timeout=timeout
+                "/v1/chat/completions", json=payload, timeout=timeout,
             )
-            if resp.status_code in retryable_status:
-                wait = 2 ** attempt
-                logger.warning(
-                    "llama-server returned %d (attempt %d/5), retrying in %ds",
-                    resp.status_code, attempt + 1, wait,
-                )
+            if resp.status_code in RETRYABLE_STATUSES:
                 last_exc = httpx.HTTPStatusError(
                     f"HTTP {resp.status_code}",
                     request=resp.request, response=resp,
                 )
-                await asyncio.sleep(wait)
-                continue
+                if attempt < max_retries:
+                    prev_sleep = _next_jitter_sleep(prev_sleep)
+                    logger.warning(
+                        "llama-server HTTP %d (attempt %d/%d), "
+                        "sleeping %.1fs with decorrelated jitter before retry",
+                        resp.status_code, attempt + 1, total_attempts, prev_sleep,
+                    )
+                    await asyncio.sleep(prev_sleep)
+                    continue
+                raise last_exc
+
+            # Non-retryable HTTP error (e.g. 404, 400) — surface immediately.
             resp.raise_for_status()
 
             raw_text = resp.text
             if not raw_text or not raw_text.strip():
-                wait = 2 ** attempt
-                logger.warning(
-                    "llama-server empty body (attempt %d/5), retrying in %ds",
-                    attempt + 1, wait,
-                )
                 last_exc = ValueError("Empty response body")
-                await asyncio.sleep(wait)
-                continue
+                if attempt < max_retries:
+                    prev_sleep = _next_jitter_sleep(prev_sleep)
+                    logger.warning(
+                        "llama-server empty body (attempt %d/%d), sleeping %.1fs",
+                        attempt + 1, total_attempts, prev_sleep,
+                    )
+                    await asyncio.sleep(prev_sleep)
+                    continue
+                raise last_exc
 
             data = resp.json()
             content = (
@@ -347,41 +442,64 @@ async def ollama_chat(
             )
 
             if not content or not content.strip():
-                wait = 2 ** attempt
-                logger.warning(
-                    "llama-server empty content (attempt %d/5), retrying in %ds",
-                    attempt + 1, wait,
-                )
                 last_exc = ValueError("Empty LLM content")
-                await asyncio.sleep(wait)
-                continue
+                if attempt < max_retries:
+                    prev_sleep = _next_jitter_sleep(prev_sleep)
+                    logger.warning(
+                        "llama-server empty content (attempt %d/%d), "
+                        "sleeping %.1fs",
+                        attempt + 1, total_attempts, prev_sleep,
+                    )
+                    await asyncio.sleep(prev_sleep)
+                    continue
+                raise last_exc
 
             return _extract_json(content, schema)
 
-        except json.JSONDecodeError as exc:
-            wait = 2 ** attempt
+        except (httpx.ReadTimeout, httpx.WriteTimeout) as exc:
+            # IMPORTANT: do NOT retry on client-side timeouts.
+            # llama-server is single-slot (n_parallel=1 is required for
+            # Qwen3.5-35B-A3B hybrid SWA — see memory 019d3f0e). Requests
+            # queue inside the server; a ReadTimeout here means the client's
+            # timeout is shorter than the server's processing time. Retrying
+            # sends a NEW request to the queue behind the still-running first
+            # one, doubling load instead of freeing the server.
             logger.warning(
-                "llama-server malformed JSON (attempt %d/5), retrying in %ds: %.80s",
-                attempt + 1, wait, str(exc),
+                "llama-server %s after %.0fs — NOT retrying "
+                "(server is likely still processing; caller should "
+                "lengthen timeout or accept the failure)",
+                type(exc).__name__, timeout,
             )
-            last_exc = exc
-            await asyncio.sleep(wait)
-        except (
-            httpx.ConnectError,
-            httpx.ReadTimeout,
-            httpx.WriteTimeout,
-            httpx.PoolTimeout,
-            httpx.RemoteProtocolError,
-        ) as exc:
-            wait = 2 ** attempt
-            logger.warning(
-                "llama-server %s (attempt %d/5), retrying in %ds",
-                type(exc).__name__, attempt + 1, wait,
-            )
-            await asyncio.sleep(wait)
-            last_exc = exc
+            raise
 
-    raise last_exc or RuntimeError("ollama_chat failed after retries")
+        except RETRYABLE_EXCEPTIONS as exc:
+            last_exc = exc
+            if attempt < max_retries:
+                prev_sleep = _next_jitter_sleep(prev_sleep)
+                logger.warning(
+                    "llama-server %s (attempt %d/%d), sleeping %.1fs",
+                    type(exc).__name__, attempt + 1, total_attempts, prev_sleep,
+                )
+                await asyncio.sleep(prev_sleep)
+                continue
+            raise
+
+        except json.JSONDecodeError as exc:
+            last_exc = exc
+            if attempt < max_retries:
+                prev_sleep = _next_jitter_sleep(prev_sleep)
+                logger.warning(
+                    "llama-server malformed JSON (attempt %d/%d), "
+                    "sleeping %.1fs: %.80s",
+                    attempt + 1, total_attempts, prev_sleep, str(exc),
+                )
+                await asyncio.sleep(prev_sleep)
+                continue
+            raise
+
+    # Unreachable — each branch either returns or raises — but keep a guard
+    # for type-checker completeness.
+    raise last_exc or RuntimeError("ollama_chat exhausted retries with no error captured")
 
 
 async def ollama_generate(
@@ -391,13 +509,19 @@ async def ollama_generate(
     model: str | None = None,
     temperature: float = 0.3,
     num_ctx: int = 2048,
-    timeout: float = 60.0,
+    timeout: float = DEFAULT_LLM_TIMEOUT,
+    max_retries: int = DEFAULT_LLM_MAX_RETRIES,
     keep_alive: str = "24h",
     max_tokens: int = 512,
 ) -> str:
     """Generate plain text using llama-server.
 
     Used for HyDE hypothetical document generation and query decomposition.
+
+    Same retry + timeout policy as :func:`ollama_chat` (see module docstring).
+    ``ReadTimeout`` / ``WriteTimeout`` propagate to the caller; HyDE and
+    query-decomposition callers are opt-in enhancements that gracefully
+    degrade to un-enhanced search, so a raised timeout is fine.
     """
     client = _get_llm_client()
     messages = []
@@ -413,12 +537,30 @@ async def ollama_generate(
         "chat_template_kwargs": {"enable_thinking": False},
     }
 
+    total_attempts = max_retries + 1
     last_exc: Exception | None = None
-    for attempt in range(3):
+    prev_sleep = _JITTER_BASE
+
+    for attempt in range(total_attempts):
         try:
             resp = await client.post(
-                "/v1/chat/completions", json=payload, timeout=timeout
+                "/v1/chat/completions", json=payload, timeout=timeout,
             )
+            if resp.status_code in RETRYABLE_STATUSES:
+                last_exc = httpx.HTTPStatusError(
+                    f"HTTP {resp.status_code}",
+                    request=resp.request, response=resp,
+                )
+                if attempt < max_retries:
+                    prev_sleep = _next_jitter_sleep(prev_sleep)
+                    logger.warning(
+                        "ollama_generate HTTP %d (attempt %d/%d), "
+                        "sleeping %.1fs with decorrelated jitter before retry",
+                        resp.status_code, attempt + 1, total_attempts, prev_sleep,
+                    )
+                    await asyncio.sleep(prev_sleep)
+                    continue
+                raise last_exc
             resp.raise_for_status()
             content = (
                 resp.json()
@@ -427,19 +569,25 @@ async def ollama_generate(
                 .get("content", "")
             )
             return content.strip() if content else ""
-        except (
-            httpx.ConnectError,
-            httpx.ReadTimeout,
-            httpx.WriteTimeout,
-            httpx.PoolTimeout,
-            httpx.RemoteProtocolError,
-        ) as exc:
-            wait = 2 ** attempt
-            logger.warning(
-                "ollama_generate %s (attempt %d/3)",
-                type(exc).__name__, attempt + 1,
-            )
-            last_exc = exc
-            await asyncio.sleep(wait)
 
-    raise last_exc or RuntimeError("ollama_generate failed after retries")
+        except (httpx.ReadTimeout, httpx.WriteTimeout) as exc:
+            # Do NOT retry — see ollama_chat above for rationale.
+            logger.warning(
+                "ollama_generate %s after %.0fs — NOT retrying",
+                type(exc).__name__, timeout,
+            )
+            raise
+
+        except RETRYABLE_EXCEPTIONS as exc:
+            last_exc = exc
+            if attempt < max_retries:
+                prev_sleep = _next_jitter_sleep(prev_sleep)
+                logger.warning(
+                    "ollama_generate %s (attempt %d/%d), sleeping %.1fs",
+                    type(exc).__name__, attempt + 1, total_attempts, prev_sleep,
+                )
+                await asyncio.sleep(prev_sleep)
+                continue
+            raise
+
+    raise last_exc or RuntimeError("ollama_generate exhausted retries with no error captured")
