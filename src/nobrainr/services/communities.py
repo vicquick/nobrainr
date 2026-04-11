@@ -285,7 +285,6 @@ async def generate_community_summaries(*, max_communities: int = 50) -> dict:
         comm_id = row["community_id"]
         names = list(row["names"])
         types = list(row["types"])
-        descriptions = [d for d in row["descriptions"] if d]
 
         # Build context for LLM
         members = []
