@@ -852,20 +852,60 @@ async def store_memory_outcome(
     context: str | None = None,
     agent_id: str | None = None,
     session_id: str | None = None,
+    query_trace_id: str | None = None,
+    query_text: str | None = None,
+    result_rank: int | None = None,
 ) -> dict:
-    """Record feedback on whether a memory search result was useful."""
+    """Record feedback on whether a memory search result was useful.
+
+    Optional trace fields (v6, 2026-04-11) let the caller link a feedback
+    row back to the specific search that surfaced the memory — required
+    for computing MRR/NDCG in a later phase. All three must be present
+    together to carry meaning, but any combination is accepted so the
+    dashboard thumbs-down still works without query context.
+    """
     pool = await get_pool()
+    # Normalise + guard
+    trace_uuid: UUID | None = None
+    if query_trace_id:
+        try:
+            trace_uuid = UUID(query_trace_id)
+        except (ValueError, AttributeError):
+            trace_uuid = None
+    if result_rank is not None and result_rank < 1:
+        # Only 1-indexed ranks make sense; drop anything else as "unknown".
+        result_rank = None
+    # Trim freakishly long queries — full query goes in the agent's memory,
+    # not ours. 500 chars is enough for later bucketing/diagnostics.
+    trimmed_query = query_text[:500] if query_text else None
+
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            INSERT INTO memory_outcomes (memory_id, was_useful, context, agent_id, session_id)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO memory_outcomes (
+                memory_id, was_useful, context, agent_id, session_id,
+                query_trace_id, query_text, result_rank
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING id, created_at
             """,
             UUID(memory_id), was_useful, context, agent_id, session_id,
+            trace_uuid, trimmed_query, result_rank,
         )
-        publish("feedback_added", {"memory_id": memory_id, "was_useful": was_useful})
-        return {"id": str(row["id"]), "created_at": row["created_at"].isoformat()}
+        publish(
+            "feedback_added",
+            {
+                "memory_id": memory_id,
+                "was_useful": was_useful,
+                "query_trace_id": str(trace_uuid) if trace_uuid else None,
+                "result_rank": result_rank,
+            },
+        )
+        return {
+            "id": str(row["id"]),
+            "created_at": row["created_at"].isoformat(),
+            "traced": trace_uuid is not None,
+        }
 
 
 async def integrate_feedback_scores() -> int:
@@ -2315,12 +2355,38 @@ async def get_scheduler_events(limit: int = 50) -> list[dict]:
 
 
 async def get_feedback_stats() -> dict:
-    """Get feedback and archive statistics for the dashboard."""
+    """Get feedback and archive statistics for the dashboard.
+
+    v6 (2026-04-11): adds trace-aware fields when query_trace_id / result_rank
+    are populated on the row. Old rows (trace_id IS NULL) are excluded from
+    the rank averages but still count toward total/positive.
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
         feedback_total = await conn.fetchval("SELECT count(*) FROM memory_outcomes")
         feedback_positive = await conn.fetchval(
             "SELECT count(*) FROM memory_outcomes WHERE was_useful = true"
+        )
+        feedback_traced = await conn.fetchval(
+            "SELECT count(*) FROM memory_outcomes WHERE query_trace_id IS NOT NULL"
+        )
+        feedback_with_rank = await conn.fetchval(
+            "SELECT count(*) FROM memory_outcomes WHERE result_rank IS NOT NULL"
+        )
+        # Average rank on which positive vs negative feedback landed — a
+        # proxy for search quality. Good search: useful results cluster at
+        # low rank (1-3), useless results trail higher. Divergence matters
+        # more than the absolute number.
+        rank_row = await conn.fetchrow(
+            """
+            SELECT
+                AVG(result_rank) FILTER (WHERE was_useful = true)::float  AS avg_useful_rank,
+                AVG(result_rank) FILTER (WHERE was_useful = false)::float AS avg_useless_rank,
+                COUNT(*) FILTER (WHERE was_useful = true  AND result_rank IS NOT NULL) AS useful_ranked,
+                COUNT(*) FILTER (WHERE was_useful = false AND result_rank IS NOT NULL) AS useless_ranked
+            FROM memory_outcomes
+            WHERE result_rank IS NOT NULL
+            """
         )
         archived = await conn.fetchval(
             "SELECT count(*) FROM memories WHERE category = '_archived'"
@@ -2331,6 +2397,12 @@ async def get_feedback_stats() -> dict:
         return {
             "feedback_total": feedback_total,
             "feedback_positive": feedback_positive,
+            "feedback_traced": feedback_traced,
+            "feedback_with_rank": feedback_with_rank,
+            "avg_useful_rank": rank_row["avg_useful_rank"] if rank_row else None,
+            "avg_useless_rank": rank_row["avg_useless_rank"] if rank_row else None,
+            "useful_ranked_count": rank_row["useful_ranked"] if rank_row else 0,
+            "useless_ranked_count": rank_row["useless_ranked"] if rank_row else 0,
             "archived_memories": archived,
             "events_24h": events_24h,
         }
