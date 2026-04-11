@@ -144,6 +144,128 @@ async def enqueue_memory_write(
     }
 
 
+async def enqueue_document_chunks(
+    content: str,
+    *,
+    title: str | None = None,
+    summary: str | None = None,
+    tags: list[str] | None = None,
+    category: str | None = None,
+    source_type: str = "document",
+    source_machine: str | None = None,
+    source_ref: str | None = None,
+    confidence: float = 0.8,
+    metadata: dict | None = None,
+    max_chars: int | None = None,
+    overlap: int | None = None,
+) -> dict[str, Any]:
+    """Enqueue every chunk of a long document as individual memory writes.
+
+    Mirrors :func:`nobrainr.services.memory.store_document_chunked` but uses the
+    queue path — each chunk lands as its own row in ``memory_write_queue``
+    with a shared ``document_id`` in metadata so the chunks can be rejoined
+    downstream.
+
+    Contextual prefixes are deliberately NOT generated on the hot path. The
+    old ``store_document_chunked`` would fire one ``ollama_chat`` call per
+    chunk to produce an Anthropic-style contextual prefix — each one with a
+    600s timeout — which is exactly the 600s hot-path bug PR #18 fixed for
+    ``memory_store``. The existing ``contextual_prefix_backfill`` scheduler
+    job already backfills prefixes for chunks stored without one, so we
+    accept zero-latency enqueue now + async prefix enrichment later.
+
+    Returns::
+
+        {
+            "status": "queued",
+            "queue_ids": [...],           # one per chunk (or one total for short content)
+            "chunks": int,                # number of chunks (1 if content was short)
+            "document_id": str | None,    # None for single-chunk writes
+        }
+
+    For empty or unchunkable input, returns ``{"error": "..."}``.
+    """
+    from nobrainr.config import settings
+    from nobrainr.services.chunking import chunk_text
+    import uuid as _uuid
+
+    trimmed = (content or "").strip()
+    if not trimmed:
+        return {"error": "Empty content"}
+
+    # Short content — still goes through the queue but as a single row so
+    # callers get a consistent ``queue_ids`` shape.
+    if len(trimmed) <= settings.chunk_threshold:
+        enq = await enqueue_memory_write(
+            content=trimmed,
+            summary=summary or (f"Document: {title}" if title else None),
+            tags=tags,
+            category=category,
+            source_type=source_type,
+            source_machine=source_machine,
+            source_ref=source_ref,
+            confidence=confidence,
+            metadata=metadata,
+        )
+        return {
+            "status": "queued",
+            "queue_ids": [enq["queue_id"]],
+            "chunks": 1,
+            "document_id": None,
+        }
+
+    chunks = chunk_text(trimmed, max_chars=max_chars, overlap=overlap)
+    if not chunks:
+        return {"error": "Chunking produced no output"}
+
+    document_id = str(_uuid.uuid4())
+    queue_ids: list[str] = []
+
+    for chunk in chunks:
+        chunk_meta = dict(metadata or {})
+        chunk_meta.update(
+            {
+                "document_id": document_id,
+                "chunk_index": chunk.index,
+                "chunk_total": chunk.total,
+                "chunk_offset": chunk.char_offset,
+            }
+        )
+        if title:
+            chunk_meta["document_title"] = title
+
+        chunk_summary_base = title or summary or source_ref or "Document chunk"
+        chunk_summary = (
+            f"{chunk_summary_base} [{chunk.index + 1}/{chunk.total}]"
+            if chunk.total > 1
+            else chunk_summary_base
+        )
+
+        enq = await enqueue_memory_write(
+            content=chunk.text,
+            summary=chunk_summary[:200],
+            tags=tags,
+            category=category,
+            source_type=source_type,
+            source_machine=source_machine,
+            source_ref=source_ref,
+            confidence=confidence,
+            metadata=chunk_meta,
+            # Chunks are unique by offset within a document; deduping them
+            # would cause false merges across documents that happen to share
+            # a common snippet.
+            skip_dedup=True,
+        )
+        queue_ids.append(enq["queue_id"])
+
+    return {
+        "status": "queued",
+        "queue_ids": queue_ids,
+        "chunks": len(chunks),
+        "document_id": document_id,
+    }
+
+
 async def claim_next_pending() -> dict[str, Any] | None:
     """Claim the oldest pending row whose ``next_attempt_at`` has passed.
 
