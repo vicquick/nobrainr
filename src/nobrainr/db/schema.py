@@ -576,6 +576,73 @@ UPDATE memory_facts SET embedding_model = '{settings.embedding_model}'
     WHERE embedding_model IS NULL;
 CREATE INDEX IF NOT EXISTS idx_facts_memory ON memory_facts(memory_id);
 CREATE INDEX IF NOT EXISTS idx_facts_created ON memory_facts(created_at DESC);
+
+-- ──────────────────────────────────────────────
+-- Procedural memory (Phase C G4, 2026-04-12, v6.8)
+-- ──────────────────────────────────────────────
+-- Letta + LangGraph "procedural memory" pattern: agent-writable rules and
+-- instructions that affect future behavior. These are NOT retrieved by
+-- similarity like regular memories — they're retrieved by SCOPE and applied
+-- at session start or on demand. Use cases:
+--
+--   - Global: "always run tests before committing" (applies to all agents)
+--   - Agent: "this agent prefers terse responses" (per-agent style)
+--   - Project: "in project foo, tests live in tests/" (per-project convention)
+--   - Session: temporary rules that expire with the session
+--
+-- The key difference from regular memories:
+--   - Regular memory: facts, experiences, learnings (searched by similarity)
+--   - Procedural memory: rules, instructions, preferences (loaded by scope)
+--
+-- Design decisions:
+--   - Separate table (not a category on memories) so procedural memories
+--     never appear in memory_search results and never compete with facts
+--   - Soft-delete via active=false rather than DELETE, so rules leave an
+--     audit trail of what was tried
+--   - priority 0-100 for explicit ordering when multiple rules apply
+--   - expires_at optional, lets session-scoped rules auto-deactivate
+CREATE TABLE IF NOT EXISTS procedural_memories (
+    id              uuid DEFAULT uuidv7() PRIMARY KEY,
+    content         text NOT NULL,
+    title           text,                        -- short label for quick lookup
+    scope           text NOT NULL CHECK (scope IN ('global', 'agent', 'project', 'session')),
+    agent_id        text,                        -- required when scope='agent'
+    project_id      text,                        -- required when scope='project'
+    session_id      text,                        -- required when scope='session'
+    priority        int NOT NULL DEFAULT 50,     -- 0..100, higher applies first
+    active          boolean NOT NULL DEFAULT true,
+    tags            text[] DEFAULT '{{}}'::text[],
+    metadata        jsonb DEFAULT '{{}}'::jsonb,
+    created_at      timestamptz DEFAULT now(),
+    updated_at      timestamptz DEFAULT now(),
+    expires_at      timestamptz                  -- NULL = never expires
+);
+
+-- Composite index for the default "get active rules ordered by priority" query
+CREATE INDEX IF NOT EXISTS idx_procedural_scope_active
+    ON procedural_memories (scope, active, priority DESC);
+
+-- Partial indexes for scope-specific lookups (skip the index when NULL)
+CREATE INDEX IF NOT EXISTS idx_procedural_agent
+    ON procedural_memories (agent_id)
+    WHERE agent_id IS NOT NULL AND active;
+CREATE INDEX IF NOT EXISTS idx_procedural_project
+    ON procedural_memories (project_id)
+    WHERE project_id IS NOT NULL AND active;
+CREATE INDEX IF NOT EXISTS idx_procedural_session
+    ON procedural_memories (session_id)
+    WHERE session_id IS NOT NULL AND active;
+
+-- Index for expiry sweep
+CREATE INDEX IF NOT EXISTS idx_procedural_expires
+    ON procedural_memories (expires_at)
+    WHERE expires_at IS NOT NULL AND active;
+
+-- Updated_at trigger reuses the generic updater defined above
+DROP TRIGGER IF EXISTS trg_procedural_updated_at ON procedural_memories;
+CREATE TRIGGER trg_procedural_updated_at
+    BEFORE UPDATE ON procedural_memories
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 """
 
 
