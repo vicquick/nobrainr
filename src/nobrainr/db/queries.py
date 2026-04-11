@@ -2,6 +2,7 @@
 
 import json
 import logging
+from datetime import datetime
 from uuid import UUID
 
 import numpy as np
@@ -128,6 +129,8 @@ async def search_memories(
     source_machine: str | None = None,
     text_query: str | None = None,
     include_cold: bool = False,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
 ) -> list[dict]:
     pool = await get_pool()
     vec = np.array(embedding, dtype=np.float32)
@@ -140,6 +143,7 @@ async def search_memories(
             tags=tags, category=category,
             source_type=source_type, source_machine=source_machine,
             include_cold=include_cold,
+            date_from=date_from, date_to=date_to,
         )
 
     # Two-phase vector search: halfvec HNSW index scan for candidates → full-precision re-ranking
@@ -171,6 +175,18 @@ async def search_memories(
     if source_machine:
         conditions.append(f"source_machine = ${idx}")
         params.append(source_machine)
+        idx += 1
+    # Temporal filters (v6.5, 2026-04-11) — phase 1 of the query intent
+    # parser work. Agents can pass date_from/date_to today; a future LLM-
+    # based parser will extract "last week" / "before Thursday" into
+    # these same params. Both are inclusive bounds on created_at.
+    if date_from is not None:
+        conditions.append(f"created_at >= ${idx}")
+        params.append(date_from)
+        idx += 1
+    if date_to is not None:
+        conditions.append(f"created_at <= ${idx}")
+        params.append(date_to)
         idx += 1
 
     where = " AND ".join(conditions)
@@ -232,8 +248,16 @@ def _build_filter_clause(
     category: str | None,
     source_type: str | None,
     source_machine: str | None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
 ) -> tuple[str, list, int]:
-    """Build shared WHERE filter fragment for hybrid search sub-queries."""
+    """Build shared WHERE filter fragment for hybrid search sub-queries.
+
+    v6.5 (2026-04-11): extended with optional date_from/date_to to enable
+    temporal-aware hybrid search. Both are inclusive bounds on created_at
+    and participate in the same numbered-placeholder sequence as the
+    existing filters.
+    """
     conditions = []
     params = []
     idx = start_idx
@@ -253,6 +277,14 @@ def _build_filter_clause(
         conditions.append(f"source_machine = ${idx}")
         params.append(source_machine)
         idx += 1
+    if date_from is not None:
+        conditions.append(f"created_at >= ${idx}")
+        params.append(date_from)
+        idx += 1
+    if date_to is not None:
+        conditions.append(f"created_at <= ${idx}")
+        params.append(date_to)
+        idx += 1
     clause = (" AND " + " AND ".join(conditions)) if conditions else ""
     return clause, params, idx
 
@@ -270,6 +302,8 @@ async def _hybrid_search_rrf(
     source_machine: str | None = None,
     rrf_k: int = 60,
     include_cold: bool = False,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
 ) -> list[dict]:
     """Hybrid search using Reciprocal Rank Fusion of vector + full-text results."""
     # Anthropic's Contextual Retrieval recipe: retrieve top-150 → rerank to top-20.
@@ -284,6 +318,7 @@ async def _hybrid_search_rrf(
         # 1) Vector search: halfvec HNSW scan → full-precision re-rank
         vec_extra, vec_fparams, _ = _build_filter_clause(
             5, tags, category, source_type, source_machine,
+            date_from=date_from, date_to=date_to,
         )
         vec_rows = await conn.fetch(
             f"""
@@ -316,6 +351,7 @@ async def _hybrid_search_rrf(
         # content that the old English-only index silently mis-tokenised.
         fts_extra, fts_fparams, _ = _build_filter_clause(
             3, tags, category, source_type, source_machine,
+            date_from=date_from, date_to=date_to,
         )
         fts_rows = await conn.fetch(
             f"""
