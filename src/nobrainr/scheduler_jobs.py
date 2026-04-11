@@ -155,7 +155,7 @@ async def auto_summarize() -> dict:
                 user=mem["content"][:3000],
                 schema=SUMMARIZE_SCHEMA,
                 model=model,
-                timeout=60.0,
+                timeout=600.0,
                 think=False,
             )
             summary = result.get("summary", "").strip()
@@ -350,7 +350,7 @@ async def entity_merging() -> dict:
                 ),
                 schema=ENTITY_MERGE_SCHEMA,
                 model=model,
-                timeout=60.0,
+                timeout=600.0,
                 think=False,
             )
 
@@ -426,7 +426,7 @@ async def entity_enrichment() -> dict:
                 ),
                 schema=ENTITY_DESC_SCHEMA,
                 model=model,
-                timeout=60.0,
+                timeout=600.0,
                 think=False,
             )
 
@@ -483,7 +483,7 @@ async def insight_extraction() -> dict:
                 ),
                 schema=INSIGHT_SCHEMA,
                 model=model,
-                timeout=60.0,
+                timeout=600.0,
                 think=False,
             )
 
@@ -711,7 +711,7 @@ async def extraction_quality() -> dict:
                 ),
                 schema=EXTRACTION_QUALITY_SCHEMA,
                 model=model,
-                timeout=60.0,
+                timeout=600.0,
                 think=False,
             )
 
@@ -846,7 +846,7 @@ async def fact_extraction() -> dict:
                 user=content[:4000],
                 schema=FACT_EXTRACTION_SCHEMA,
                 num_ctx=8192,
-                timeout=60.0,
+                timeout=600.0,
                 think=False,
             )
             facts = result.get("facts", [])
@@ -1000,7 +1000,7 @@ async def entity_web_research() -> dict:
                 ),
                 schema=RESEARCH_QUERY_SCHEMA,
                 model=model,
-                timeout=60.0,
+                timeout=600.0,
                 think=False,
             )
 
@@ -1164,7 +1164,7 @@ async def interest_expansion() -> dict:
                 ),
                 schema=INTEREST_RESEARCH_SCHEMA,
                 model=model,
-                timeout=60.0,
+                timeout=600.0,
                 think=False,
             )
 
@@ -1288,7 +1288,7 @@ async def quality_scoring() -> dict:
                 user=f"Source: {source} | Category: {category}\n\n{content}",
                 schema=MEMORY_QUALITY_SCHEMA,
                 model=model,
-                timeout=60.0,
+                timeout=600.0,
                 think=False,
             )
 
@@ -1553,7 +1553,7 @@ async def auto_optimize() -> dict:
             ),
             schema=AUTO_OPTIMIZE_SCHEMA,
             model=settings.scheduler_llm_model,
-            timeout=60.0,
+            timeout=600.0,
             think=False,
         )
 
