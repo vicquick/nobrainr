@@ -510,7 +510,8 @@ def re_embed(model, dimensions, batch_size, yes):
 @click.option("--no-issues", is_flag=True, help="Skip issues/PRs")
 @click.option("--no-structure", is_flag=True, help="Skip code structure/config files")
 @click.option("--no-closed", is_flag=True, help="Skip closed issues/PRs")
-def import_github_cmd(owner, repos, machine, no_commits, no_issues, no_structure, no_closed):
+@click.option("--include-forks", is_flag=True, help="Include forked repos (default: skip)")
+def import_github_cmd(owner, repos, machine, no_commits, no_issues, no_structure, no_closed, include_forks):
     """Import knowledge from GitHub repos (commits, issues, code structure)."""
     async def _import():
         from nobrainr.db.pool import get_pool, close_pool
@@ -528,6 +529,7 @@ def import_github_cmd(owner, repos, machine, no_commits, no_issues, no_structure
             include_issues=not no_issues,
             include_code_structure=not no_structure,
             include_closed_issues=not no_closed,
+            include_forks=include_forks,
         )
         await close_pool()
         return result
