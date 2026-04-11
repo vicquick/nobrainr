@@ -592,7 +592,12 @@ async def api_smart_recall(request: Request) -> JSONResponse:
 
 
 async def api_memory_feedback(request: Request) -> JSONResponse:
-    """Record feedback on a memory (was it useful?)."""
+    """Record feedback on a memory (was it useful?).
+
+    v6 (2026-04-11): accepts optional query_trace_id / result_rank / query_text
+    so dashboard-submitted feedback can carry the same search-context signal
+    that MCP-submitted feedback does.
+    """
     memory_id = request.path_params["memory_id"]
     if not _valid_uuid(memory_id):
         return JSONResponse({"error": "Invalid memory_id"}, status_code=400)
@@ -601,6 +606,14 @@ async def api_memory_feedback(request: Request) -> JSONResponse:
     context = body.get("context")
     agent_id = body.get("agent_id")
     session_id = body.get("session_id")
+    query_trace_id = body.get("query_trace_id")
+    query_text = body.get("query_text")
+    result_rank = body.get("result_rank")
+    if isinstance(result_rank, str):
+        try:
+            result_rank = int(result_rank)
+        except ValueError:
+            result_rank = None
 
     result = await queries.store_memory_outcome(
         memory_id,
@@ -608,6 +621,9 @@ async def api_memory_feedback(request: Request) -> JSONResponse:
         context=context,
         agent_id=agent_id,
         session_id=session_id,
+        query_trace_id=query_trace_id,
+        query_text=query_text,
+        result_rank=result_rank,
     )
     return JSONResponse(result)
 
