@@ -54,7 +54,13 @@ async def _generate_chunk_context(
             ),
             schema=CONTEXTUAL_PREFIX_SCHEMA,
             model=settings.scheduler_llm_model,
-            timeout=30.0,
+            # 600s matches the April 2026 industry-standard client timeout
+            # (OpenAI SDK default, llama.cpp server LLAMA_ARG_TIMEOUT default).
+            # Prefix generation runs during the `contextual_prefix_backfill`
+            # scheduler job, which previously timed out ~75% of its runs on
+            # 2026-04-10/11 because the 30s client timeout kept firing before
+            # the single-slot server could queue + process the request.
+            timeout=600.0,
             think=False,
         )
         ctx = result.get("context", "").strip()
