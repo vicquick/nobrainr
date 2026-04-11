@@ -2681,7 +2681,7 @@ def _row_to_dict(row) -> dict:
                 "memory_id", "entity_id", "relation_id", "connected_id"):
         if key in d and d[key] is not None:
             d[key] = str(d[key])
-    for key in ("created_at", "updated_at", "last_accessed_at"):
+    for key in ("created_at", "updated_at", "last_accessed_at", "expires_at"):
         if key in d and d[key] is not None:
             d[key] = d[key].isoformat()
     if "metadata" in d and d["metadata"] is not None:
@@ -2704,6 +2704,190 @@ def _row_to_dict(row) -> dict:
 
 def _jsonb(data: dict | None) -> str:
     return json.dumps(data or {})
+
+
+# ──────────────────────────────────────────────
+# Procedural memory (Phase C G4, 2026-04-12, v6.8)
+# ──────────────────────────────────────────────
+# Letta + LangGraph "procedural memory" pattern — agent-writable rules
+# and instructions. Retrieved by SCOPE (not similarity) and applied at
+# session start or on demand. See schema.py for the table definition
+# and the rationale behind keeping this separate from the memories table.
+
+
+_PROCEDURAL_VALID_SCOPES = {"global", "agent", "project", "session"}
+
+
+async def store_procedural_memory(
+    content: str,
+    *,
+    title: str | None = None,
+    scope: str = "global",
+    agent_id: str | None = None,
+    project_id: str | None = None,
+    session_id: str | None = None,
+    priority: int = 50,
+    tags: list[str] | None = None,
+    metadata: dict | None = None,
+    expires_at: datetime | None = None,
+) -> dict:
+    """Store a procedural memory (rule/instruction). See schema.py."""
+    if scope not in _PROCEDURAL_VALID_SCOPES:
+        raise ValueError(
+            f"scope must be one of {sorted(_PROCEDURAL_VALID_SCOPES)}, got {scope!r}"
+        )
+    if scope == "agent" and not agent_id:
+        raise ValueError("agent_id is required when scope='agent'")
+    if scope == "project" and not project_id:
+        raise ValueError("project_id is required when scope='project'")
+    if scope == "session" and not session_id:
+        raise ValueError("session_id is required when scope='session'")
+    if not (0 <= priority <= 100):
+        raise ValueError(f"priority must be in [0, 100], got {priority}")
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO procedural_memories (
+                content, title, scope,
+                agent_id, project_id, session_id,
+                priority, tags, metadata, expires_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
+            RETURNING id, content, title, scope,
+                      agent_id, project_id, session_id,
+                      priority, active, tags, metadata,
+                      created_at, updated_at, expires_at
+            """,
+            content, title, scope,
+            agent_id, project_id, session_id,
+            priority, tags or [], _jsonb(metadata), expires_at,
+        )
+        return _row_to_dict(row)
+
+
+async def get_procedural_memories(
+    *,
+    scope: str | None = None,
+    agent_id: str | None = None,
+    project_id: str | None = None,
+    session_id: str | None = None,
+    include_expired: bool = False,
+    include_inactive: bool = False,
+    limit: int = 100,
+) -> list[dict]:
+    """Retrieve procedural memories, ordered by priority DESC.
+
+    Scope merging semantics:
+      - If ``agent_id`` is passed, return (global rules) + (agent rules
+        for that specific agent). This is the common "give me the rules
+        that apply to me" query.
+      - If ``project_id`` is passed, return (global) + (project rules
+        for that specific project).
+      - If ``session_id`` is passed, return (global) + (session rules).
+      - If ``scope`` is passed explicitly, filter strictly to that scope.
+      - If nothing is passed, return every active rule.
+
+    Expired and inactive rules are filtered out by default. Pass
+    ``include_expired=True`` or ``include_inactive=True`` to see them
+    (dashboards, audit).
+    """
+    if scope is not None and scope not in _PROCEDURAL_VALID_SCOPES:
+        raise ValueError(
+            f"scope must be one of {sorted(_PROCEDURAL_VALID_SCOPES)}, got {scope!r}"
+        )
+
+    conditions = []
+    params = []
+    idx = 1
+
+    if not include_inactive:
+        conditions.append("active = true")
+    if not include_expired:
+        conditions.append("(expires_at IS NULL OR expires_at > now())")
+
+    # Scope merging: an explicit scope filter takes precedence over the
+    # "global + specific" merge. The merge only activates when no explicit
+    # scope is passed AND an id is passed.
+    if scope is not None:
+        conditions.append(f"scope = ${idx}")
+        params.append(scope)
+        idx += 1
+    else:
+        merge_clauses = []
+        if agent_id is not None:
+            merge_clauses.append(
+                f"(scope = 'agent' AND agent_id = ${idx})"
+            )
+            params.append(agent_id)
+            idx += 1
+        if project_id is not None:
+            merge_clauses.append(
+                f"(scope = 'project' AND project_id = ${idx})"
+            )
+            params.append(project_id)
+            idx += 1
+        if session_id is not None:
+            merge_clauses.append(
+                f"(scope = 'session' AND session_id = ${idx})"
+            )
+            params.append(session_id)
+            idx += 1
+        if merge_clauses:
+            # Global rules always apply, plus whichever specific id matches
+            scope_clause = "(scope = 'global' OR " + " OR ".join(merge_clauses) + ")"
+            conditions.append(scope_clause)
+
+    where = " AND ".join(conditions) if conditions else "true"
+    params.append(limit)
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT id, content, title, scope,
+                   agent_id, project_id, session_id,
+                   priority, active, tags, metadata,
+                   created_at, updated_at, expires_at
+            FROM procedural_memories
+            WHERE {where}
+            ORDER BY priority DESC, created_at DESC
+            LIMIT ${idx}
+            """,
+            *params,
+        )
+        return [_row_to_dict(row) for row in rows]
+
+
+async def delete_procedural_memory(memory_id: str, *, hard: bool = False) -> bool:
+    """Deactivate (soft delete) or hard-delete a procedural memory.
+
+    Default is soft — sets ``active = false`` so the rule leaves an
+    audit trail. Pass ``hard=True`` to actually remove the row
+    (dashboard cleanup, tests).
+    """
+    # Validate UUID BEFORE touching the pool. Garbage input must not
+    # trigger a connection attempt — failing closed means tests and
+    # malformed caller input both return False cheaply.
+    try:
+        mem_uuid = UUID(memory_id)
+    except (ValueError, AttributeError):
+        return False
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if hard:
+            result = await conn.execute(
+                "DELETE FROM procedural_memories WHERE id = $1",
+                mem_uuid,
+            )
+        else:
+            result = await conn.execute(
+                "UPDATE procedural_memories SET active = false, updated_at = now() WHERE id = $1",
+                mem_uuid,
+            )
+        return int(result.split()[-1]) > 0 if result else False
 
 
 # ──────────────────────────────────────────────
