@@ -255,6 +255,15 @@ class Scheduler:
                 )
             )
 
+        # Memory write queue worker — continuously drains memory_store
+        # requests enqueued by the MCP tool. No initial delay: the queue
+        # should drain on startup if there's a backlog from the previous
+        # process. Shares the LLM semaphore with periodic jobs so it
+        # never dogpiles the GPU.
+        self._tasks.append(
+            asyncio.create_task(self._memory_write_worker())
+        )
+
         sql_count = 7 + (2 if settings.monitoring_enabled else 0)
         logger.info(
             "Scheduler started with %d LLM jobs + %d SQL jobs. "
@@ -299,6 +308,93 @@ class Scheduler:
                 except Exception:
                     pass
             await asyncio.sleep(interval_seconds)
+
+    async def _memory_write_worker(self) -> None:
+        """Drain memory_write_queue forever.
+
+        Claims rows FIFO via FOR UPDATE SKIP LOCKED, processes each through
+        ``store_memory_with_extraction`` under the shared LLM semaphore, and
+        updates the queue row to ``done`` or ``failed`` (with exp-backoff
+        retry on transient LLM failures). When the queue is empty, awaits
+        ``write_queue.wait_for_pending`` for up to 2s so new writes wake
+        the worker immediately without burning CPU on a busy poll.
+
+        Exception-resilient: any unhandled error restarts the loop after a
+        2s grace period. CancelledError propagates so shutdown is clean.
+        """
+        # Import lazily so this module doesn't import services.memory at
+        # module load (circular-import guard).
+        from nobrainr.db import write_queue
+        from nobrainr.services.memory import store_memory_with_extraction
+
+        logger.info("memory_write_worker started — draining memory_write_queue")
+        while self._running:
+            try:
+                row = await write_queue.claim_next_pending()
+                if row is None:
+                    # Nothing to do — sleep until signalled or 2s elapses.
+                    await write_queue.wait_for_pending(timeout=2.0)
+                    continue
+
+                queue_id = str(row["id"])
+                logger.info(
+                    "memory_write_worker: claimed %s (attempt %d/%d)",
+                    queue_id, row["attempts"], row["max_attempts"],
+                )
+
+                # Share the LLM semaphore with periodic jobs so a busy
+                # backfill queue doesn't dogpile llama-server.
+                async with self._llm_semaphore:
+                    try:
+                        result = await store_memory_with_extraction(
+                            content=row["content"],
+                            summary=row["summary"],
+                            tags=row["tags"],
+                            category=row["category"],
+                            source_type=row["source_type"] or "manual",
+                            source_machine=row["source_machine"],
+                            source_ref=row["source_ref"],
+                            confidence=row["confidence"] if row["confidence"] is not None else 1.0,
+                            metadata=row["metadata"],
+                            skip_dedup=bool(row["skip_dedup"]),
+                            contextual_prefix=row["contextual_prefix"],
+                        )
+                        memory_id = (
+                            result.get("id")
+                            or result.get("updated_id")
+                            or result.get("new_id")
+                        )
+                        await write_queue.mark_done(
+                            queue_id,
+                            memory_id=memory_id,
+                            result_status=result.get("status", "unknown"),
+                        )
+                        logger.info(
+                            "memory_write_worker: %s → %s (memory_id=%s)",
+                            queue_id, result.get("status"), memory_id,
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        logger.exception(
+                            "memory_write_worker: processing %s failed", queue_id,
+                        )
+                        final_status = await write_queue.mark_failed(
+                            queue_id, error=str(e), retry=True,
+                        )
+                        logger.info(
+                            "memory_write_worker: %s → %s after failure",
+                            queue_id, final_status,
+                        )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "memory_write_worker: loop crashed, restarting in 2s",
+                )
+                await asyncio.sleep(2)
+
+        logger.info("memory_write_worker stopped")
 
     async def _run_periodic_llm(
         self, name: str, job, interval_seconds: float, initial_delay: float,
