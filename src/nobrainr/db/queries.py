@@ -770,21 +770,60 @@ async def query_memories(
 # ──────────────────────────────────────────────
 
 async def recompute_importance() -> int:
-    """Recompute importance using graph-structural signals + quality score."""
+    """Recompute importance using graph-structural signals + quality score.
+
+    v6.6 (2026-04-12, Phase B G1): added graph proximity signal — how many
+    "hot entities" (those linked to any memory accessed in the last 7 days)
+    are linked to this memory. This is the Graphiti-inspired "rerank by
+    graph distance to recent episodes" pattern, implemented at the
+    importance-update layer rather than at query time so it flows through
+    ``memory_relevance()`` without a SQL function migration and costs
+    nothing at query time — the signal is already baked into importance.
+
+    Formula:
+      - 30% entity connectivity (down from 40%)
+      - 30% quality score (unchanged)
+      - 20% confidence (down from 30%)
+      - 20% graph proximity (NEW) — count of hot entities linked to memory
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
         result = await conn.execute(
             """
+            WITH hot_entities AS (
+                -- Entities linked to any memory accessed in the last 7 days.
+                -- This is the "recent episodes" anchor set from Graphiti.
+                SELECT DISTINCT em.entity_id
+                FROM entity_memories em
+                JOIN memories m2 ON m2.id = em.memory_id
+                WHERE m2.last_accessed_at > NOW() - INTERVAL '7 days'
+            ),
+            memory_hot_counts AS (
+                -- For each memory, count how many of its linked entities
+                -- are in the hot set. A memory linked to 5 hot entities
+                -- is graph-closer to recent activity than one with 0.
+                SELECT em.memory_id,
+                       count(DISTINCT em.entity_id) AS hot_entity_count
+                FROM entity_memories em
+                WHERE em.entity_id IN (SELECT entity_id FROM hot_entities)
+                GROUP BY em.memory_id
+            )
             UPDATE memories m SET importance = LEAST(1.0,
-                -- 40% entity connectivity (how many entities this memory links to, normalized)
-                (0.4 * LEAST(1.0, COALESCE((
+                -- 30% entity connectivity (count of linked entities, normalized)
+                (0.3 * LEAST(1.0, COALESCE((
                     SELECT count(*)::real / 10.0
                     FROM entity_memories em WHERE em.memory_id = m.id
                 ), 0.0)))
                 -- 30% quality score (LLM-assessed, default 0.5 if not scored)
               + (0.3 * COALESCE(quality_score, 0.5))
-                -- 30% confidence (source reliability)
-              + (0.3 * COALESCE(confidence, 0.7))
+                -- 20% confidence (source reliability)
+              + (0.2 * COALESCE(confidence, 0.7))
+                -- 20% graph proximity (Graphiti-inspired, v6.6) — memories
+                -- that share entities with recently-accessed ones rise.
+              + (0.2 * LEAST(1.0, COALESCE((
+                    SELECT hot_entity_count::real / 10.0
+                    FROM memory_hot_counts mhc WHERE mhc.memory_id = m.id
+                ), 0.0)))
             )
             WHERE embedding IS NOT NULL
             """
