@@ -66,7 +66,6 @@ async def _warm_graph_cache():
     try:
         await asyncio.sleep(10)  # let DB pool settle
         from nobrainr.dashboard.api import api_graph
-        from starlette.testclient import TestClient
         from starlette.requests import Request
         # Build a fake request with refresh=true
         scope = {"type": "http", "method": "GET", "path": "/api/graph", "query_string": b"refresh=true", "headers": []}

@@ -16,7 +16,6 @@ import json
 import logging
 import re
 from collections import defaultdict
-from datetime import datetime
 
 from nobrainr.db.pool import get_pool
 from nobrainr.services.memory import store_memory_with_extraction
