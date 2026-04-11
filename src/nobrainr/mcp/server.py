@@ -718,6 +718,172 @@ async def memory_delete(memory_id: str) -> dict:
 
 
 # ──────────────────────────────────────────────
+# Procedural memory tools (Phase C G4, 2026-04-12, v6.8)
+# ──────────────────────────────────────────────
+# Letta + LangGraph-inspired: agent-writable rules and instructions that
+# affect future behavior. Retrieved by scope (not similarity) and applied
+# at session start. Separate from regular memories so rules never compete
+# with facts in search results.
+
+
+def _parse_iso_datetime(raw):
+    """Accept '2026-03-01', '2026-03-01T12:00:00Z', or ISO with offset.
+
+    Returns a datetime or None. None on garbage input rather than
+    erroring, so MCP callers can't accidentally break procedural
+    storage with a malformed date. Type annotation is omitted on the
+    return so we don't need to import datetime at module scope.
+    """
+    from datetime import datetime
+    if not raw:
+        return None
+    try:
+        s = raw.strip()
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        return datetime.fromisoformat(s)
+    except (ValueError, AttributeError):
+        return None
+
+
+@mcp.tool()
+async def memory_store_procedural(
+    content: str,
+    title: str | None = None,
+    scope: str = "global",
+    agent_id: str | None = None,
+    project_id: str | None = None,
+    session_id: str | None = None,
+    priority: int = 50,
+    tags: list[str] | None = None,
+    metadata: dict | None = None,
+    expires_at: str | None = None,
+) -> dict:
+    """Store a procedural memory — an instruction or rule that affects
+    future agent behavior.
+
+    Unlike regular memories (which are retrieved by similarity),
+    procedural memories are retrieved by SCOPE and applied at session
+    start or on demand. Typical use cases:
+
+      - ``scope="global"`` — rule applies to every agent everywhere
+        ("always run tests before committing")
+      - ``scope="agent"`` — rule applies to one specific agent
+        ("this agent prefers terse responses")
+      - ``scope="project"`` — rule applies to one project
+        ("in project foo, tests live in tests/")
+      - ``scope="session"`` — temporary rule that auto-expires with
+        the session
+
+    Agents should call ``memory_get_procedural`` at session start to
+    discover rules that should govern their behavior, then apply them.
+
+    Args:
+        content: The rule/instruction itself.
+        title: Short label for quick reference (optional).
+        scope: 'global' | 'agent' | 'project' | 'session' (default 'global').
+        agent_id: Required when scope='agent'.
+        project_id: Required when scope='project'.
+        session_id: Required when scope='session'.
+        priority: 0-100, higher applies first when multiple rules match.
+            Default 50.
+        tags: Free-form tags for organization.
+        metadata: Structured context (source, reason, etc.).
+        expires_at: ISO 8601 timestamp when this rule should auto-deactivate.
+            Use for session-scoped or temporary rules. Accepts
+            "2026-04-12", "2026-04-12T09:55:00Z", or "2026-04-12T09:55:00+00:00".
+    """
+    parsed_expires = _parse_iso_datetime(expires_at)
+    try:
+        return await queries.store_procedural_memory(
+            content=content,
+            title=title,
+            scope=scope,
+            agent_id=agent_id,
+            project_id=project_id,
+            session_id=session_id,
+            priority=priority,
+            tags=tags,
+            metadata=metadata,
+            expires_at=parsed_expires,
+        )
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool()
+async def memory_get_procedural(
+    scope: str | None = None,
+    agent_id: str | None = None,
+    project_id: str | None = None,
+    session_id: str | None = None,
+    include_expired: bool = False,
+    include_inactive: bool = False,
+    limit: int = 100,
+) -> list[dict]:
+    """Retrieve active procedural memories (rules/instructions).
+
+    Returns rules in priority order (highest first). Expired and
+    inactive rules are filtered out by default.
+
+    Scope merging (when no explicit scope is passed):
+      - If ``agent_id`` is passed, returns global + agent-specific rules
+        for that agent (the standard "rules that apply to me" query).
+      - If ``project_id`` is passed, returns global + project rules.
+      - If ``session_id`` is passed, returns global + session rules.
+      - Any combination of the above also works (ids are independent).
+      - If nothing is passed, returns all active rules across all scopes.
+
+    An explicit ``scope`` parameter overrides this merge — passing
+    ``scope="global"`` returns only global rules regardless of which
+    ids are passed.
+
+    Call this at session start to discover rules that should govern
+    agent behavior.
+
+    Args:
+        scope: Optional exact-scope filter. Overrides the id-based merge.
+        agent_id: The current agent's id — returns global + agent rules.
+        project_id: The current project id — returns global + project rules.
+        session_id: The current session id — returns global + session rules.
+        include_expired: Include rules past their expires_at (default False).
+        include_inactive: Include soft-deleted rules (default False).
+        limit: Max rows to return (default 100).
+    """
+    try:
+        return await queries.get_procedural_memories(
+            scope=scope,
+            agent_id=agent_id,
+            project_id=project_id,
+            session_id=session_id,
+            include_expired=include_expired,
+            include_inactive=include_inactive,
+            limit=limit,
+        )
+    except ValueError as exc:
+        return [{"error": str(exc)}]
+
+
+@mcp.tool()
+async def memory_delete_procedural(memory_id: str, hard: bool = False) -> dict:
+    """Deactivate (soft delete) a procedural memory.
+
+    Default is soft — sets ``active = false`` so the rule leaves an
+    audit trail of what was tried. Pass ``hard=True`` to actually remove
+    the row (dashboard cleanup).
+
+    Args:
+        memory_id: The UUID of the procedural memory to deactivate.
+        hard: If True, DELETE the row instead of marking it inactive.
+            Default False (soft delete).
+    """
+    ok = await queries.delete_procedural_memory(memory_id, hard=hard)
+    if ok:
+        return {"status": "deleted" if hard else "deactivated", "id": memory_id}
+    return {"status": "not_found", "id": memory_id}
+
+
+# ──────────────────────────────────────────────
 # Tool: memory_history
 # ──────────────────────────────────────────────
 @mcp.tool()
