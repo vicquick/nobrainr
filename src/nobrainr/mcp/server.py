@@ -213,7 +213,7 @@ def research_topic(topic: str) -> str:
 
 
 # ──────────────────────────────────────────────
-# Tool: memory_store (with dedup + async extraction)
+# Tool: memory_store (queued write — returns in <50ms)
 # ──────────────────────────────────────────────
 @mcp.tool()
 async def memory_store(
@@ -226,8 +226,15 @@ async def memory_store(
     source_ref: str | None = None,
     confidence: float = 1.0,
     metadata: dict | None = None,
+    wait: bool = False,
 ) -> dict:
-    """Store a new memory with automatic embedding, dedup check, and entity extraction.
+    """Store a new memory. Queued by default — returns in <50ms with a queue_id.
+
+    The actual write path (embedding + dedup LLM classification + storage +
+    entity extraction) runs on a background worker. This keeps the MCP call
+    fast regardless of GPU contention — before this change, a busy
+    llama-server could make memory_store hang for 10+ minutes and silently
+    time out the caller.
 
     Args:
         content: The knowledge/learning/decision to remember.
@@ -239,13 +246,29 @@ async def memory_store(
         source_ref: Reference to original source (conversation ID, file path, etc.).
         confidence: How reliable is this knowledge (0.0-1.0, default 1.0).
         metadata: Any additional structured data.
+        wait: If True, poll the queue and return only when the write is
+            fully processed (or 60s has elapsed). Use sparingly — the
+            whole point of the queue is that you don't have to wait.
+            Most callers should leave this False and, if they need the
+            memory_id, follow up with memory_store_status(queue_id).
+
+    Returns:
+        - Default: {"status": "queued", "queue_id": "...", "enqueued_at": "..."}
+        - With wait=True and completion within 60s: full status from the worker
+          including memory_id and result_status
+        - With wait=True and 60s timeout: {"status": "queued_waiting_timed_out", ...}
+          — the write is STILL durable, just not yet complete
     """
     if len(content) > settings.max_content_length:
-        return {"error": f"Content too large ({len(content)} chars, max {settings.max_content_length})"}
+        return {
+            "error": f"Content too large ({len(content)} chars, max {settings.max_content_length})"
+        }
 
     category = normalize_category(category)
 
-    return await store_memory_with_extraction(
+    from nobrainr.db import write_queue
+
+    enq = await write_queue.enqueue_memory_write(
         content=content,
         summary=summary,
         tags=tags,
@@ -256,6 +279,83 @@ async def memory_store(
         confidence=confidence,
         metadata=metadata,
     )
+
+    if not wait:
+        return {
+            "status": "queued",
+            "queue_id": enq["queue_id"],
+            "enqueued_at": enq["enqueued_at"],
+            "message": (
+                "Write accepted and durably queued. The background worker "
+                "will process it serially. Poll memory_store_status(queue_id) "
+                "if you need the memory_id."
+            ),
+        }
+
+    # wait=True: poll the worker's status for up to 60s.
+    import asyncio
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + 60.0
+    while loop.time() < deadline:
+        status = await write_queue.get_queue_status(enq["queue_id"])
+        if status and status["status"] in ("done", "failed"):
+            return status
+        await asyncio.sleep(0.5)
+
+    # Still in-flight after 60s — the write is durable, the caller just
+    # has to come back later. Return the current status so they can see
+    # whether it's still pending or actively processing.
+    status = await write_queue.get_queue_status(enq["queue_id"])
+    return {
+        "status": "queued_waiting_timed_out",
+        "queue_id": enq["queue_id"],
+        "last_observed": status,
+        "message": (
+            "Write is durably queued but did not complete within 60s. "
+            "It will still be processed — poll memory_store_status later."
+        ),
+    }
+
+
+# ──────────────────────────────────────────────
+# Tool: memory_store_status (poll queued writes)
+# ──────────────────────────────────────────────
+@mcp.tool()
+async def memory_store_status(queue_id: str) -> dict:
+    """Check the status of a queued memory write.
+
+    Use this to close the loop on a previous ``memory_store`` call when you
+    need the final ``memory_id`` or want to confirm success.
+
+    Args:
+        queue_id: The UUID returned by memory_store in its queue_id field.
+
+    Returns:
+        {
+            "queue_id": "...",
+            "status": "pending" | "processing" | "done" | "failed",
+            "attempts": int,
+            "max_attempts": int,
+            "memory_id": "..." | null,        # populated when status=done
+            "result_status": "stored|updated|superseded|skipped" | null,
+            "error_message": "..." | null,    # populated when status=failed
+            "enqueued_at": "...",
+            "started_at": "..." | null,
+            "completed_at": "..." | null,
+            "next_attempt_at": "...",         # only meaningful for pending retries
+        }
+    """
+    try:
+        _validate_uuid(queue_id)
+    except ValueError:
+        return {"error": "Invalid queue_id format"}
+
+    from nobrainr.db import write_queue
+
+    status = await write_queue.get_queue_status(queue_id)
+    if status is None:
+        return {"error": "queue_id not found", "queue_id": queue_id}
+    return status
 
 
 # ──────────────────────────────────────────────
@@ -837,8 +937,18 @@ async def memory_reflect(
         except Exception as e:
             logger.exception("Failed to store learning: %s", content[:80])
             results.append({"status": "error", "error": str(e)})
-    stored = sum(1 for r in results if r.get("status") in ("stored", "merged"))
-    return {"total": len(learnings), "stored": stored, "results": results}
+    # "queued" counts as accepted since v7 — the write is durable, just
+    # not yet processed by the worker. "stored" / "merged" are legacy
+    # names for the same success state from the pre-queue code path.
+    accepted = sum(
+        1 for r in results if r.get("status") in ("stored", "merged", "queued")
+    )
+    return {
+        "total": len(learnings),
+        "accepted": accepted,
+        "stored": accepted,  # backward-compat alias
+        "results": results,
+    }
 
 
 # ──────────────────────────────────────────────

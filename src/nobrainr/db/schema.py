@@ -238,6 +238,70 @@ CREATE INDEX IF NOT EXISTS idx_agent_events_metadata
     ON agent_events USING gin (metadata);
 
 -- ──────────────────────────────────────────────
+-- Memory write queue (2026-04-11 v7)
+-- ──────────────────────────────────────────────
+-- Why this exists: memory_store MCP calls used to synchronously wait on
+-- decide_write_action() which calls ollama_chat(), which inherits a 600s
+-- default timeout from DEFAULT_LLM_TIMEOUT. Under GPU contention (scheduler
+-- LLM jobs + search reranker + this classifier call all fighting for
+-- llama-server), memory_store would blow through the MCP client timeout and
+-- writes would silently vanish — exact symptom observed on 2026-04-11 when
+-- lesson_classifier fired for the first time.
+--
+-- The queue decouples ACCEPTANCE from PROCESSING. The MCP tool now does one
+-- INSERT into memory_write_queue (<50ms) and returns a queue_id. A dedicated
+-- scheduler worker (memory_write_worker) drains the queue serially through
+-- the same store_memory_with_extraction pipeline, sharing the scheduler's
+-- _llm_semaphore so it never dogpiles the GPU alongside periodic LLM jobs.
+CREATE TABLE IF NOT EXISTS memory_write_queue (
+    id              uuid DEFAULT uuidv7() PRIMARY KEY,
+
+    -- Payload — every arg of store_memory_with_extraction captured as-is
+    content         text NOT NULL,
+    summary         text,
+    tags            text[],
+    category        text,
+    source_type     text DEFAULT 'manual',
+    source_machine  text,
+    source_ref      text,
+    confidence      real DEFAULT 1.0,
+    metadata        jsonb,
+    skip_dedup      boolean DEFAULT false,
+    contextual_prefix text,
+
+    -- Queue state machine: pending → processing → (done | failed | pending-retry)
+    status          text NOT NULL DEFAULT 'pending',
+    attempts        int NOT NULL DEFAULT 0,
+    max_attempts    int NOT NULL DEFAULT 3,
+    error_message   text,
+
+    -- Result (populated when status='done')
+    memory_id       uuid,
+    result_status   text,  -- stored | updated | superseded | skipped
+
+    -- Timestamps
+    enqueued_at     timestamptz NOT NULL DEFAULT now(),
+    next_attempt_at timestamptz NOT NULL DEFAULT now(),
+    started_at      timestamptz,
+    completed_at    timestamptz
+);
+
+-- Partial index on pending rows — the worker's hot query hits this.
+-- Ordered by next_attempt_at so exponential-backoff retries respect the delay.
+CREATE INDEX IF NOT EXISTS idx_memory_write_queue_pending
+    ON memory_write_queue (next_attempt_at)
+    WHERE status = 'pending';
+
+-- For the dashboard queue-depth widget
+CREATE INDEX IF NOT EXISTS idx_memory_write_queue_enqueued
+    ON memory_write_queue (enqueued_at DESC);
+
+-- Retention sweep can use this to drop old done/failed rows
+CREATE INDEX IF NOT EXISTS idx_memory_write_queue_completed
+    ON memory_write_queue (completed_at)
+    WHERE status IN ('done', 'failed');
+
+-- ──────────────────────────────────────────────
 -- Memory outcomes (feedback tracking)
 -- ──────────────────────────────────────────────
 -- query_trace_id / query_text / result_rank are v6 additions (2026-04-11):
