@@ -1,7 +1,7 @@
 """nobrainr MCP server — collective agent memory with knowledge graph."""
 
 import logging
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from mcp.server.fastmcp import FastMCP
 
@@ -411,6 +411,17 @@ async def memory_search(
         except Exception:
             pass
 
+    # Feedback trace (v6, 2026-04-11): tag every result with a shared
+    # trace_id + 1-indexed rank so the caller can close the loop via
+    # memory_feedback(query_trace_id=..., result_rank=...). Without this,
+    # feedback carries no signal about WHERE the memory was surfaced —
+    # a "useful" hit at rank 1 and rank 50 look identical in the DB.
+    trace_id = str(uuid4())
+    for rank, row in enumerate(results, start=1):
+        row["search_trace_id"] = trace_id
+        row["search_rank"] = rank
+        row["search_query"] = query
+
     return results
 
 
@@ -746,22 +757,42 @@ async def memory_feedback(
     memory_id: str,
     was_useful: bool,
     context: str | None = None,
+    query_trace_id: str | None = None,
+    result_rank: int | None = None,
+    query_text: str | None = None,
 ) -> dict:
     """Report whether a memory search result was useful. This feedback improves future search ranking.
 
     Call this after using results from memory_search to close the feedback loop.
+    When closing the loop on a result from memory_search, pass through the
+    `search_trace_id`, `search_rank`, and `search_query` fields from that result
+    — this links your feedback to the specific search that surfaced the memory
+    and lets us compute MRR/NDCG, not just positive/negative ratios.
 
     Args:
         memory_id: The UUID of the memory to give feedback on.
-        was_useful: True if the memory was helpful, False if not.
+        was_useful: True if the memory was helpful, False if not. Negative
+            feedback is especially valuable — it's the only signal that moves
+            importance scoring (see integrate_feedback_scores).
         context: Optional context about how/why it was or wasn't useful.
+        query_trace_id: UUID from `search_trace_id` on the memory_search result.
+            Optional — omit for manual/dashboard feedback with no search context.
+        result_rank: 1-indexed position at which the memory appeared in the
+            search result list. Values < 1 are dropped.
+        query_text: The query text that surfaced this memory. Trimmed to 500
+            chars server-side. Used for later quality diagnostics.
     """
     try:
         _validate_uuid(memory_id)
     except ValueError:
         return {"error": "Invalid memory_id format"}
     result = await queries.store_memory_outcome(
-        memory_id, was_useful, context=context,
+        memory_id,
+        was_useful,
+        context=context,
+        query_trace_id=query_trace_id,
+        query_text=query_text,
+        result_rank=result_rank,
     )
     return {"status": "recorded", **result}
 

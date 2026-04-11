@@ -240,6 +240,11 @@ CREATE INDEX IF NOT EXISTS idx_agent_events_metadata
 -- ──────────────────────────────────────────────
 -- Memory outcomes (feedback tracking)
 -- ──────────────────────────────────────────────
+-- query_trace_id / query_text / result_rank are v6 additions (2026-04-11):
+-- they let us link a piece of feedback back to the search that surfaced the
+-- memory so we can compute MRR/NDCG and reason about rank quality instead
+-- of just raw positive/negative ratios. All three are nullable — pre-v6
+-- feedback and manual dashboard thumbs-down won't carry trace metadata.
 CREATE TABLE IF NOT EXISTS memory_outcomes (
     id              uuid DEFAULT uuidv7() PRIMARY KEY,
     memory_id       uuid NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
@@ -247,11 +252,22 @@ CREATE TABLE IF NOT EXISTS memory_outcomes (
     session_id      text,
     was_useful      boolean NOT NULL,
     context         text,
+    query_trace_id  uuid,
+    query_text      text,
+    result_rank     int,
     created_at      timestamptz DEFAULT now()
 );
 
+-- v6: add the trace columns on existing deployments
+ALTER TABLE memory_outcomes ADD COLUMN IF NOT EXISTS query_trace_id uuid;
+ALTER TABLE memory_outcomes ADD COLUMN IF NOT EXISTS query_text text;
+ALTER TABLE memory_outcomes ADD COLUMN IF NOT EXISTS result_rank int;
+
 CREATE INDEX IF NOT EXISTS idx_memory_outcomes_memory
     ON memory_outcomes (memory_id);
+CREATE INDEX IF NOT EXISTS idx_memory_outcomes_trace
+    ON memory_outcomes (query_trace_id)
+    WHERE query_trace_id IS NOT NULL;
 
 -- ──────────────────────────────────────────────
 -- Drop unused legacy table
