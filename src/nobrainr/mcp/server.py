@@ -1558,6 +1558,7 @@ async def memory_import_github(
     include_code_structure: bool = True,
     include_source_code: bool = True,
     include_closed_issues: bool = True,
+    include_forks: bool = False,
 ) -> dict:
     """Import knowledge from GitHub repositories into the memory system.
 
@@ -1567,13 +1568,16 @@ async def memory_import_github(
 
     Args:
         owner: GitHub username or organization (default: "vicquick").
-        repos: Specific repo names to import (default: all repos).
+        repos: Specific repo names to import (default: all repos). When set,
+            forks in the list ARE imported regardless of include_forks.
         source_machine: Machine identifier for provenance.
         include_commits: Import commit history grouped by week.
         include_issues: Import issues and pull requests with comments.
         include_code_structure: Import file tree and key config files.
         include_source_code: Import actual source code files (*.py, *.ts, *.vue, etc.).
         include_closed_issues: Include closed issues and merged PRs.
+        include_forks: Include forked repos on bulk import. Default False —
+            forks are upstream noise for a personal knowledge base.
     """
     from nobrainr.importers.github import import_github
     return await import_github(
@@ -1585,6 +1589,7 @@ async def memory_import_github(
         include_code_structure=include_code_structure,
         include_source_code=include_source_code,
         include_closed_issues=include_closed_issues,
+        include_forks=include_forks,
     )
 
 
