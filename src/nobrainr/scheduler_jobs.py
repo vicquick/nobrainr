@@ -549,7 +549,7 @@ async def contradiction_detection() -> dict:
                 ),
                 schema=CONTRADICTION_SCHEMA,
                 model=model,
-                timeout=90.0,
+                timeout=600.0,
             )
 
             if result.get("contradicts"):
@@ -564,7 +564,10 @@ async def contradiction_detection() -> dict:
                     source_type="contradiction",
                     source_machine=settings.source_machine or _hostname(),
                     category="contradiction",
-                    tags=["auto-detected", "needs-review"],
+                    # `lesson` tag marks this as a "mistake surfaced + needs fix"
+                    # memory, the orthogonal concept to `confidence`. See
+                    # nobrainr memory `discipline-*` entries for rationale.
+                    tags=["auto-detected", "needs-review", "lesson"],
                     confidence=0.8,
                     metadata={
                         "memory_a": str(pair["id_a"]),
