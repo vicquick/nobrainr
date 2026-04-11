@@ -35,21 +35,46 @@ mcp = FastMCP(
         "1. ALWAYS call `memory_search` before starting any task — check what's already known. "
         "This is CRITICAL: past sessions may have solved the same problem, established conventions, "
         "or documented gotchas. Searching first prevents duplicate work and repeated mistakes.\n"
-        "2. Use `memory_store` to save learnings, decisions, patterns, and context.\n"
-        "3. Call `memory_feedback` after using search results — report if they were helpful.\n"
+        "2. Use `memory_store` to save learnings, decisions, patterns, and context. Writes are "
+        "queued — the tool returns in <50ms with a `queue_id`, and a background worker processes "
+        "the full pipeline (embedding, dedup, entity extraction). You usually don't need to wait.\n"
+        "3. Call `memory_feedback` after using search results — report if they were helpful. Pass "
+        "through `search_trace_id`, `search_rank`, and `search_query` from the original result so "
+        "we can compute rank-aware metrics (MRR/NDCG).\n"
         "4. Call `memory_reflect` at session end with a batch of learnings from the session.\n"
         "5. Use `log_event` to record significant agent activity (session starts, decisions, completions).\n\n"
+        "## Write path — queued by default\n"
+        "- `memory_store` returns `{status: 'queued', queue_id, enqueued_at}` in <50ms. The worker\n"
+        "  processes writes FIFO through the same embedding+dedup+extraction pipeline as before.\n"
+        "  Pass `wait=True` only if you genuinely need to block for the memory_id. Most of the time\n"
+        "  you don't — the write is durable the moment the queue row exists.\n"
+        "- `memory_store_status(queue_id)` — poll a queued write to see {status, memory_id,\n"
+        "  result_status, error_message}. Use when you need to close the loop on a write.\n"
+        "- `memory_store_document` — long-document path, same queue. Returns one `queue_id` per\n"
+        "  chunk with a shared `document_id` in metadata. Contextual prefixes are filled in later\n"
+        "  by a scheduler job, not on the hot path.\n"
+        "- `crawl_and_store` — crawl via Crawl4AI (synchronous) + enqueue the result via the\n"
+        "  document queue path.\n\n"
         "## Search & retrieval\n"
-        "- `memory_search` — semantic search, relevance-ranked (similarity + recency + importance + access). "
-        "Set `hybrid=True` to combine vector + text search for better results.\n"
+        "- `memory_search` — hybrid semantic + text search, reranked. Every result row carries\n"
+        "  `search_trace_id`, `search_rank` (1-indexed), and `search_query` so you can close the\n"
+        "  feedback loop via memory_feedback and populate MRR/NDCG metrics. Prefer `hybrid=True`.\n"
         "- `memory_query` — structured filtering by tags, category, source.\n"
-        "- `entity_search` / `entity_graph` — knowledge graph exploration.\n\n"
+        "- `entity_search` / `entity_graph` — knowledge graph exploration.\n"
+        "- `graph_search` / `fact_search` — entity-graph and fact-layer retrieval.\n\n"
+        "## Closing the feedback loop\n"
+        "After you actually USE a search result (acted on it, learned from it, cited it), call\n"
+        "`memory_feedback(memory_id, was_useful=True, query_trace_id=<from result>, "
+        "result_rank=<from result>, query_text=<from result>)`. Negative feedback is equally "
+        "valuable — if a result was irrelevant, set `was_useful=False` with the same trace fields. "
+        "integrate_feedback_scores only adjusts importance when it sees ≥5 events with ≥1 negative, "
+        "so silent positive-only loops no longer inflate scores.\n\n"
         "## Best practices\n"
         "- Always tag memories well so they can be found later.\n"
         "- Set `source_machine` to identify which host generated the memory.\n"
         "- Use canonical categories: architecture, debugging, deployment, infrastructure, patterns, "
         "tooling, security, frontend, backend, data, business, documentation, session-log, insight.\n"
-        "- Feedback improves future search ranking — always report usefulness.\n"
+        "- Feedback improves future search ranking — always report usefulness with the trace fields.\n"
         "- Maintenance runs automatically; `memory_maintenance` is available for manual runs."
     ),
 )
@@ -1232,14 +1257,17 @@ async def crawl_and_store(
     max_content_chars: int = 50000,
     chunked: bool = True,
 ) -> dict:
-    """Crawl a web page and store its content as a memory in nobrainr.
+    """Crawl a web page and enqueue its content as memories in nobrainr.
 
-    Fetches the page via Crawl4AI, extracts clean markdown, and stores it
-    with embedding + entity extraction for the knowledge graph.
+    Fetches the page via Crawl4AI, extracts clean markdown, and enqueues it
+    into the write queue (see PR #18). The crawl itself is synchronous —
+    the caller waits for Crawl4AI — but the store path is fully queued so
+    the caller never waits on the embedding + dedup + entity extraction
+    pipeline.
 
-    Long pages are automatically split into overlapping chunks so no content
-    is lost.  Set chunked=False to store as a single memory (truncated to
-    max_content_chars).
+    Long pages are automatically split into overlapping chunks so no
+    content is lost. Set chunked=False to store as a single memory
+    (truncated to max_content_chars).
 
     Args:
         url: The URL to crawl and store.
@@ -1248,10 +1276,23 @@ async def crawl_and_store(
         source_machine: Which machine initiated this crawl.
         max_content_chars: Max chars to keep from the page (default 50000).
         chunked: Split long content into overlapping chunks (default True).
-    """
-    from nobrainr.services.memory import store_document_chunked
 
-    # First crawl
+    Returns:
+        {
+            "url": ..., "title": ..., "chars_total": int,
+            "chunked": bool,
+            "result": {                     # queued shape from enqueue_document_chunks
+                "status": "queued",
+                "queue_ids": [...],
+                "chunks": int,
+                "document_id": str | null,
+            },
+        }
+    """
+    from nobrainr.db import write_queue
+
+    # Crawl synchronously — the caller IS waiting for the crawl result,
+    # that's why they called crawl_and_store over a raw memory_store.
     crawl_result = await crawl_page(url)
     if "error" in crawl_result:
         return crawl_result
@@ -1267,7 +1308,7 @@ async def crawl_and_store(
     norm_category = normalize_category(category)
 
     if chunked:
-        store_result = await store_document_chunked(
+        store_result = await write_queue.enqueue_document_chunks(
             content=content,
             title=title,
             summary=f"Crawled: {title}"[:200],
@@ -1278,9 +1319,9 @@ async def crawl_and_store(
             source_ref=url,
         )
     else:
-        # Legacy single-memory mode (truncates)
-        store_result = await memory_store(
-            content=content[:settings.chunk_threshold],
+        # Single-memory mode (truncated to chunk_threshold) — still queued.
+        store_result = await write_queue.enqueue_memory_write(
+            content=content[: settings.chunk_threshold],
             summary=f"Crawled: {title}"[:200],
             tags=all_tags,
             category=norm_category,
@@ -1288,11 +1329,18 @@ async def crawl_and_store(
             source_machine=source_machine,
             source_ref=url,
         )
+        store_result = {
+            "status": "queued",
+            "queue_ids": [store_result["queue_id"]],
+            "chunks": 1,
+            "document_id": None,
+        }
 
     # Record interest signal for the crawled domain/topic
     if settings.interest_tracking_enabled:
         try:
             from urllib.parse import urlparse
+
             domain = urlparse(url).netloc
             await queries.record_interest_signal(
                 topic=domain,
@@ -1447,12 +1495,19 @@ async def memory_store_document(
     source_ref: str | None = None,
     confidence: float = 0.8,
 ) -> dict:
-    """Store a long document as chunked memories with overlapping context.
+    """Store a long document as chunked memories via the write queue.
 
-    For content shorter than the chunk threshold (~4000 chars), stores as a
-    single memory.  For longer content, splits into overlapping chunks that
+    For content shorter than the chunk threshold (~4000 chars), enqueues a
+    single memory. For longer content, splits into overlapping chunks that
     preserve context at boundaries, links them via a shared document_id in
-    metadata, and runs entity extraction on each chunk.
+    metadata, and enqueues each chunk individually. The background worker
+    runs embedding, dedup, and entity extraction on each chunk serially.
+
+    Returns in under ~100ms with a list of queue_ids even for large docs —
+    the whole pipeline (including up to N LLM calls for N chunks) happens
+    asynchronously so the caller is never stuck waiting on GPU contention.
+    Contextual-retrieval prefixes are NOT generated on the hot path; the
+    existing contextual_prefix_backfill scheduler job fills them in later.
 
     Use this for architecture docs, ADRs, meeting notes, specs, or any text
     too long for a single memory_store call.
@@ -1466,13 +1521,25 @@ async def memory_store_document(
         source_machine: Which machine generated this.
         source_ref: Reference (file path, URL, etc.).
         confidence: Confidence score (default 0.8).
+
+    Returns:
+        {
+            "status": "queued",
+            "queue_ids": [...],           # one per chunk
+            "chunks": int,
+            "document_id": str | null,    # null for single-chunk writes
+        }
+        Poll memory_store_status(queue_id) for any individual chunk to
+        follow it to completion.
     """
-    from nobrainr.services.memory import store_document_chunked
+    from nobrainr.db import write_queue
 
     if len(content) > settings.max_content_length * 5:
-        return {"error": f"Content too large ({len(content)} chars, max {settings.max_content_length * 5})"}
+        return {
+            "error": f"Content too large ({len(content)} chars, max {settings.max_content_length * 5})"
+        }
 
-    return await store_document_chunked(
+    return await write_queue.enqueue_document_chunks(
         content=content,
         title=title,
         tags=tags,
