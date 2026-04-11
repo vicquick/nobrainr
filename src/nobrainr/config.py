@@ -167,6 +167,13 @@ class Settings(BaseSettings):
     github_sync_interval_hours: float = 4.0  # 4h — catches active dev within a work session
     github_sync_quality_gate: bool = True  # LLM-score commits before storing, skip noise
 
+    # Lesson classifier — tier-2 LLM pass that adds the `lesson` tag to
+    # memories the tier-1 SQL backfill (keyword/category/commit-prefix)
+    # missed. Runs conservatively: only tags when LLM is_lesson=True AND
+    # confidence>=4. See scheduler_jobs.lesson_classifier() for details.
+    lesson_classifier_interval_hours: float = 6.0
+    lesson_classifier_batch_size: int = 10
+
     # Monitoring & Alerts
     monitoring_enabled: bool = True
     monitoring_interval_hours: float = 1.0
