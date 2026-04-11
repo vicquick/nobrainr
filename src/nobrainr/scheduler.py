@@ -48,6 +48,8 @@ LLM_JOB_DELAYS = {
     # Retrieval-quality backfill — prioritise early after deploy while there's
     # a backlog, then self-throttles once the queue drains.
     "contextual_prefix_backfill": 5 * 60,
+    # Tier-2 lesson tagger — classifies memories the SQL backfill missed.
+    "lesson_classifier": 38 * 60,
 }
 
 # Per-job timeout for LLM operations
@@ -107,6 +109,7 @@ class Scheduler:
             {"name": "cooccurrence_linking", "interval_hours": settings.cooccurrence_interval_hours, "type": "llm"},
             {"name": "github_sync", "interval_hours": settings.github_sync_interval_hours, "type": "llm"},
             {"name": "contextual_prefix_backfill", "interval_hours": 2.0, "type": "llm"},
+            {"name": "lesson_classifier", "interval_hours": settings.lesson_classifier_interval_hours, "type": "llm"},
         ]
         return sql_jobs + llm_jobs
 
@@ -239,6 +242,8 @@ class Scheduler:
              settings.github_sync_interval_hours * 3600),
             ("contextual_prefix_backfill", scheduler_jobs.contextual_prefix_backfill,
              2.0 * 3600),  # every 2h; each run processes 25 chunks, auto-idles when empty
+            ("lesson_classifier", scheduler_jobs.lesson_classifier,
+             settings.lesson_classifier_interval_hours * 3600),
         ]
 
         for name, job_func, interval in llm_jobs:
