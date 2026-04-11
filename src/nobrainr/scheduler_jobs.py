@@ -37,6 +37,33 @@ SUMMARIZE_SCHEMA = {
     "required": ["summary"],
 }
 
+LESSON_CLASSIFIER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "is_lesson": {
+            "type": "boolean",
+            "description": (
+                "True if this memory documents a MISTAKE surfaced, a FIX "
+                "applied, a CORRECTION of prior understanding, an INCIDENT "
+                "and its resolution, or LEARNING from an experience that "
+                "went wrong. Session logs, architecture references, business "
+                "plans, and neutral research notes are NOT lessons."
+            ),
+        },
+        "confidence": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5,
+            "description": "1=very uncertain, 5=highly confident",
+        },
+        "reason": {
+            "type": "string",
+            "description": "One short sentence explaining why (max 20 words)",
+        },
+    },
+    "required": ["is_lesson", "confidence", "reason"],
+}
+
 SYNTHESIS_SCHEMA = {
     "type": "object",
     "properties": {
@@ -1763,6 +1790,112 @@ async def bridge_detection() -> dict:
             {"name": b["name"], "type": b["entity_type"], "communities": b["communities_bridged"]}
             for b in bridges[:10]
         ],
+        "ran_at": datetime.now().isoformat(),
+    }
+
+
+# ──────────────────────────────────────────────
+# Lesson classifier — tier-2 LLM pass to catch subtle lessons
+# that the tier-1 SQL backfill (keyword + category + commit-prefix)
+# missed. Idempotent: only processes memories without the `lesson`
+# tag. Conservative: only applies the tag when is_lesson=True AND
+# confidence>=4. See nobrainr memories tagged `lesson` for examples.
+# ──────────────────────────────────────────────
+
+async def lesson_classifier() -> dict:
+    """Classify untagged memories for the `lesson` tag via qwen.
+
+    `lesson` is the orthogonal axis to `confidence` — marks memories
+    documenting a mistake surfaced / fix applied / correction / incident.
+    Tier-1 (SQL backfill 2026-04-11) already tagged 8196 memories with
+    exact markers. This tier-2 pass picks up subtle cases in categories
+    that CAN contain lessons but don't use obvious keywords.
+    """
+    from nobrainr.db.pool import get_pool
+
+    model = settings.scheduler_llm_model
+    batch_size = settings.lesson_classifier_batch_size
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, content, summary, category, tags, source_type
+            FROM memories
+            WHERE NOT ('lesson' = ANY(tags))
+              AND category IN (
+                  'patterns','architecture','tooling','agent_learning','insight'
+              )
+              AND tier < 3
+              AND (extraction_status = 'done' OR extraction_status IS NULL)
+            ORDER BY importance DESC NULLS LAST, created_at DESC
+            LIMIT $1
+            """,
+            batch_size,
+        )
+
+    if not rows:
+        return {
+            "status": "idle",
+            "classified": 0,
+            "tagged": 0,
+            "ran_at": datetime.now().isoformat(),
+        }
+
+    classified = 0
+    tagged = 0
+    for row in rows:
+        memory_id = str(row["id"])
+        try:
+            content_preview = (row["content"] or "")[:1500]
+            category = row["category"] or "unknown"
+            existing_tags = list(row["tags"] or [])[:10]
+
+            result = await ollama_chat(
+                system=(
+                    "You classify memories in an engineering knowledge base. "
+                    "A 'lesson' documents a mistake surfaced, a fix applied, "
+                    "a correction of prior understanding, an incident and its "
+                    "resolution, or a learning from an experience that went "
+                    "wrong. Session logs, neutral architecture references, "
+                    "business plans, research notes, and pure documentation "
+                    "are NOT lessons. Be strict — false positives are worse "
+                    "than false negatives. Only return is_lesson=true when "
+                    "the memory clearly fits one of the categories above."
+                ),
+                user=(
+                    f"Category: {category}\n"
+                    f"Existing tags: {', '.join(existing_tags) or '(none)'}\n\n"
+                    f"Content:\n{content_preview}\n\n"
+                    "Is this a lesson?"
+                ),
+                schema=LESSON_CLASSIFIER_SCHEMA,
+                model=model,
+                timeout=600.0,
+                think=False,
+            )
+            classified += 1
+
+            if result.get("is_lesson") and int(result.get("confidence", 0)) >= 4:
+                new_tags = existing_tags + ["lesson"]
+                await queries.update_memory(
+                    memory_id,
+                    tags=new_tags,
+                    _changed_by="scheduler:lesson_classifier",
+                    _change_type="lesson_tag_tier2",
+                    _change_reason=result.get("reason", "")[:200],
+                )
+                tagged += 1
+        except Exception:
+            logger.exception(
+                "lesson_classifier failed for memory %s", memory_id[:8]
+            )
+        await _yield_to_live_requests()
+
+    return {
+        "classified": classified,
+        "tagged": tagged,
+        "batch_size": batch_size,
         "ran_at": datetime.now().isoformat(),
     }
 
