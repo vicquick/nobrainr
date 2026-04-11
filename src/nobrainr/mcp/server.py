@@ -400,6 +400,8 @@ async def memory_search(
     include_cold: bool = False,
     hyde: bool = False,
     decompose: bool = False,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> list[dict]:
     """Semantic search across all memories, ranked by relevance (similarity + recency + importance).
 
@@ -421,11 +423,38 @@ async def memory_search(
         hyde: Use HyDE (Hypothetical Document Embedding) — generates a hypothetical answer
               and searches with its embedding for better semantic matching. Adds ~1s latency.
         decompose: Break complex queries into sub-queries for more thorough recall. Adds ~1s latency.
+        date_from: ISO 8601 lower bound on created_at (inclusive). Accepts full
+            timestamps ("2026-03-01T00:00:00Z") or just dates ("2026-03-01").
+            Use this for temporal queries like "what did we discuss last week" —
+            calculate the absolute date client-side and pass it here.
+        date_to: ISO 8601 upper bound on created_at (inclusive). Same format as
+            date_from. Combine with date_from for a date range.
     """
     import asyncio
+    from datetime import datetime
 
     limit = max(1, min(limit, 100))
     threshold = max(0.0, min(threshold, 1.0))
+
+    # Parse temporal filters. Accept ISO date or datetime; reject garbage so
+    # the SQL layer never sees a bogus string. Invalid input falls through to
+    # "no filter" rather than erroring out the whole search.
+    def _parse_iso(raw: str | None) -> "datetime | None":
+        if not raw:
+            return None
+        try:
+            # Handle both "2026-03-01" and "2026-03-01T12:34:56Z" / "+00:00"
+            s = raw.strip()
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            if len(s) == 10:  # plain date
+                return datetime.fromisoformat(s)
+            return datetime.fromisoformat(s)
+        except (ValueError, AttributeError):
+            return None
+
+    parsed_from = _parse_iso(date_from)
+    parsed_to = _parse_iso(date_to)
 
     # Multi-query expansion: generate variants and search each, then RRF-fuse
     all_queries = [query]
@@ -481,6 +510,8 @@ async def memory_search(
             source_machine=source_machine,
             text_query=q if hybrid else None,
             include_cold=include_cold,
+            date_from=parsed_from,
+            date_to=parsed_to,
         )
         for q, emb in zip(all_queries, embeddings)
     ]
