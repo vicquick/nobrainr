@@ -70,7 +70,13 @@ LLM_JOB_DELAYS = {
     # === Phase 5: Meta ===
     "system_pulse": 32 * 60,
     "auto_optimize": 34 * 60,
-    "github_sync": 36 * 60,
+    # NOTE: github_sync was formerly here (36 * 60) but has been moved to the
+    # non-LLM task list in start(). It runs commit import as network IO +
+    # embeddings only (skip_dedup=True), so it does not need to serialize
+    # behind the single-GPU LLM semaphore. Leaving it in this dict when it's
+    # no longer scheduled as an LLM job caused it to starve for 11+ hours on
+    # 2026-04-10/11 when other LLM jobs were timing out. See Appendix H of
+    # OVERNIGHT_REPORT_2026-04-11.md for the post-mortem.
     # Retrieval-quality backfill — prioritise early after deploy while there's
     # a backlog, then self-throttles once the queue drains.
     "contextual_prefix_backfill": 5 * 60,
@@ -163,11 +169,16 @@ class Scheduler:
             {"name": "auto_optimize", "interval_hours": settings.auto_optimize_interval_hours, "type": "llm"},
             {"name": "community_detection", "interval_hours": settings.community_detection_interval_hours, "type": "llm"},
             {"name": "cooccurrence_linking", "interval_hours": settings.cooccurrence_interval_hours, "type": "llm"},
-            {"name": "github_sync", "interval_hours": settings.github_sync_interval_hours, "type": "llm"},
             {"name": "contextual_prefix_backfill", "interval_hours": 2.0, "type": "llm"},
             {"name": "lesson_classifier", "interval_hours": settings.lesson_classifier_interval_hours, "type": "llm"},
         ]
-        return sql_jobs + llm_jobs
+        # github_sync is classified as "external" — it's network IO + embeddings only
+        # (commit import uses skip_dedup=True, and extraction is fire-and-forget async).
+        # Keeping it off the LLM semaphore so it can't be starved by timing-out LLM jobs.
+        external_jobs = [
+            {"name": "github_sync", "interval_hours": settings.github_sync_interval_hours, "type": "external"},
+        ]
+        return sql_jobs + llm_jobs + external_jobs
 
     def start(self) -> None:
         if self._running:
@@ -310,8 +321,6 @@ class Scheduler:
              settings.community_detection_interval_hours * 3600),
             ("cooccurrence_linking", scheduler_jobs.cooccurrence_linking,
              settings.cooccurrence_interval_hours * 3600),
-            ("github_sync", scheduler_jobs.github_sync,
-             settings.github_sync_interval_hours * 3600),
             ("contextual_prefix_backfill", scheduler_jobs.contextual_prefix_backfill,
              2.0 * 3600),  # every 2h; each run processes 25 chunks, auto-idles when empty
             ("lesson_classifier", scheduler_jobs.lesson_classifier,
@@ -345,6 +354,20 @@ class Scheduler:
         # still unsticks the queue without requiring a container restart.
         self._tasks.append(
             asyncio.create_task(self._stale_processing_reaper())
+        )
+
+        # External-only jobs (network IO + embeddings, no LLM semaphore needed).
+        # github_sync was formerly an LLM job but was starving behind timing-out
+        # LLM jobs (30min × 5+ timeouts/3h = semaphore permanently held). See
+        # Appendix H of OVERNIGHT_REPORT_2026-04-11.md for the full post-mortem.
+        self._tasks.append(
+            asyncio.create_task(
+                self._run_periodic(
+                    "github_sync",
+                    scheduler_jobs.github_sync,
+                    settings.github_sync_interval_hours * 3600,
+                )
+            )
         )
 
         sql_count = 7 + (2 if settings.monitoring_enabled else 0)
