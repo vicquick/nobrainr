@@ -143,7 +143,7 @@ async def _try_fast_answer(question: str) -> str | None:
                 )
             if rows:
                 lines = [f"{r['category']}: {r['cnt']:,}" for r in rows]
-                return "Categories:\n" + "\n".join(f"  {i+1}. {l}" for i, l in enumerate(lines))
+                return "Categories:\n" + "\n".join(f"  {i+1}. {line}" for i, line in enumerate(lines))
 
         # Entity/relation count
         if any(kw in q for kw in ["how many entities", "total entities", "entity count",
@@ -162,7 +162,7 @@ async def _try_fast_answer(question: str) -> str | None:
                 )
             if rows:
                 lines = [f"{r['tag']}: {r['cnt']:,}" for r in rows]
-                return "Top tags:\n" + "\n".join(f"  {l}" for l in lines)
+                return "Top tags:\n" + "\n".join(f"  {line}" for line in lines)
 
         # Sources
         if any(kw in q for kw in ["what sources", "data sources", "where does", "source breakdown"]):
@@ -173,7 +173,7 @@ async def _try_fast_answer(question: str) -> str | None:
                 )
             if rows:
                 lines = [f"{r['source_type']}: {r['cnt']:,}" for r in rows]
-                return "Data sources:\n" + "\n".join(f"  {l}" for l in lines)
+                return "Data sources:\n" + "\n".join(f"  {line}" for line in lines)
 
         # Machines
         if any(kw in q for kw in ["what machines", "which machines", "connected machines",
@@ -186,7 +186,7 @@ async def _try_fast_answer(question: str) -> str | None:
                 )
             if rows:
                 lines = [f"{r['source_machine']}: {r['cnt']:,}" for r in rows]
-                return "Machines:\n" + "\n".join(f"  {l}" for l in lines)
+                return "Machines:\n" + "\n".join(f"  {line}" for line in lines)
 
         # Full stats summary
         if any(kw in q for kw in ["full stats", "knowledge base stats", "kb stats", "overview",
