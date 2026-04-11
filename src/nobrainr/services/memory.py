@@ -9,6 +9,7 @@ Provides store_memory_with_extraction() which handles:
 
 import asyncio
 import logging
+import re
 
 from nobrainr.config import settings
 from nobrainr.db import queries
@@ -74,6 +75,74 @@ async def _generate_chunk_context(
 _extraction_semaphore = asyncio.Semaphore(1)
 
 
+# ──────────────────────────────────────────────
+# `lesson` tag auto-detection
+# ──────────────────────────────────────────────
+# A memory is a "lesson" when it documents a mistake surfaced, a fix
+# applied, or a correction to a previous understanding. `lesson` is
+# orthogonal to `confidence` — a memory can be a lesson with high
+# confidence (we're sure about what went wrong) or low confidence
+# (we're still investigating). This auto-tagger lets writers stay
+# oblivious of the convention: tag once, here, at the canonical
+# write path and at the github importer, instead of asking every
+# caller to remember the tag.
+
+_LESSON_CATEGORIES = {"debugging", "incident", "postmortem"}
+
+_LESSON_TAG_MARKERS = {
+    "bug", "bugfix", "bug-fix", "regression", "hotfix", "rollback",
+    "revert", "incident", "postmortem", "broken", "security-fix",
+    "fix", "fixes",
+}
+
+# Commit message title prefixes that indicate a fix-type commit.
+_LESSON_COMMIT_PREFIX_RE = re.compile(
+    r"^(fix|hotfix|perf|security|revert)[\(\:]",
+    re.IGNORECASE,
+)
+
+
+def _augment_tags_with_lesson(
+    tags: list[str] | None,
+    category: str | None,
+    content: str | None,
+    source_type: str,
+) -> list[str]:
+    """Return ``tags`` with ``lesson`` appended when markers indicate
+    the memory documents a mistake-surfaced / fix-applied narrative.
+
+    See the comment block above for rationale. Safe to call on every
+    write — idempotent (won't double-tag) and conservative (Tier-1
+    markers only).
+    """
+    tag_list = list(tags or [])
+    if "lesson" in tag_list:
+        return tag_list
+
+    # Marker 1: category signals a debugging/incident/postmortem memory
+    if category in _LESSON_CATEGORIES:
+        tag_list.append("lesson")
+        return tag_list
+
+    # Marker 2: explicit fix-type tag already set by the caller
+    if any(t in _LESSON_TAG_MARKERS for t in tag_list):
+        tag_list.append("lesson")
+        return tag_list
+
+    # Marker 3: github commit whose title starts with a fix-type prefix.
+    # The commit importer formats content as:
+    #   "## Commit: repo `sha`\n\n**Date:**...**Author:**...\n\n### {title}\n..."
+    # We detect the title line and match against _LESSON_COMMIT_PREFIX_RE.
+    if source_type == "github" and content and "commit" in (tag_list or []):
+        for line in (content.splitlines() or []):
+            if line.startswith("### "):
+                if _LESSON_COMMIT_PREFIX_RE.match(line[4:].strip()):
+                    tag_list.append("lesson")
+                return tag_list
+
+    return tag_list
+
+
 async def store_memory_with_extraction(
     content: str,
     *,
@@ -109,6 +178,13 @@ async def store_memory_with_extraction(
         {"status": "stored"|"updated"|"superseded"|"skipped", ...}
     """
     confidence = max(0.0, min(confidence, 1.0))
+
+    # Auto-tag 'lesson' when the memory documents a mistake-surfaced /
+    # fix-applied narrative. See `_augment_tags_with_lesson` comment
+    # block for the rationale — `lesson` is the orthogonal axis to
+    # `confidence`, and we want every fix-type memory to be searchable
+    # by "coding journey" queries regardless of who wrote it.
+    tags = _augment_tags_with_lesson(tags, category, content, source_type)
 
     # Context-enriched embedding (with optional contextual prefix)
     embed_parts = []
