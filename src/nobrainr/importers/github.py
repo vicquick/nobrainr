@@ -782,19 +782,25 @@ async def import_github(
     include_code_structure: bool = True,
     include_source_code: bool = True,
     include_closed_issues: bool = True,
+    include_forks: bool = False,
     concurrency: int = 2,
 ) -> dict:
     """Import knowledge from GitHub repositories.
 
     Args:
         owner: GitHub username or org.
-        repos: Specific repos to import (default: all).
+        repos: Specific repos to import (default: all). When set, forks are
+            imported regardless of include_forks (explicit wins).
         source_machine: Machine identifier for provenance.
         include_commits: Import commit history.
         include_issues: Import issues and PRs.
         include_code_structure: Import file tree and key config files.
         include_source_code: Import actual source code files (*.py, *.ts, etc.).
         include_closed_issues: Include closed issues/PRs.
+        include_forks: Include forked repos in bulk import. Default False —
+            forks are upstream noise for a personal knowledge base (hundreds
+            of commits the user never wrote). Set True to explicitly pull
+            forks when researching them.
         concurrency: Max concurrent store operations.
 
     Returns:
@@ -804,11 +810,13 @@ async def import_github(
 
     # List repos
     if repos:
+        # Explicit list wins — trust the caller, don't filter forks.
         repo_list = [{"name": r} for r in repos]
+        skipped_forks = 0
     else:
         raw_text = await _gh([
             "repo", "list", owner, "--limit", "100",
-            "--json", "name,description,isPrivate,pushedAt,defaultBranchRef,languages,repositoryTopics",
+            "--json", "name,description,isPrivate,isFork,pushedAt,defaultBranchRef,languages,repositoryTopics",
         ], timeout=30)
         if raw_text.strip():
             try:
@@ -820,8 +828,27 @@ async def import_github(
         else:
             repo_list = []
 
+        # Filter forks unless explicitly requested
+        skipped_forks = 0
+        if not include_forks:
+            filtered: list[dict] = []
+            for r in repo_list:
+                if isinstance(r, dict) and r.get("isFork"):
+                    skipped_forks += 1
+                    logger.info(
+                        "Skipping fork %s/%s (set include_forks=True to import)",
+                        owner, r.get("name", "?"),
+                    )
+                    continue
+                filtered.append(r)
+            repo_list = filtered
+
     if not repo_list:
-        return {"error": "No repos found", "owner": owner}
+        return {
+            "error": "No repos found" if skipped_forks == 0 else "All repos filtered as forks",
+            "owner": owner,
+            "skipped_forks": skipped_forks,
+        }
 
     total_repos = len(repo_list)
     total_overview = 0
@@ -877,6 +904,7 @@ async def import_github(
     total_all = total_overview + total_commits + total_structure + total_issues
     result = {
         "repos": total_repos,
+        "skipped_forks": skipped_forks,
         "overview_memories": total_overview,
         "commit_memories": total_commits,
         "structure_memories": total_structure,
@@ -885,6 +913,7 @@ async def import_github(
         "errors": errors,
         "owner": owner,
         "include_source_code": include_source_code,
+        "include_forks": include_forks,
     }
 
     logger.info(
