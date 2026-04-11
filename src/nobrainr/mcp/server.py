@@ -384,6 +384,66 @@ async def memory_store_status(queue_id: str) -> dict:
 
 
 # ──────────────────────────────────────────────
+# Auto-routing query planner (Phase B G2, v6.7)
+# ──────────────────────────────────────────────
+
+
+def _auto_route_query(query: str) -> dict[str, bool]:
+    """Heuristic query router for memory_search auto_route mode.
+
+    Picks the best retrieval strategy for this query shape alone — no LLM
+    call, no embedding, no async. Runs in <1ms. Zero added latency.
+
+    Inspired by Cognee's auto-routing query planner (which uses an LLM for
+    the same decision). We pay the LLM cost later if quality demands it;
+    for now the heuristic covers the four shapes that actually benefit
+    from different strategies.
+
+    Rules (first match wins):
+      1. Long or multi-clause query (>= 12 words OR 2+ commas OR 2+ " and "):
+         hybrid RRF + decompose (break into sub-queries for thorough recall)
+      2. Why/how/when question with >= 5 words:
+         hybrid RRF + HyDE (hypothetical answer embedding helps semantic
+         match for conceptual questions that don't share vocabulary with
+         the stored memory)
+      3. Short query (<= 3 words):
+         pure vector + expand (short queries lose precision in FTS;
+         expand generates variants to compensate)
+      4. Default: hybrid RRF (the existing default)
+
+    Returns a dict of flag overrides {hybrid, expand, hyde, decompose}.
+    The caller merges these into the memory_search param set BEFORE the
+    expansion/decompose/hyde code blocks run, so the selected flags take
+    effect.
+    """
+    q = (query or "").strip().lower()
+    if not q:
+        return {"hybrid": True}
+
+    words = q.split()
+    word_count = len(words)
+
+    # Rule 1 — long or multi-clause → decompose into sub-queries
+    if word_count >= 12 or q.count(",") >= 2 or q.count(" and ") >= 2:
+        return {"hybrid": True, "decompose": True}
+
+    # Rule 2 — why/how/when questions with 5+ words → HyDE
+    question_prefixes = (
+        "why ", "how ",
+        "what if ", "when did ", "when do ", "when was ",
+    )
+    if any(q.startswith(p) for p in question_prefixes) and word_count >= 5:
+        return {"hybrid": True, "hyde": True}
+
+    # Rule 3 — short query → pure vector + expand (fuzzy variants)
+    if word_count <= 3:
+        return {"hybrid": False, "expand": True}
+
+    # Rule 4 — default: hybrid RRF
+    return {"hybrid": True}
+
+
+# ──────────────────────────────────────────────
 # Tool: memory_search
 # ──────────────────────────────────────────────
 @mcp.tool()
@@ -402,6 +462,7 @@ async def memory_search(
     decompose: bool = False,
     date_from: str | None = None,
     date_to: str | None = None,
+    auto_route: bool = False,
 ) -> list[dict]:
     """Semantic search across all memories, ranked by relevance (similarity + recency + importance).
 
@@ -429,12 +490,29 @@ async def memory_search(
             calculate the absolute date client-side and pass it here.
         date_to: ISO 8601 upper bound on created_at (inclusive). Same format as
             date_from. Combine with date_from for a date range.
+        auto_route: When True, analyze the query shape and automatically pick
+            the best retrieval strategy (hybrid / hyde / decompose / expand) —
+            agents don't have to choose. Uses a lightweight heuristic based
+            on query length, comma/and count, and question prefix. Zero
+            added latency. When True, the selected flags OVERRIDE whatever
+            was passed explicitly for hybrid/expand/hyde/decompose (Phase
+            B G2, v6.7).
     """
     import asyncio
     from datetime import datetime
 
     limit = max(1, min(limit, 100))
     threshold = max(0.0, min(threshold, 1.0))
+
+    # Auto-routing query planner — Phase B G2 (v6.7). When enabled, pick the
+    # best retrieval strategy for this query shape. Overrides any explicit
+    # hybrid/expand/hyde/decompose flags. See _auto_route_query for rules.
+    if auto_route:
+        routing = _auto_route_query(query)
+        hybrid = routing.get("hybrid", True)
+        expand = routing.get("expand", False)
+        hyde = routing.get("hyde", False)
+        decompose = routing.get("decompose", False)
 
     # Parse temporal filters. Accept ISO date or datetime; reject garbage so
     # the SQL layer never sees a bogus string. Invalid input falls through to
