@@ -86,7 +86,30 @@ async def decide_write_action(
 
     Returns a dict with keys: action, target_id, content, reason.
     On failure, returns {"action": "ADD"} to fall through to normal storage.
+
+    Phase H (v6.10, 2026-04-12): check tombstones FIRST. If this exact
+    content was previously deleted via ``delete_memory``, short-circuit
+    to NOOP with ``reason='tombstoned'`` BEFORE doing the expensive
+    similarity search and LLM decision. This is the doobidoo-inspired
+    pattern that prevents the write queue from silently re-ingesting a
+    memory the user explicitly deleted (same document re-crawled, same
+    ChatGPT export re-imported, etc.).
     """
+    # Tombstone short-circuit — one indexed lookup, fails fast on hit.
+    from nobrainr.db.queries import is_tombstoned
+    try:
+        if await is_tombstoned(content):
+            return {
+                "action": "NOOP",
+                "target_id": "",
+                "content": "",
+                "reason": "tombstoned (previously deleted)",
+            }
+    except Exception:
+        # A tombstone-check failure must never block writes. Log and
+        # fall through to the normal similarity+LLM decision path.
+        logger.exception("Tombstone check failed, continuing with normal decision")
+
     candidates = await find_similar_memories(
         embedding, limit=candidate_limit, threshold=similarity_threshold,
     )
