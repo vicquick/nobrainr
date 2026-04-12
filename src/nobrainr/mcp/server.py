@@ -962,6 +962,104 @@ async def memory_delete_procedural(memory_id: str, hard: bool = False) -> dict:
 
 
 # ──────────────────────────────────────────────
+# Tool: memory_get_user_profile (Phase M, v6.14, 2026-04-12)
+# ──────────────────────────────────────────────
+# Supermemory-inspired dual-layer user profile — one-shot "everything an
+# agent needs to start a session" call. Combines three layers:
+#   1. static facts    — high-importance stable memories about the user
+#   2. recent activity — memories touched in the last N days
+#   3. procedural rules — global + agent-specific rules from Phase C G4
+#
+# Agents call this once at session start and prepend the result to their
+# system prompt, avoiding ad-hoc memory_search calls to reconstruct user
+# context on every session. ~50ms end-to-end (two indexed SQL queries +
+# one procedural_memories read), no LLM call.
+@mcp.tool()
+async def memory_get_user_profile(
+    source_machine: str | None = None,
+    agent_id: str | None = None,
+    static_limit: int = 20,
+    recent_limit: int = 15,
+    rule_limit: int = 30,
+    recent_window_days: int = 7,
+    static_importance_floor: float = 0.75,
+) -> dict:
+    """Return the user profile — the one-shot "everything for session start" call.
+
+    Three layers, returned in one dict:
+      - ``static_facts``: top-N memories with importance >= floor (default
+        0.75), ordered by importance/stability DESC. These are the durable
+        "who the user is / what they prefer / what they're working on"
+        memories.
+      - ``recent_activity``: top-N memories touched (accessed or created)
+        in the last ``recent_window_days`` days, ordered newest-first —
+        "what they've been doing this week".
+      - ``procedural_rules``: global rules + (agent-specific rules when
+        ``agent_id`` is passed), ordered by priority DESC. Phase C G4
+        agent-writable instructions.
+
+    Scope: all three layers are optionally filtered by ``source_machine``
+    so you get "user profile on this machine" rather than cross-host noise.
+
+    Cost: 2 SQL queries for static+recent + 1 SQL query for procedural.
+    No LLM call, no embedding. ~50ms end-to-end. Safe to call at every
+    session start.
+
+    Args:
+        source_machine: Filter memories to this host (default None = all).
+        agent_id: Specific agent — gets global + agent-scoped rules.
+        static_limit: Max static facts (default 20, clamped 0-100).
+        recent_limit: Max recent items (default 15, clamped 0-100).
+        rule_limit: Max procedural rules (default 30, clamped 0-200).
+        recent_window_days: Window for "recent" (default 7, clamped 1-90).
+        static_importance_floor: Min importance for static facts (default
+            0.75, clamped 0.0-1.0).
+
+    Returns:
+        ``{source_machine, agent_id, static_facts, recent_activity,
+        procedural_rules, generated_at, counts}``.
+    """
+    from datetime import datetime, timezone
+
+    layers = await queries.get_user_profile_layers(
+        source_machine=source_machine,
+        static_limit=max(0, min(static_limit, 100)),
+        recent_limit=max(0, min(recent_limit, 100)),
+        recent_window_days=max(1, min(recent_window_days, 90)),
+        static_importance_floor=max(0.0, min(static_importance_floor, 1.0)),
+    )
+
+    # Procedural layer — fetch failure must NOT block the profile, because
+    # a broken procedural table shouldn't poison the whole session-start
+    # flow. Fall back to an empty list and log the exception.
+    try:
+        procedural = await queries.get_procedural_memories(
+            agent_id=agent_id,
+            limit=max(0, min(rule_limit, 200)),
+        )
+    except Exception:
+        import logging
+        logging.getLogger("nobrainr").exception(
+            "Procedural fetch failed in memory_get_user_profile (returning empty list)"
+        )
+        procedural = []
+
+    return {
+        "source_machine": source_machine,
+        "agent_id": agent_id,
+        "static_facts": layers["static"],
+        "recent_activity": layers["recent"],
+        "procedural_rules": procedural,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "counts": {
+            "static_facts": len(layers["static"]),
+            "recent_activity": len(layers["recent"]),
+            "procedural_rules": len(procedural),
+        },
+    }
+
+
+# ──────────────────────────────────────────────
 # Tool: memory_history
 # ──────────────────────────────────────────────
 @mcp.tool()
