@@ -134,13 +134,20 @@ async def test_recompute_importance_preserves_embedding_filter():
 async def test_recompute_importance_least_1_cap():
     """Importance must still be capped at 1.0 — the sum of weights could
     theoretically exceed 1.0 if quality + confidence + connectivity all
-    max out simultaneously."""
+    max out simultaneously.
+
+    Phase J (v6.12) added a ``GREATEST(0.0, ...)`` outer wrap so the new
+    negative penalty term can push importance down without going below
+    zero. Both caps must remain intact.
+    """
     sql = await _capture_execute_sql()
-    # Outer LEAST(1.0, ...)
+    # Outer LEAST(1.0, ...) still guards the positive sum
     assert sql.count("LEAST(1.0,") >= 3, \
-        "LEAST(1.0, ...) guards should cap each sub-term and the sum"
-    assert "UPDATE memories m SET importance = LEAST(1.0," in sql, \
-        "the outer cap must be on the total SET assignment"
+        "LEAST(1.0, ...) guards should cap each sub-term and the overall sum"
+    # Phase J outer wrap: GREATEST(0.0, LEAST(1.0, ...)) so the penalty
+    # can subtract without making importance negative.
+    assert "UPDATE memories m SET importance = GREATEST(0.0, LEAST(1.0," in sql, \
+        "outer cap must be GREATEST(0.0, LEAST(1.0, ...)) so Phase J's penalty can't push importance below zero"
 
 
 @pytest.mark.asyncio
