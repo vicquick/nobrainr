@@ -266,6 +266,58 @@ async def enqueue_document_chunks(
     }
 
 
+async def reset_stale_processing(stale_minutes: int = 10) -> int:
+    """Reset orphan 'processing' rows whose worker died mid-task.
+
+    When the nobrainr container is killed (Coolify redeploy, OOM, manual
+    stop) any row claimed by the old worker stays in ``status='processing'``
+    with no heartbeat and no alive worker to finish it. The new worker's
+    claim query at :func:`claim_next_pending` only inspects rows with
+    ``status='pending'``, so orphans sit in the queue forever unless
+    someone manually flips them back (observed 4+ times in the 2026-04-12
+    overnight mission when Coolify auto-deploys cascaded).
+
+    This function is meant to be called ONCE at worker startup (from
+    ``scheduler._memory_write_worker``). It finds rows that have been
+    in ``status='processing'`` for longer than ``stale_minutes`` minutes
+    and flips them back to ``pending``, clearing ``started_at`` so the
+    new worker's claim sets a fresh one. The ``attempts`` counter is
+    intentionally NOT decremented — the crash still counts against the
+    retry budget because otherwise a flaky Coolify could let a genuinely
+    broken task retry forever.
+
+    The ``stale_minutes`` threshold defaults to 10 minutes, which is
+    generous compared to p95 work duration (observed ~160s). Setting it
+    too aggressive would risk resetting legitimately-running work in
+    future multi-worker deployments; too lax would leave orphans sitting
+    across container lifecycles. 10 minutes is the current compromise.
+
+    Returns the number of rows reset.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE memory_write_queue
+            SET status = 'pending',
+                started_at = NULL
+            WHERE status = 'processing'
+              AND started_at IS NOT NULL
+              AND started_at < now() - ($1 || ' minutes')::interval
+            """,
+            str(stale_minutes),
+        )
+    try:
+        n = int(result.split()[-1])
+    except (IndexError, ValueError):
+        return 0
+    if n > 0:
+        logger.warning(
+            "reset_stale_processing: reset %d orphan rows (worker crash recovery)", n
+        )
+    return n
+
+
 async def claim_next_pending() -> dict[str, Any] | None:
     """Claim the oldest pending row whose ``next_attempt_at`` has passed.
 
