@@ -1926,6 +1926,146 @@ async def search_facts(
         return results
 
 
+async def search_facts_prioritized(
+    embedding: list[float],
+    *,
+    limit: int = 10,
+    threshold: float = 0.3,
+    text_query: str | None = None,
+    date_asof: datetime | None = None,
+    skip_canonical: bool = False,
+) -> list[dict]:
+    """Priority cascade search: check canonical (tier=1) facts first.
+
+    Phase K implementation of the 3-tiered Graph RAG pattern:
+      1. Check tier=1 (canonical) facts first — if found, STOP and return
+      2. If no canonical match, fall back to normal vector search
+
+    This prevents vector-based retrieval from overriding verified facts.
+    The canonical tier acts as a "ground truth" layer that always wins.
+
+    Args:
+        embedding: Query embedding vector.
+        limit: Max results to return.
+        threshold: Minimum similarity score.
+        text_query: Optional text for hybrid search.
+        date_asof: Point-in-time filter (None = current facts only).
+        skip_canonical: If True, skip tier=1 check (for debugging).
+
+    Returns:
+        List of facts, with tier=1 results first if any matched.
+    """
+    pool = await get_pool()
+    model_aliases = list(_cfg.embedding_model_aliases or [_cfg.embedding_model])
+
+    # Bi-temporal WHERE clause
+    if date_asof is None:
+        temporal_clause = " AND f.valid_to IS NULL"
+        temporal_params: list = []
+    else:
+        temporal_clause = (
+            " AND f.valid_from <= ${N1}"
+            " AND (f.valid_to IS NULL OR f.valid_to > ${N2})"
+        )
+        temporal_params = [date_asof, date_asof]
+
+    async with pool.acquire() as conn:
+        # Step 1: Check canonical (tier=1) facts first — this is the priority cascade
+        if not skip_canonical:
+            tier1_temporal = temporal_clause.replace("{N1}", "4").replace("{N2}", "5")
+            canonical_rows = await conn.fetch(
+                f"""
+                SELECT f.id, f.content, f.memory_id, f.quality_score, f.created_at,
+                       f.valid_from, f.valid_to, f.tier, f.verified_at, f.verified_by,
+                       1 - (f.embedding::halfvec(1024) <=> $1::halfvec(1024)) as similarity
+                FROM memory_facts f
+                WHERE f.embedding IS NOT NULL
+                  AND f.tier = 1
+                  AND (f.embedding_model IS NULL OR f.embedding_model = ANY($3::text[]))
+                  AND LENGTH(f.content) > 30
+                  {tier1_temporal}
+                ORDER BY f.embedding::halfvec(1024) <=> $1::halfvec(1024)
+                LIMIT $2
+                """,
+                embedding, limit, model_aliases, *temporal_params,
+            )
+
+            canonical_results = [
+                {**_row_to_dict(r), "similarity": float(r["similarity"]), "priority": "canonical"}
+                for r in canonical_rows
+                if float(r["similarity"]) >= threshold
+            ]
+
+            # If canonical facts found above threshold, return them immediately
+            if canonical_results:
+                return canonical_results
+
+        # Step 2: No canonical match — fall back to normal vector search (all tiers)
+        return await search_facts(
+            embedding,
+            limit=limit,
+            threshold=threshold,
+            text_query=text_query,
+            date_asof=date_asof,
+        )
+
+
+async def promote_fact(
+    fact_id: str,
+    *,
+    verified_by: str = "user",
+    tier: int = 1,
+) -> dict | None:
+    """Promote a fact to canonical (tier=1) status.
+
+    Phase K: marks a fact as verified/canonical so it takes priority
+    in search_facts_prioritized queries. Once promoted, this fact will
+    be returned before any vector-based results.
+
+    Args:
+        fact_id: UUID of the fact to promote.
+        verified_by: Who verified this fact (user ID, agent name, etc.).
+        tier: Target tier (1=canonical, 2=historical). Default 1.
+
+    Returns:
+        Updated fact dict, or None if fact not found.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE memory_facts
+            SET tier = $2, verified_at = now(), verified_by = $3
+            WHERE id = $1
+            RETURNING *
+            """,
+            UUID(fact_id), tier, verified_by,
+        )
+        return _row_to_dict(row) if row else None
+
+
+async def demote_fact(
+    fact_id: str,
+) -> dict | None:
+    """Demote a fact back to derived (tier=3) status.
+
+    Reverses a promote_fact call — clears verified_at/verified_by
+    and sets tier back to default.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE memory_facts
+            SET tier = 3, verified_at = NULL, verified_by = NULL
+            WHERE id = $1
+            RETURNING *
+            """,
+            UUID(fact_id),
+        )
+        return _row_to_dict(row) if row else None
+
+
 async def supersede_fact(
     fact_id: str,
     *,

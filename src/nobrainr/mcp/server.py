@@ -2923,6 +2923,121 @@ async def fact_search(
     }
 
 
+@mcp.tool()
+async def fact_search_prioritized(
+    query: str,
+    limit: int = 10,
+    threshold: float = 0.3,
+    date_asof: str | None = None,
+) -> dict:
+    """Priority cascade search: check canonical facts first, then vector.
+
+    Phase K implementation of the 3-tiered Graph RAG pattern from
+    MachineLearningMastery. Canonical (tier=1) facts are checked first
+    and returned immediately if found — preventing vector search from
+    overriding verified ground truth.
+
+    Use this when you need authoritative answers that must not be
+    polluted by semantically-similar but potentially outdated or
+    incorrect vector matches.
+
+    Args:
+        query: Search query for matching facts.
+        limit: Maximum number of facts to return (default 10).
+        threshold: Minimum similarity threshold (default 0.3).
+        date_asof: ISO 8601 timestamp for point-in-time query.
+    """
+    from datetime import datetime
+
+    parsed_asof = None
+    if date_asof:
+        try:
+            s = date_asof.strip()
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            parsed_asof = datetime.fromisoformat(s)
+        except (ValueError, AttributeError):
+            parsed_asof = None
+
+    emb = await embed_text(query)
+    facts = await queries.search_facts_prioritized(
+        emb,
+        limit=limit,
+        threshold=threshold,
+        text_query=query,
+        date_asof=parsed_asof,
+    )
+
+    # Identify if results came from canonical tier
+    has_canonical = any(f.get("priority") == "canonical" for f in facts)
+
+    return {
+        "facts": facts,
+        "total": len(facts),
+        "query": query,
+        "source": "canonical" if has_canonical else "vector",
+        "date_asof": parsed_asof.isoformat() if parsed_asof else None,
+    }
+
+
+@mcp.tool()
+async def fact_promote(
+    fact_id: str,
+    verified_by: str = "user",
+) -> dict:
+    """Promote a fact to canonical (tier=1) status.
+
+    Phase K: marks a fact as verified/canonical so it takes priority
+    in fact_search_prioritized queries. Once promoted, this fact will
+    be returned before any vector-based results for matching queries.
+
+    Use this when:
+    - A user confirms a fact is correct
+    - An authoritative source validates the information
+    - You want a fact to always override similar vector matches
+
+    Args:
+        fact_id: UUID of the fact to promote.
+        verified_by: Who verified this fact (user ID, agent name, etc.).
+
+    Returns:
+        Updated fact with tier=1, verified_at, verified_by set.
+    """
+    result = await queries.promote_fact(fact_id, verified_by=verified_by, tier=1)
+    if result is None:
+        return {"error": "Fact not found", "fact_id": fact_id}
+    return {
+        "status": "promoted",
+        "fact": result,
+        "message": f"Fact promoted to canonical tier by {verified_by}",
+    }
+
+
+@mcp.tool()
+async def fact_demote(
+    fact_id: str,
+) -> dict:
+    """Demote a fact from canonical back to derived (tier=3) status.
+
+    Reverses a fact_promote call — the fact returns to normal vector
+    search behavior and no longer overrides other results.
+
+    Args:
+        fact_id: UUID of the fact to demote.
+
+    Returns:
+        Updated fact with tier=3, verified_at/verified_by cleared.
+    """
+    result = await queries.demote_fact(fact_id)
+    if result is None:
+        return {"error": "Fact not found", "fact_id": fact_id}
+    return {
+        "status": "demoted",
+        "fact": result,
+        "message": "Fact demoted back to derived tier",
+    }
+
+
 # ──────────────────────────────────────────────
 # Entry points
 # ──────────────────────────────────────────────
