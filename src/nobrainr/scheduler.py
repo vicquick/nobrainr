@@ -31,11 +31,13 @@ LLM_JOB_DELAYS = {
     "consolidation": 12 * 60,
     "fact_extraction": 3 * 60,      # high priority — build fact layer
     # === Phase 3: Knowledge growth ===
-    "chatgpt_distill": 14 * 60,
-    "insight_extraction": 16 * 60,
-    "synthesis": 18 * 60,
-    "contradiction_detection": 20 * 60,
-    "cross_machine_insights": 22 * 60,
+    # synthesis/contradiction/cross_machine run FIRST so they're not blocked
+    # by chatgpt_distill's long lock hold time on first startup cycle
+    "synthesis": 14 * 60,
+    "contradiction_detection": 15 * 60,
+    "cross_machine_insights": 16 * 60,
+    "insight_extraction": 17 * 60,
+    "chatgpt_distill": 18 * 60,  # runs AFTER knowledge-growth jobs have their first run
     # === Phase 4: External sources ===
     "knowledge_crawl": 24 * 60,
     "entity_web_research": 26 * 60,
@@ -57,7 +59,8 @@ LLM_JOB_TIMEOUT = 30 * 60  # 30 minutes for larger batch sizes
 
 # Per-job timeout overrides for slow jobs (multi-pass distillation etc.)
 LLM_JOB_TIMEOUT_OVERRIDES = {
-    "chatgpt_distill": 90 * 60,  # 90 minutes — multi-pass sliding window is slow
+    "chatgpt_distill": 60 * 60,   # 60 minutes — reduced batch_size=15, should finish faster
+    "community_detection": 90 * 60,  # 42k entities + 50 community summaries = slow
 }
 
 
