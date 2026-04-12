@@ -78,7 +78,59 @@ Example output:
 """
 
 
-MAX_CONTENT_CHARS = 6000  # ~1500 tokens — fits in num_ctx=8192 with prompt + neighborhood context
+# Page size for content pagination. Long memories are split into pages
+# of this size and extracted independently. Results are merged.
+# With N_PARALLEL=2 and CTX_SIZE=8192, each slot gets 4096 tokens.
+# 3000 chars ≈ 750-1500 tokens, plus system prompt (~250 tok) +
+# known_entities (~500 tok) + schema (~200 tok) = ~1700-2450 total.
+# Comfortably within the 4096 per-slot budget.
+#
+# IMPORTANT: we NEVER truncate content. Pagination ensures every char
+# of the original memory is processed — just across multiple LLM calls
+# if needed. User directive 2026-04-12: "i will not never accept any
+# further downgrading of our knowledge".
+_PAGE_SIZE_CHARS = 3000
+
+# Cap each known-entity description to avoid bloating the neighborhood
+# context. 15 entities × 120 chars = ~1800 chars ≈ ~500 tokens — safe.
+_MAX_ENTITY_DESC_CHARS = 120
+
+
+def _paginate_content(text: str, page_size: int = _PAGE_SIZE_CHARS) -> list[str]:
+    """Split content into pages for multi-pass extraction.
+
+    Never truncates — every character of the input appears in exactly
+    one page. Splits on paragraph boundaries (\n\n) when possible to
+    avoid cutting mid-sentence. Falls back to hard split at page_size
+    if no paragraph break is found within the budget.
+    """
+    if not text or len(text) <= page_size:
+        return [text] if text else []
+
+    pages = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= page_size:
+            pages.append(remaining)
+            break
+
+        # Try to split on a paragraph boundary within the page budget
+        split_zone = remaining[:page_size]
+        para_break = split_zone.rfind("\n\n")
+        if para_break > page_size * 0.3:  # only use if reasonably deep
+            pages.append(remaining[:para_break].rstrip())
+            remaining = remaining[para_break:].lstrip()
+        else:
+            # Fall back: split on last newline, or hard split
+            line_break = split_zone.rfind("\n")
+            if line_break > page_size * 0.5:
+                pages.append(remaining[:line_break].rstrip())
+                remaining = remaining[line_break:].lstrip()
+            else:
+                pages.append(remaining[:page_size])
+                remaining = remaining[page_size:]
+
+    return pages
 
 
 async def extract_entities(
@@ -87,22 +139,59 @@ async def extract_entities(
 ) -> ExtractionResult:
     """Extract entities and relationships from text using Ollama structured output.
 
+    Paginates long content so NO information is lost. Each page is
+    extracted independently and results are merged (entities deduped
+    by name+type, relationships accumulated).
+
     Args:
         text: Memory content to extract from.
         known_entities: Optional list of nearby entities from the graph
             (each dict has name, entity_type, description) to help the LLM
             link to existing nodes rather than creating duplicates.
     """
-    # Truncate long content to avoid exceeding context window
-    if len(text) > MAX_CONTENT_CHARS:
-        text = text[:MAX_CONTENT_CHARS] + "…"
+    pages = _paginate_content(text)
+    if not pages:
+        return ExtractionResult(entities=[], relationships=[])
 
+    # Single page — fast path (no merge overhead)
+    if len(pages) == 1:
+        return await _extract_single_page(pages[0], known_entities)
+
+    # Multi-page: extract each independently, merge results
+    all_entities: list = []
+    all_relationships: list = []
+    seen_entities: set = set()  # (name_lower, entity_type) for dedup
+
+    for i, page in enumerate(pages):
+        try:
+            result = await _extract_single_page(page, known_entities)
+            for ent in result.entities:
+                key = (ent.name.lower(), ent.entity_type.lower())
+                if key not in seen_entities:
+                    seen_entities.add(key)
+                    all_entities.append(ent)
+            all_relationships.extend(result.relationships)
+        except Exception:
+            logger.warning(
+                "Extraction failed for page %d/%d (%d chars), skipping page",
+                i + 1, len(pages), len(page),
+            )
+            continue
+
+    return ExtractionResult(entities=all_entities, relationships=all_relationships)
+
+
+async def _extract_single_page(
+    text: str,
+    known_entities: list[dict] | None = None,
+) -> ExtractionResult:
+    """Extract from a single page of content (guaranteed to fit in one LLM call)."""
     # Build user prompt with optional neighborhood context
     user_parts = []
     if known_entities:
         entity_lines = []
-        for e in known_entities[:15]:  # cap to avoid blowing context
-            desc = e.get("description", "")
+        for e in known_entities[:15]:  # cap count
+            desc = (e.get("description") or "")[:_MAX_ENTITY_DESC_CHARS]
             entity_lines.append(f"  - {e['name']} ({e['entity_type']}){': ' + desc if desc else ''}")
         user_parts.append(
             "Known entities already in the graph (reuse these names if they appear):\n"
