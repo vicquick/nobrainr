@@ -1830,6 +1830,49 @@ async def memory_store_document(
 # Import tools (kept for backwards compat)
 # ──────────────────────────────────────────────
 @mcp.tool()
+async def memory_import_chatgpt_sessions(
+    source_machine: str | None = None,
+    limit: int = 50,
+    max_content_chars: int = 30000,
+    min_turns: int = 2,
+) -> dict:
+    """Store raw ChatGPT/Claude conversations as session-level memories.
+
+    doobidoo/mcp-memory-service pattern (+5.6% R@5 on LongMemEval): each
+    raw conversation becomes ONE memory in the memories table with the
+    full conversation text, rather than being distilled into multiple
+    fine-grained learnings. This is ORTHOGONAL to ``memory_import_chatgpt``
+    with ``distill=True`` — both paths can run for the same raw
+    conversation (tracked independently via separate metadata flags:
+    ``distilled`` and ``session_stored``). Running both gives you both
+    fine-grained semantic recall AND session-level "did we ever talk
+    about X" recall.
+
+    Call this after a raw import (``memory_import_chatgpt(file, distill=False)``)
+    to materialize the sessions. Processes ``limit`` conversations per
+    call; run repeatedly until ``processed==0`` to drain the backlog.
+
+    Args:
+        source_machine: Override the per-conversation source_machine.
+        limit: Max raw conversations to process per call (default 50).
+        max_content_chars: Truncate session text at this many chars
+            (default 30,000 ~= 8-10k tokens).
+        min_turns: Minimum user/assistant turns to warrant a session
+            memory (default 2). Shorter conversations are marked skipped.
+
+    Returns:
+        dict with status, processed, stored, skipped, errors counts.
+    """
+    from nobrainr.importers.chatgpt import store_conversations_as_sessions
+    return await store_conversations_as_sessions(
+        source_machine=source_machine,
+        limit=limit,
+        max_content_chars=max_content_chars,
+        min_turns=min_turns,
+    )
+
+
+@mcp.tool()
 async def memory_import_chatgpt(file_path: str, distill: bool = False) -> dict:
     """Import ChatGPT conversations from an OpenAI export file.
 

@@ -472,6 +472,227 @@ async def _mark_distilled(
 
 
 # ──────────────────────────────────────────────
+# Session-level ingestion (Phase I, v6.11, 2026-04-12)
+# ──────────────────────────────────────────────
+# doobidoo/mcp-memory-service published +5.6% R@5 on LongMemEval just by
+# switching their ingestion from turn-level to session-level — i.e. storing
+# a whole conversation as ONE memory instead of chunking into per-turn
+# or per-learning memories. For LongMemEval-style "did we ever discuss X"
+# queries, the full conversation text as one retrievable unit wins.
+#
+# This path is ORTHOGONAL to distill_conversations:
+#   - distill_conversations  → extracts 0-N fine-grained learnings per
+#     conversation via LLM (good for semantic recall of specific facts)
+#   - store_conversations_as_sessions → stores each whole conversation as
+#     one big memory (good for "did we ever talk about X" recall)
+#
+# Both can run for the same raw conversation. They're tracked independently
+# via two different metadata flags (``distilled`` and ``session_stored``).
+
+
+async def _mark_session_stored(
+    convo_id: str,
+    *,
+    stored: bool = True,
+    skipped: bool = False,
+    memory_id: str | None = None,
+) -> None:
+    """Mark a raw conversation as session-stored so we don't reprocess it."""
+    pool = await get_pool()
+    from uuid import UUID
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE conversations_raw
+            SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb
+            WHERE id = $2
+            """,
+            json.dumps({
+                "session_stored": stored,
+                "session_skipped": skipped,
+                **({"session_memory_id": memory_id} if memory_id else {}),
+                "session_version": 1,
+            }),
+            UUID(convo_id),
+        )
+
+
+def _build_session_text(
+    title: str,
+    messages: list[dict],
+    *,
+    max_chars: int,
+    per_turn_max: int = 4000,
+) -> tuple[str, int]:
+    """Render a conversation as a single session-level text block.
+
+    Returns ``(full_text, turn_count)`` where turn_count is the number of
+    user/assistant turns actually included. Overlong single turns are
+    individually truncated (code dumps, long pastes) so one giant turn
+    can't blow the overall budget. If the combined text exceeds
+    ``max_chars`` the tail is truncated with a marker — session-level
+    retrieval is primarily about finding the right conversation, so
+    losing the end of a very long chat is acceptable.
+    """
+    relevant = [m for m in messages if m.get("role") in ("user", "assistant")]
+    if not relevant:
+        return "", 0
+
+    parts = [f"# Conversation: {title}\n"]
+    for m in relevant:
+        role = m.get("role", "unknown").upper()
+        content = (m.get("content") or "").strip()
+        if len(content) > per_turn_max:
+            content = content[:per_turn_max - 20] + "\n[...truncated...]"
+        parts.append(f"\n## {role}\n{content}\n")
+
+    full_text = "".join(parts)
+    if len(full_text) > max_chars:
+        full_text = full_text[: max_chars - 40] + "\n\n[...session truncated...]"
+
+    return full_text, len(relevant)
+
+
+async def store_conversations_as_sessions(
+    *,
+    source_machine: str | None = None,
+    limit: int = 50,
+    max_content_chars: int = 30000,
+    min_turns: int = 2,
+) -> dict:
+    """Store undistilled raw conversations as session-level memories.
+
+    doobidoo pattern (+5.6% R@5 on LongMemEval vs turn-level distillation):
+    each raw conversation becomes ONE memory in the memories table with
+    the full conversation text. Complements (doesn't replace)
+    ``distill_conversations`` — the two paths are independent and both
+    can run for the same raw conversation.
+
+    Args:
+        source_machine: If set, override the per-conversation source_machine
+            with this value.
+        limit: Max conversations to process per call.
+        max_content_chars: Truncate combined session text at this many chars.
+            30k is roughly 8-10k tokens which fits in the embedder context
+            without blowing up and captures the vast majority of real chats.
+        min_turns: Minimum user/assistant turns to warrant a session memory
+            (default 2). Conversations with fewer are marked skipped so we
+            don't keep scanning them.
+
+    Returns:
+        {
+            "status": "complete",
+            "processed": int,
+            "stored": int,
+            "skipped": int,
+            "errors": int,
+        }
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, title, messages, metadata, source_type
+            FROM conversations_raw
+            WHERE source_type IN ('chatgpt', 'claude_web')
+              AND (metadata->>'session_stored') IS NULL
+            ORDER BY imported_at ASC
+            LIMIT $1
+            """,
+            limit,
+        )
+
+    if not rows:
+        return {
+            "status": "complete",
+            "processed": 0,
+            "stored": 0,
+            "skipped": 0,
+            "errors": 0,
+        }
+
+    stats = {"processed": 0, "stored": 0, "skipped": 0, "errors": 0}
+
+    for row in rows:
+        stats["processed"] += 1
+        convo_id = str(row["id"])
+        title = row["title"] or "Untitled"
+        source_type_original = row["source_type"]
+
+        messages = (
+            row["messages"]
+            if isinstance(row["messages"], list)
+            else json.loads(row["messages"] or "[]")
+        )
+        metadata = (
+            row["metadata"]
+            if isinstance(row["metadata"], dict)
+            else json.loads(row["metadata"] or "{}")
+        )
+        machine = source_machine or metadata.get("source_machine")
+
+        full_text, turn_count = _build_session_text(
+            title, messages, max_chars=max_content_chars,
+        )
+
+        if turn_count < min_turns or not full_text.strip():
+            stats["skipped"] += 1
+            await _mark_session_stored(convo_id, stored=False, skipped=True)
+            continue
+
+        try:
+            embedding = await embed_text(full_text[:MAX_EMBED_CHARS])
+        except Exception as e:
+            logger.warning("Embedding failed for session '%s': %s", title, e)
+            stats["errors"] += 1
+            continue
+
+        # Store as a session-level memory. source_type suffix '_session'
+        # makes the distilled vs session path easy to distinguish in
+        # downstream filters.
+        try:
+            result = await queries.store_memory(
+                content=full_text,
+                embedding=embedding,
+                summary=f"Session: {title} ({turn_count} turns)"[:200],
+                source_type=f"{source_type_original}_session",
+                source_machine=machine,
+                source_ref=title,
+                tags=[
+                    "imported",
+                    "session",
+                    source_type_original,
+                    "session-level",
+                ],
+                category="session-log",
+                confidence=0.7,
+                metadata={
+                    "conversation_id": convo_id,
+                    "turn_count": turn_count,
+                    "storage_mode": "session",
+                    "source_type_original": source_type_original,
+                    **{k: v for k, v in metadata.items() if k not in (
+                        "distilled", "session_stored", "session_skipped",
+                        "learning_count", "distill_windows", "distill_version",
+                        "distill_error",
+                    )},
+                },
+            )
+            stats["stored"] += 1
+            memory_id_from_result = None
+            if isinstance(result, dict):
+                memory_id_from_result = result.get("id") or result.get("new_id")
+            await _mark_session_stored(
+                convo_id, stored=True, memory_id=memory_id_from_result,
+            )
+        except Exception as e:
+            logger.warning("Store failed for session '%s': %s", title, e)
+            stats["errors"] += 1
+
+    return {"status": "complete", **stats}
+
+
+# ──────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────
 
