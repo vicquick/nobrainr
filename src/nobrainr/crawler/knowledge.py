@@ -77,6 +77,18 @@ SEED_URLS = [
     ("https://www.buildingsmart.org/standards/bsi-standards/industry-foundation-classes/", ["ifc", "bim", "standards"], "business"),
     ("https://docs.thatopen.com/", ["that-open-engine", "bim", "3d-viewer"], "documentation"),
     ("https://xeokit.github.io/xeokit-sdk/docs/", ["xeokit", "bim", "3d-viewer"], "documentation"),
+    ("https://blender.org/api/current/", ["blender", "python-api", "3d"], "documentation"),
+    ("https://docs.blender.org/manual/en/latest/", ["blender", "manual", "3d"], "documentation"),
+    ("https://ifcopenshell.org/docs/", ["ifcopenshell", "ifc", "bim", "python"], "documentation"),
+    ("https://github.com/IfcOpenShell/IfcOpenShell", ["ifcopenshell", "ifc", "bim"], "documentation"),
+    # AI memory systems (for nobrainr evolution)
+    ("https://langchain-ai.github.io/langgraph/concepts/memory/", ["langgraph", "memory", "agent"], "documentation"),
+    ("https://microsoft.github.io/graphrag/", ["graphrag", "knowledge-graph", "rag"], "documentation"),
+    ("https://github.com/getzep/graphiti", ["graphiti", "knowledge-graph", "temporal"], "documentation"),
+    ("https://docs.mem0.ai/overview", ["mem0", "memory", "agent"], "documentation"),
+    # MCP / AI tools
+    ("https://modelcontextprotocol.io/docs/concepts/tools", ["mcp", "tools", "protocol"], "documentation"),
+    ("https://modelcontextprotocol.io/docs/concepts/resources", ["mcp", "resources", "protocol"], "documentation"),
     # Data & ML
     ("https://scikit-learn.org/stable/user_guide.html", ["scikit-learn", "ml", "python"], "documentation"),
     ("https://pytorch.org/docs/stable/index.html", ["pytorch", "ml", "deep-learning"], "documentation"),
@@ -104,6 +116,10 @@ TRUSTED_DOMAINS = {
     # BIM
     "technical.buildingsmart.org", "www.buildingsmart.org",
     "docs.thatopen.com", "xeokit.github.io",
+    "blender.org", "docs.blender.org", "ifcopenshell.org",
+    # AI memory
+    "langchain-ai.github.io", "microsoft.github.io", "www.getzep.com",
+    "docs.mem0.ai",
     # General
     "github.com", "developer.mozilla.org",
 }
