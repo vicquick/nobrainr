@@ -660,6 +660,192 @@ async def memory_search(
 
 
 # ──────────────────────────────────────────────
+# Tool: memory_aggregate (Phase L, v6.13, 2026-04-12)
+# ──────────────────────────────────────────────
+# Supermemory-inspired Aggregation pattern. Instead of re-ranking N
+# candidates and returning the top K verbatim, call the LLM once to
+# SYNTHESIZE the N candidates into K self-contained answer slots.
+# Different from the v6 reranker (which reorders) and the cross-encoder
+# (which picks top-K verbatim). Aggregation actively COMBINES evidence
+# across memories into new compact answers — particularly useful for
+# multi-hop questions where the answer is scattered across several
+# memories.
+#
+# Cost: one LLM call per query (~2s on llama-server with N_PARALLEL=3
+# from Phase A). Agents should call this when they need a synthesized
+# answer, not when they need raw memory retrieval.
+
+_AGGREGATE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "slots": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "answer": {
+                        "type": "string",
+                        "description": "Self-contained 2-5 sentence answer synthesized from the candidate memories. Must stand alone without requiring the original query.",
+                    },
+                    "source_memory_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "UUIDs (pulled from the [n] labels) of the candidate memories used to synthesize this answer.",
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "description": "0.0-1.0 — how well-supported by the source memories. 0.3 = weak inference, 0.7 = solid, 0.9 = directly stated.",
+                    },
+                },
+                "required": ["answer", "source_memory_ids", "confidence"],
+            },
+            "description": "Up to K synthesized answer slots, ordered best-first.",
+        },
+    },
+    "required": ["slots"],
+}
+
+_AGGREGATE_SYSTEM_PROMPT = (
+    "You are an evidence synthesizer. Given a query and a list of candidate "
+    "memories (each labeled [n] with a UUID), produce up to K self-contained "
+    "answer slots. Each slot should:\n"
+    "- Combine evidence from ONE or MORE memories into a clear answer\n"
+    "- Cite the UUIDs of the memories you drew from via source_memory_ids\n"
+    "- State the confidence (0.0-1.0) based on how directly the memories "
+    "support it\n"
+    "- Be written as a standalone fact — someone reading only the slot should "
+    "understand it without the query\n"
+    "- Prefer fewer, higher-confidence slots over many weak ones\n\n"
+    "If the memories don't answer the query at all, return an empty slots "
+    "array rather than fabricating content."
+)
+
+
+@mcp.tool()
+async def memory_aggregate(
+    query: str,
+    k: int = 3,
+    fetch_limit: int = 15,
+    threshold: float = 0.3,
+    tags: list[str] | None = None,
+    category: str | None = None,
+    source_type: str | None = None,
+    source_machine: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict:
+    """Retrieve-then-synthesize: fetch top-N memories, synthesize K answer slots.
+
+    Supermemory Aggregation pattern — different from the v6 reranker
+    (which reorders) and the cross-encoder (which picks top-K verbatim):
+    aggregation COMBINES evidence across multiple memories into new
+    compact answers. Particularly useful for multi-hop questions where
+    the answer is scattered across several memories.
+
+    Costs one LLM call per query (~2s on llama-server with Phase A's
+    concurrency=3). Agents should call this when they need a SYNTHESIZED
+    answer, not raw retrieval — use ``memory_search`` for that.
+
+    Args:
+        query: Natural language question.
+        k: Max answer slots to return (default 3, clamped to [1, 10]).
+        fetch_limit: Candidate pool size before synthesis (default 15,
+            clamped to [k, 50]).
+        threshold: Minimum similarity for candidates (default 0.3).
+        tags, category, source_type, source_machine: Filter candidates.
+        date_from, date_to: ISO 8601 date bounds on candidate creation.
+
+    Returns:
+        ``{"query": str, "slots": list of {answer, source_memory_ids,
+        confidence}, "candidate_count": int}``. On embed/LLM failure
+        the ``slots`` list is empty and an ``error`` key is populated.
+    """
+    from datetime import datetime
+
+    from nobrainr.embeddings.ollama import embed_text
+    from nobrainr.extraction.llm import ollama_chat
+
+    k = max(1, min(k, 10))
+    fetch_limit = max(k, min(fetch_limit, 50))
+    threshold = max(0.0, min(threshold, 1.0))
+
+    def _parse_iso(raw: str | None):
+        if not raw:
+            return None
+        try:
+            s = raw.strip()
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            return datetime.fromisoformat(s)
+        except (ValueError, AttributeError):
+            return None
+
+    try:
+        embedding = await embed_text(query)
+    except Exception as exc:
+        return {
+            "query": query,
+            "slots": [],
+            "candidate_count": 0,
+            "error": f"embed failed: {exc}",
+        }
+
+    candidates = await queries.search_memories(
+        embedding=embedding,
+        limit=fetch_limit,
+        threshold=threshold,
+        tags=tags,
+        category=category,
+        source_type=source_type,
+        source_machine=source_machine,
+        text_query=query,  # hybrid RRF
+        date_from=_parse_iso(date_from),
+        date_to=_parse_iso(date_to),
+    )
+
+    if not candidates:
+        return {"query": query, "slots": [], "candidate_count": 0}
+
+    # Format context for the LLM — numbered refs [1], [2], ... with
+    # content preview. Per-memory chars bounded so a single giant memory
+    # can't blow the context window.
+    context_lines = []
+    for i, mem in enumerate(candidates, 1):
+        content = (mem.get("content") or "")[:700].replace("\n", " ")
+        context_lines.append(f"[{i}] ID: {mem['id']}\n    {content}")
+    context = "\n\n".join(context_lines)
+
+    user_prompt = (
+        f"QUERY: {query}\n\n"
+        f"CANDIDATE MEMORIES ({len(candidates)}):\n{context}\n\n"
+        f"Produce up to {k} synthesized answer slots."
+    )
+
+    try:
+        result = await ollama_chat(
+            system=_AGGREGATE_SYSTEM_PROMPT,
+            user=user_prompt,
+            schema=_AGGREGATE_SCHEMA,
+            num_ctx=8192,
+            think=False,
+        )
+    except Exception as exc:
+        return {
+            "query": query,
+            "slots": [],
+            "candidate_count": len(candidates),
+            "error": f"synthesis failed: {exc}",
+        }
+
+    slots = (result or {}).get("slots", []) or []
+    return {
+        "query": query,
+        "slots": slots[:k],
+        "candidate_count": len(candidates),
+    }
+
+
+# ──────────────────────────────────────────────
 # Tool: memory_query
 # ──────────────────────────────────────────────
 @mcp.tool()
