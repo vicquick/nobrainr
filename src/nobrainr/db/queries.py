@@ -3057,6 +3057,89 @@ async def delete_procedural_memory(memory_id: str, *, hard: bool = False) -> boo
 
 
 # ──────────────────────────────────────────────
+# User profile layers (Phase M, v6.14, 2026-04-12)
+# ──────────────────────────────────────────────
+# Supermemory-inspired dual-layer user profile: "static" (high-importance
+# stable facts about the user / their setup) + "recent" (what they've
+# been doing in the last N days). Agents call the MCP wrapper
+# memory_get_user_profile(...) once at session start to get a compact
+# ~1k-token context block, avoiding ad-hoc memory_search calls to
+# reconstruct "who is the user" on every session.
+
+
+async def get_user_profile_layers(
+    *,
+    source_machine: str | None = None,
+    static_limit: int = 20,
+    recent_limit: int = 15,
+    recent_window_days: int = 7,
+    static_importance_floor: float = 0.75,
+) -> dict:
+    """Return the two-layer user profile: static facts + recent activity.
+
+    Static = high-importance memories (importance >= ``static_importance_floor``).
+    These encode "who the user is, what they prefer, what they're working
+    on at the architectural level" — the memories that a feedback ranker
+    has surfaced as durable knowledge.
+
+    Recent = memories touched (accessed or created) in the last
+    ``recent_window_days`` days. This is the "what they've been doing
+    this week" layer that complements the static snapshot.
+
+    Both layers are optionally filtered to a specific ``source_machine``
+    so agents can scope the profile to the machine they're running on
+    instead of getting cross-machine noise.
+
+    Returns ``{"static": [...], "recent": [...]}``. Each list contains
+    memory dicts (id, content, summary, tags, category, importance, etc.).
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        static_rows = await conn.fetch(
+            """
+            SELECT id, content, summary, category, tags, importance,
+                   stability, confidence, source_type, source_machine,
+                   created_at, updated_at
+            FROM memories
+            WHERE embedding IS NOT NULL
+              AND importance >= $1
+              AND ($2::text IS NULL OR source_machine = $2)
+            ORDER BY importance DESC, stability DESC, created_at DESC
+            LIMIT $3
+            """,
+            static_importance_floor,
+            source_machine,
+            static_limit,
+        )
+        recent_rows = await conn.fetch(
+            """
+            SELECT id, content, summary, category, tags, importance,
+                   source_type, source_machine, created_at, updated_at,
+                   last_accessed_at
+            FROM memories
+            WHERE embedding IS NOT NULL
+              AND (
+                  last_accessed_at > NOW() - (INTERVAL '1 day' * $1)
+                  OR created_at > NOW() - (INTERVAL '1 day' * $1)
+              )
+              AND ($2::text IS NULL OR source_machine = $2)
+            ORDER BY GREATEST(
+                COALESCE(last_accessed_at, created_at),
+                created_at
+            ) DESC, importance DESC
+            LIMIT $3
+            """,
+            recent_window_days,
+            source_machine,
+            recent_limit,
+        )
+    return {
+        "static": [_row_to_dict(r) for r in static_rows],
+        "recent": [_row_to_dict(r) for r in recent_rows],
+    }
+
+
+# ──────────────────────────────────────────────
 # Entity web research (Phase 3)
 # ──────────────────────────────────────────────
 
