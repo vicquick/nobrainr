@@ -889,17 +889,33 @@ async def recompute_importance() -> int:
 
     v6.6 (2026-04-12, Phase B G1): added graph proximity signal — how many
     "hot entities" (those linked to any memory accessed in the last 7 days)
-    are linked to this memory. This is the Graphiti-inspired "rerank by
-    graph distance to recent episodes" pattern, implemented at the
-    importance-update layer rather than at query time so it flows through
-    ``memory_relevance()`` without a SQL function migration and costs
-    nothing at query time — the signal is already baked into importance.
+    are linked to this memory. Graphiti-inspired rerank-by-graph-distance.
 
-    Formula:
-      - 30% entity connectivity (down from 40%)
-      - 30% quality score (unchanged)
-      - 20% confidence (down from 30%)
-      - 20% graph proximity (NEW) — count of hot entities linked to memory
+    v6.12 (2026-04-12, Phase J): added typed-edge downrank penalty —
+    memories whose entities appear in the "stale" position of a supersede/
+    deprecate edge get their importance pushed down by up to 0.15. Uses
+    the two directions of the relationship_type vocabulary already
+    produced by the LLM extractor:
+
+      - ``source_entity_id`` of ('replaced_by', 'superseded_by',
+        'deprecated_in', 'deprecated_since') — the entity was replaced
+      - ``target_entity_id`` of ('replaces', 'supersedes',
+        'aims_to_replace', 'can_replace_with') — the entity was replaced
+        by something else
+
+    A memory heavily connected to entities in either stale position is
+    likely carrying outdated information. This complements (doesn't
+    conflict with) the Mem0-style SUPERSEDE write path, which physically
+    replaces the memory on the way in; this downrank catches the
+    residual signal for memories that survived the classifier.
+
+    Formula (positive terms sum to 1.0, penalty subtracts after):
+      + 30% entity connectivity
+      + 30% quality score
+      + 20% confidence
+      + 20% graph proximity (v6.6, Phase B G1)
+      − up to 15% outdated-edge penalty (v6.12, Phase J)
+      clamped to [0, 1] via GREATEST(0.0, LEAST(1.0, ...))
     """
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -922,8 +938,36 @@ async def recompute_importance() -> int:
                 FROM entity_memories em
                 WHERE em.entity_id IN (SELECT entity_id FROM hot_entities)
                 GROUP BY em.memory_id
+            ),
+            stale_entities AS (
+                -- Entities in the "stale" position of a supersede/deprecate
+                -- edge (Phase J). Both directions are covered:
+                --   * SOURCE of 'replaced_by'-family (source was replaced)
+                --   * TARGET of 'replaces'-family (target was replaced)
+                SELECT source_entity_id AS entity_id
+                FROM entity_relations
+                WHERE relationship_type IN (
+                    'replaced_by', 'superseded_by',
+                    'deprecated_in', 'deprecated_since'
+                )
+                UNION
+                SELECT target_entity_id AS entity_id
+                FROM entity_relations
+                WHERE relationship_type IN (
+                    'replaces', 'supersedes',
+                    'aims_to_replace', 'can_replace_with'
+                )
+            ),
+            memory_stale_counts AS (
+                -- For each memory, count how many of its linked entities
+                -- are in the stale set. Higher count = more outdated.
+                SELECT em.memory_id,
+                       count(DISTINCT em.entity_id) AS stale_entity_count
+                FROM entity_memories em
+                WHERE em.entity_id IN (SELECT entity_id FROM stale_entities)
+                GROUP BY em.memory_id
             )
-            UPDATE memories m SET importance = LEAST(1.0,
+            UPDATE memories m SET importance = GREATEST(0.0, LEAST(1.0,
                 -- 30% entity connectivity (count of linked entities, normalized)
                 (0.3 * LEAST(1.0, COALESCE((
                     SELECT count(*)::real / 10.0
@@ -939,7 +983,14 @@ async def recompute_importance() -> int:
                     SELECT hot_entity_count::real / 10.0
                     FROM memory_hot_counts mhc WHERE mhc.memory_id = m.id
                 ), 0.0)))
-            )
+                -- -15% outdated-edge penalty (v6.12, Phase J) — memories
+                -- heavily connected to stale-position entities are
+                -- probably outdated. Subtracted after the positive sum.
+              - (0.15 * LEAST(1.0, COALESCE((
+                    SELECT stale_entity_count::real / 5.0
+                    FROM memory_stale_counts msc WHERE msc.memory_id = m.id
+                ), 0.0)))
+            ))
             WHERE embedding IS NOT NULL
             """
         )
