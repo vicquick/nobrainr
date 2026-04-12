@@ -1,5 +1,6 @@
 """Database query functions for memories, entities, and the knowledge graph."""
 
+import hashlib
 import json
 import logging
 from datetime import datetime
@@ -520,6 +521,85 @@ async def update_memory(
         return result
 
 
+# ──────────────────────────────────────────────
+# Tombstones (Phase H, v6.10, 2026-04-12)
+# ──────────────────────────────────────────────
+# doobidoo pattern — record a content-hash on every delete so the write
+# queue dedup classifier can short-circuit to NOOP when the same content
+# comes back. See schema.py for the table rationale.
+
+
+def _compute_content_hash(content: str) -> str:
+    """Normalize + SHA256-hex. Stable across leading/trailing whitespace
+    and case variations so near-duplicate re-ingestions hit the tombstone."""
+    normalized = (content or "").strip().lower()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+async def create_tombstone(
+    content: str,
+    *,
+    original_memory_id: str | None = None,
+    reason: str = "manual_delete",
+) -> dict:
+    """Record a tombstone for deleted content.
+
+    Idempotent: if a tombstone for the same content_hash already exists,
+    the existing row is returned via an ON CONFLICT DO UPDATE no-op trick.
+    This lets the caller not care whether the content was tombstoned once
+    already (e.g. a user deleting the same memory twice).
+    """
+    content_hash = _compute_content_hash(content)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO memory_tombstones (content_hash, original_memory_id, reason)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (content_hash) DO UPDATE
+                SET created_at = memory_tombstones.created_at
+            RETURNING id, content_hash, original_memory_id, reason, created_at
+            """,
+            content_hash,
+            UUID(original_memory_id) if original_memory_id else None,
+            reason,
+        )
+        return _row_to_dict(row)
+
+
+async def is_tombstoned(content: str) -> bool:
+    """True if this exact content (normalized) has a tombstone on record.
+
+    Called by the write-queue dedup classifier before the expensive
+    similarity search. Single indexed lookup on the unique content_hash
+    index — cheap and bounded.
+    """
+    content_hash = _compute_content_hash(content)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        exists = await conn.fetchval(
+            "SELECT 1 FROM memory_tombstones WHERE content_hash = $1 LIMIT 1",
+            content_hash,
+        )
+        return exists is not None
+
+
+async def get_tombstone(content: str) -> dict | None:
+    """Fetch the full tombstone row by content. Useful for dashboards and
+    post-mortem when you want to know WHY a write classified as NOOP."""
+    content_hash = _compute_content_hash(content)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, content_hash, original_memory_id, reason, created_at
+            FROM memory_tombstones WHERE content_hash = $1
+            """,
+            content_hash,
+        )
+        return _row_to_dict(row) if row else None
+
+
 async def delete_memory(
     memory_id: str,
     *,
@@ -527,6 +607,15 @@ async def delete_memory(
     _change_type: str | None = None,
     _change_reason: str | None = None,
 ) -> bool:
+    """Delete a memory AND record a tombstone so its content can't be
+    silently re-ingested by the write queue.
+
+    Phase H (v6.10, 2026-04-12): the tombstone is written INSIDE the
+    same transaction as the DELETE. Either both happen or neither, so
+    the DB never sits in a "memory deleted but re-ingestible" state.
+    ON CONFLICT on content_hash is a no-op that preserves the earliest
+    tombstone creation timestamp.
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -537,11 +626,37 @@ async def delete_memory(
                     change_type=_change_type or "manual_delete",
                     change_reason=_change_reason or "",
                 )
+
+            # Fetch content BEFORE the DELETE so we can tombstone it.
+            content_row = await conn.fetchrow(
+                "SELECT content FROM memories WHERE id = $1",
+                UUID(memory_id),
+            )
+            if content_row is None:
+                return False
+            content = content_row["content"]
+
             result = await conn.execute(
                 "DELETE FROM memories WHERE id = $1",
                 UUID(memory_id),
             )
-        deleted = result == "DELETE 1"
+            deleted = result == "DELETE 1"
+
+            if deleted:
+                # Tombstone inside the same transaction for atomicity.
+                content_hash = _compute_content_hash(content)
+                await conn.execute(
+                    """
+                    INSERT INTO memory_tombstones (content_hash, original_memory_id, reason)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (content_hash) DO UPDATE
+                        SET created_at = memory_tombstones.created_at
+                    """,
+                    content_hash,
+                    UUID(memory_id),
+                    _change_reason or _change_type or "manual_delete",
+                )
+
         if deleted:
             publish("memory_deleted", {"id": memory_id})
         return deleted

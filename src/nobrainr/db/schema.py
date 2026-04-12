@@ -643,6 +643,28 @@ DROP TRIGGER IF EXISTS trg_procedural_updated_at ON procedural_memories;
 CREATE TRIGGER trg_procedural_updated_at
     BEFORE UPDATE ON procedural_memories
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+-- ──────────────────────────────────────────────
+-- Memory tombstones (Phase H, 2026-04-12, v6.10)
+-- ──────────────────────────────────────────────
+-- doobidoo-inspired pattern: when a memory is deleted, record a hash
+-- of its content. The write-queue dedup classifier (decide_write_action)
+-- consults this table BEFORE doing similarity search + LLM decision —
+-- if the hash matches, it short-circuits to NOOP with reason='tombstoned'.
+-- This prevents re-ingestion of a memory the user explicitly deleted
+-- (e.g. same document re-crawled, same ChatGPT export re-imported, same
+-- document queue replay). The hash is stable across leading/trailing
+-- whitespace + case variations so near-duplicates hit too.
+CREATE TABLE IF NOT EXISTS memory_tombstones (
+    id                  uuid DEFAULT uuidv7() PRIMARY KEY,
+    content_hash        text NOT NULL UNIQUE,
+    original_memory_id  uuid,
+    reason              text NOT NULL DEFAULT 'manual_delete',
+    created_at          timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_tombstones_created
+    ON memory_tombstones (created_at DESC);
 """
 
 
