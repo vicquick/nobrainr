@@ -328,6 +328,24 @@ class Scheduler:
         from nobrainr.services.memory import store_memory_with_extraction
 
         logger.info("memory_write_worker started — draining memory_write_queue")
+
+        # Orphan reaper — Phase G (v6.9, 2026-04-12). When the previous
+        # container was killed mid-task (Coolify rotation, OOM, manual stop)
+        # any row claimed by that worker stayed in status='processing' with
+        # no heartbeat. The claim loop below only looks at 'pending' rows,
+        # so orphans would sit forever unless manually flipped back. Run a
+        # one-shot reset at startup so the new worker picks them up.
+        try:
+            orphaned = await write_queue.reset_stale_processing(stale_minutes=10)
+            if orphaned > 0:
+                logger.info(
+                    "memory_write_worker: recovered %d orphan row(s) from a previous worker crash",
+                    orphaned,
+                )
+        except Exception:
+            # A reaper failure should never block the worker from starting.
+            logger.exception("memory_write_worker: orphan reset failed (continuing)")
+
         while self._running:
             try:
                 row = await write_queue.claim_next_pending()
