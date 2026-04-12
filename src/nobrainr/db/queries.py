@@ -3203,6 +3203,132 @@ async def delete_procedural_memory(memory_id: str, *, hard: bool = False) -> boo
 
 
 # ──────────────────────────────────────────────
+# Related memories (Phase Q, v6.16, 2026-04-12)
+# ──────────────────────────────────────────────
+# Graphiti-inspired "graph expansion on retrieval". When a caller does
+# memory_search, optionally surface memories that share entities with
+# each result via a single batched query — one SQL round-trip for all
+# result IDs, window-function-ranked by importance per source so the
+# top-N per result is computed entirely server-side.
+
+
+async def get_related_memories_batch(
+    memory_ids: list[str],
+    *,
+    limit_per_memory: int = 3,
+) -> dict[str, list[dict]]:
+    """For each memory_id in ``memory_ids``, return the top-N memories
+    that share at least one entity via ``entity_memories``.
+
+    Single batched query — one DB round-trip regardless of
+    ``len(memory_ids)``. Uses a window function
+    (``ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY importance DESC)``)
+    so the top-N-per-source is computed entirely server-side.
+
+    The returned dict maps each input memory_id (as a string) to a list
+    of related memories (possibly empty). Self-references are filtered
+    out (a memory cannot be related to itself).
+
+    Callers like the MCP ``memory_search`` tool invoke this after the
+    main search + rerank pipeline to attach a ``related_memories`` field
+    per result — the Graphiti "graph expansion on retrieval" pattern
+    at effectively zero extra cost for reasonable limit values.
+    """
+    if not memory_ids:
+        return {}
+
+    # Normalize input to UUID objects + silently drop garbage
+    uuids: list[UUID] = []
+    string_keys: list[str] = []
+    for mid in memory_ids:
+        try:
+            uuids.append(UUID(mid))
+            string_keys.append(str(mid))
+        except (ValueError, AttributeError):
+            continue
+
+    if not uuids:
+        return {}
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            WITH source_entities AS (
+                SELECT em.memory_id AS source_id, em.entity_id
+                FROM entity_memories em
+                WHERE em.memory_id = ANY($1::uuid[])
+            ),
+            related_with_counts AS (
+                -- Dedupe (source_id, related_id) pairs via GROUP BY.
+                -- Without this, a memory that shares MULTIPLE entities
+                -- with a source would appear in the join multiple times
+                -- and get multiple ranks — a real bug observed in the
+                -- 2026-04-12 live dry-run.
+                -- The count itself is also the best ranking signal:
+                -- more shared entities = more "related".
+                SELECT
+                    se.source_id,
+                    m.id AS related_id,
+                    m.content,
+                    m.summary,
+                    m.category,
+                    m.tags,
+                    m.importance,
+                    m.created_at,
+                    count(*) AS shared_entity_count
+                FROM source_entities se
+                JOIN entity_memories em2 ON em2.entity_id = se.entity_id
+                JOIN memories m ON m.id = em2.memory_id
+                WHERE m.id != se.source_id
+                  AND m.embedding IS NOT NULL
+                GROUP BY
+                    se.source_id, m.id, m.content, m.summary, m.category,
+                    m.tags, m.importance, m.created_at
+            ),
+            related_ranked AS (
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY source_id
+                        ORDER BY shared_entity_count DESC,
+                                 importance DESC,
+                                 created_at DESC
+                    ) AS rank
+                FROM related_with_counts
+            )
+            SELECT source_id, related_id, content, summary, category,
+                   tags, importance, created_at, shared_entity_count
+            FROM related_ranked
+            WHERE rank <= $2
+            ORDER BY source_id, rank
+            """,
+            uuids,
+            limit_per_memory,
+        )
+
+    # Group by source_id in Python. Every input key lands in the result
+    # dict (with an empty list if no rows matched) so callers don't have
+    # to do None-vs-missing branching.
+    result: dict[str, list[dict]] = {k: [] for k in string_keys}
+    for row in rows:
+        source_key = str(row["source_id"])
+        if source_key not in result:
+            result[source_key] = []
+        related = {
+            "id": str(row["related_id"]),
+            "content": row["content"],
+            "summary": row["summary"],
+            "category": row["category"],
+            "tags": row["tags"],
+            "importance": round(float(row["importance"]), 4) if row["importance"] is not None else None,
+            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+            "shared_entity_count": int(row["shared_entity_count"]),
+        }
+        result[source_key].append(related)
+    return result
+
+
+# ──────────────────────────────────────────────
 # User profile layers (Phase M, v6.14, 2026-04-12)
 # ──────────────────────────────────────────────
 # Supermemory-inspired dual-layer user profile: "static" (high-importance

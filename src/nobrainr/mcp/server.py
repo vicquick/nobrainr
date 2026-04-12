@@ -463,6 +463,7 @@ async def memory_search(
     date_from: str | None = None,
     date_to: str | None = None,
     auto_route: bool = False,
+    include_related: bool = False,
 ) -> list[dict]:
     """Semantic search across all memories, ranked by relevance (similarity + recency + importance).
 
@@ -655,6 +656,28 @@ async def memory_search(
         row["search_trace_id"] = trace_id
         row["search_rank"] = rank
         row["search_query"] = query
+
+    # Related-memories expansion (Phase Q, v6.16) — Graphiti-style graph
+    # expansion on retrieval. Attach a ``related_memories`` field to each
+    # result listing top-3 memories that share entities with it. One
+    # batched SQL query with a window function, so this is O(1) extra
+    # round-trips regardless of limit. Opt-in because not every caller
+    # wants the extra payload.
+    if include_related and results:
+        try:
+            related_map = await queries.get_related_memories_batch(
+                [r["id"] for r in results],
+                limit_per_memory=3,
+            )
+            for row in results:
+                row["related_memories"] = related_map.get(row["id"], [])
+        except Exception:
+            import logging
+            logging.getLogger("nobrainr").exception(
+                "Related-memories expansion failed, returning results without it"
+            )
+            for row in results:
+                row["related_memories"] = []
 
     return results
 
