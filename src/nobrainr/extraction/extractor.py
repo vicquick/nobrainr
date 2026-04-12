@@ -78,7 +78,23 @@ Example output:
 """
 
 
-MAX_CONTENT_CHARS = 6000  # ~1500 tokens — fits in num_ctx=8192 with prompt + neighborhood context
+# Conservative content budget. The old 6000-char limit assumed ~4 chars/token,
+# but dense code and non-ASCII content tokenizes at 1-2 chars/token. With
+# system_prompt (~250 tok) + known_entities (~500 tok) + structured-output
+# schema overhead (~200 tok), the user content budget for num_ctx=8192 is
+# approximately 7200 tokens ≈ 4000 chars at the worst-case 1.8 chars/token.
+# The 2026-04-12 overnight monitoring loop caught a persistent 400 Bad
+# Request storm from llama-server when the old 6000-char limit was in play.
+MAX_CONTENT_CHARS = 4000
+
+# Cap each known-entity description to avoid bloating the neighborhood
+# context. 15 entities × 120 chars = ~1800 chars ≈ ~500 tokens — safe.
+_MAX_ENTITY_DESC_CHARS = 120
+
+# Hard cap on the assembled user prompt (content + neighborhood). If the
+# combined text still exceeds this after per-field truncation, we truncate
+# the tail. This is the defense-in-depth guard that the old code lacked.
+_MAX_USER_PROMPT_CHARS = 5500
 
 
 async def extract_entities(
@@ -101,8 +117,8 @@ async def extract_entities(
     user_parts = []
     if known_entities:
         entity_lines = []
-        for e in known_entities[:15]:  # cap to avoid blowing context
-            desc = e.get("description", "")
+        for e in known_entities[:15]:  # cap count to avoid blowing context
+            desc = (e.get("description") or "")[:_MAX_ENTITY_DESC_CHARS]
             entity_lines.append(f"  - {e['name']} ({e['entity_type']}){': ' + desc if desc else ''}")
         user_parts.append(
             "Known entities already in the graph (reuse these names if they appear):\n"
@@ -111,6 +127,11 @@ async def extract_entities(
         )
     user_parts.append(f"Extract entities and relationships from this memory:\n\n{text}")
     user_prompt = "\n".join(user_parts)
+
+    # Defense-in-depth: if the assembled prompt still exceeds the hard cap
+    # (e.g. because known_entities had very long names), truncate the tail.
+    if len(user_prompt) > _MAX_USER_PROMPT_CHARS:
+        user_prompt = user_prompt[:_MAX_USER_PROMPT_CHARS] + "\n…[truncated]"
 
     try:
         parsed = await ollama_chat(
