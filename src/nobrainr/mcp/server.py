@@ -2750,6 +2750,7 @@ async def fact_search(
     query: str,
     limit: int = 10,
     threshold: float = 0.3,
+    date_asof: str | None = None,
 ) -> dict:
     """Search atomic facts extracted from memories (Mem0-style).
 
@@ -2757,16 +2758,48 @@ async def fact_search(
     They are independently embedded and searchable, making them ideal for
     precise factual lookups.
 
+    Phase K (v6.15, 2026-04-12): adds bi-temporal validity filtering.
+    By default returns only CURRENTLY valid facts (the ones with
+    ``valid_to IS NULL``) — superseded facts stay in the table for
+    audit but don't pollute normal search results. Pass ``date_asof``
+    to do a point-in-time query ("what did we believe on date X") —
+    returns facts that were valid at that timestamp.
+
     Args:
         query: Search query for matching facts.
         limit: Maximum number of facts to return (default 10).
         threshold: Minimum similarity threshold (default 0.3).
+        date_asof: ISO 8601 timestamp for a point-in-time query.
+            Accepts "2026-03-01", "2026-03-01T12:00:00Z", or
+            "2026-03-01T12:00:00+00:00". If None (default), returns
+            only currently-valid facts.
     """
+    from datetime import datetime
+
+    parsed_asof = None
+    if date_asof:
+        try:
+            s = date_asof.strip()
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            parsed_asof = datetime.fromisoformat(s)
+        except (ValueError, AttributeError):
+            parsed_asof = None  # Degrade to current-valid on garbage input
+
     emb = await embed_text(query)
     facts = await queries.search_facts(
-        emb, limit=limit, threshold=threshold, text_query=query
+        emb,
+        limit=limit,
+        threshold=threshold,
+        text_query=query,
+        date_asof=parsed_asof,
     )
-    return {"facts": facts, "total": len(facts), "query": query}
+    return {
+        "facts": facts,
+        "total": len(facts),
+        "query": query,
+        "date_asof": parsed_asof.isoformat() if parsed_asof else None,
+    }
 
 
 # ──────────────────────────────────────────────
