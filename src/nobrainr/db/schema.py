@@ -212,6 +212,14 @@ CREATE INDEX IF NOT EXISTS idx_entity_relations_source
 CREATE INDEX IF NOT EXISTS idx_entity_relations_target
     ON entity_relations (target_entity_id);
 
+-- Phase K: Priority cascade tiers for facts
+-- tier: 1=canonical (verified, overrides vector), 2=historical, 3=derived (default)
+ALTER TABLE entity_relations ADD COLUMN IF NOT EXISTS tier smallint DEFAULT 3;
+ALTER TABLE entity_relations ADD COLUMN IF NOT EXISTS verified_at timestamptz;
+ALTER TABLE entity_relations ADD COLUMN IF NOT EXISTS verified_by text;
+CREATE INDEX IF NOT EXISTS idx_entity_relations_tier
+    ON entity_relations (tier) WHERE tier = 1;
+
 -- ──────────────────────────────────────────────
 -- Agent events (activity log)
 -- ──────────────────────────────────────────────
@@ -671,6 +679,13 @@ ALTER TABLE memory_facts
 -- valid on date X" (valid_from <= X AND valid_to > X) queries.
 CREATE INDEX IF NOT EXISTS idx_memory_facts_valid_range
     ON memory_facts (valid_from, valid_to);
+
+-- Phase K: Priority tier for memory_facts (1=canonical, 2=historical, 3=derived)
+ALTER TABLE memory_facts ADD COLUMN IF NOT EXISTS tier smallint DEFAULT 3;
+ALTER TABLE memory_facts ADD COLUMN IF NOT EXISTS verified_at timestamptz;
+ALTER TABLE memory_facts ADD COLUMN IF NOT EXISTS verified_by text;
+CREATE INDEX IF NOT EXISTS idx_memory_facts_tier
+    ON memory_facts (tier) WHERE tier = 1;
 
 -- ──────────────────────────────────────────────
 -- Memory tombstones (Phase H, 2026-04-12, v6.10)
