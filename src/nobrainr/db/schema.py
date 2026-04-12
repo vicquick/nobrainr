@@ -645,6 +645,34 @@ CREATE TRIGGER trg_procedural_updated_at
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 -- ──────────────────────────────────────────────
+-- Bi-temporal validity windows on memory_facts (Phase K, v6.15, 2026-04-12)
+-- ──────────────────────────────────────────────
+-- Zep / Graphiti pattern: every fact carries two timestamps —
+-- valid_from (when we started believing it) and valid_to (when we
+-- stopped). Supersession becomes a soft-delete: set the old fact's
+-- valid_to=now() and INSERT a new fact with valid_from=now(), rather
+-- than physically replacing the row. This unlocks point-in-time
+-- queries ("what did we believe on date X?") while keeping the current
+-- view clean by filtering to valid_to IS NULL.
+--
+-- Additive migration — ADD COLUMN with DEFAULT now() + nullable
+-- valid_to is metadata-only on Postgres 11+ so it applies instantly
+-- even to large tables. Existing rows get valid_from=now() on
+-- migration (they become "valid from the moment we added the column"),
+-- which is the right default because we have no earlier truth to
+-- reference.
+ALTER TABLE memory_facts
+    ADD COLUMN IF NOT EXISTS valid_from timestamptz NOT NULL DEFAULT now();
+ALTER TABLE memory_facts
+    ADD COLUMN IF NOT EXISTS valid_to timestamptz;
+
+-- Composite index on the validity window for point-in-time lookups.
+-- Covers both "what is valid now" (valid_to IS NULL) and "what was
+-- valid on date X" (valid_from <= X AND valid_to > X) queries.
+CREATE INDEX IF NOT EXISTS idx_memory_facts_valid_range
+    ON memory_facts (valid_from, valid_to);
+
+-- ──────────────────────────────────────────────
 -- Memory tombstones (Phase H, 2026-04-12, v6.10)
 -- ──────────────────────────────────────────────
 -- doobidoo-inspired pattern: when a memory is deleted, record a hash

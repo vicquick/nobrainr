@@ -1807,15 +1807,42 @@ async def search_facts(
     limit: int = 10,
     threshold: float = 0.3,
     text_query: str | None = None,
+    date_asof: datetime | None = None,
 ) -> list[dict]:
     """Search atomic facts by embedding similarity, optionally with text matching.
 
     Applies the same embedding_model safeguard as memories to prevent
     cross-model garbage during re-embed migrations. Uses the alias list so
     label drift (cpu/gpu, :0.6b, :latest) never hides valid facts.
+
+    Phase K (v6.15, 2026-04-12): adds bi-temporal filtering on the
+    ``valid_from`` / ``valid_to`` columns.
+      - ``date_asof=None`` (default): return only CURRENTLY valid facts
+        (``valid_to IS NULL``). This is a behavior change from pre-K
+        where superseded facts would still surface — they now stay in
+        the table for audit but are hidden from normal searches.
+      - ``date_asof=<datetime>``: point-in-time query — return facts
+        that were valid AT that timestamp (``valid_from <= date_asof``
+        AND (``valid_to IS NULL`` OR ``valid_to > date_asof``)). This
+        is the Zep / Graphiti "what did we believe on date X" pattern.
     """
     pool = await get_pool()
     model_aliases = list(_cfg.embedding_model_aliases or [_cfg.embedding_model])
+
+    # Bi-temporal WHERE fragment + its param list. Built once and
+    # injected into each of the three query variants so the vector-only,
+    # hybrid, and hybrid-fallback paths all share the same temporal
+    # semantics.
+    if date_asof is None:
+        temporal_clause = " AND f.valid_to IS NULL"
+        temporal_params: list = []
+    else:
+        temporal_clause = (
+            " AND f.valid_from <= ${N1}"
+            " AND (f.valid_to IS NULL OR f.valid_to > ${N2})"
+        )
+        temporal_params = [date_asof, date_asof]
+
     async with pool.acquire() as conn:
         # Check if table exists and has data
         has_facts = await conn.fetchval(
@@ -1826,48 +1853,64 @@ async def search_facts(
 
         if text_query:
             # Hybrid: vector + text match, multilingual via unaccent + trigram
+            # Param slots: $1=embedding, $2=limit, $3=text, $4=model_aliases,
+            # then $5, $6 for temporal bounds when date_asof is set.
+            hybrid_temporal = temporal_clause.replace("{N1}", "5").replace("{N2}", "6")
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT f.id, f.content, f.memory_id, f.quality_score, f.created_at,
+                       f.valid_from, f.valid_to,
                        1 - (f.embedding::halfvec(1024) <=> $1::halfvec(1024)) as similarity
                 FROM memory_facts f
                 WHERE f.embedding IS NOT NULL
                   AND (f.embedding_model IS NULL OR f.embedding_model = ANY($4::text[]))
                   AND LENGTH(f.content) > 30
                   AND nb_unaccent(f.content) ILIKE '%' || nb_unaccent($3) || '%'
+                  {hybrid_temporal}
                 ORDER BY f.embedding::halfvec(1024) <=> $1::halfvec(1024)
                 LIMIT $2
                 """,
-                embedding, limit * 2, text_query, model_aliases,
+                embedding, limit * 2, text_query, model_aliases, *temporal_params,
             )
             if len(rows) < limit:
-                # Fall back to pure vector if text match too few
+                # Fall back to pure vector if text match too few.
+                # Param slots: $1=embedding, $2=limit, $3=model_aliases,
+                # then $4, $5 for temporal bounds.
+                vec_fallback_temporal = temporal_clause.replace("{N1}", "4").replace("{N2}", "5")
                 rows = await conn.fetch(
-                    """
+                    f"""
                     SELECT f.id, f.content, f.memory_id, f.quality_score, f.created_at,
+                           f.valid_from, f.valid_to,
                            1 - (f.embedding::halfvec(1024) <=> $1::halfvec(1024)) as similarity
                     FROM memory_facts f
                     WHERE f.embedding IS NOT NULL
                       AND (f.embedding_model IS NULL OR f.embedding_model = ANY($3::text[]))
                       AND LENGTH(f.content) > 30
+                      {vec_fallback_temporal}
                     ORDER BY f.embedding::halfvec(1024) <=> $1::halfvec(1024)
                     LIMIT $2
                     """,
-                    embedding, limit, model_aliases,
+                    embedding, limit, model_aliases, *temporal_params,
                 )
         else:
+            # Pure vector path.
+            # Param slots: $1=embedding, $2=limit, $3=model_aliases,
+            # then $4, $5 for temporal bounds.
+            vec_temporal = temporal_clause.replace("{N1}", "4").replace("{N2}", "5")
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT f.id, f.content, f.memory_id, f.quality_score, f.created_at,
+                       f.valid_from, f.valid_to,
                        1 - (f.embedding::halfvec(1024) <=> $1::halfvec(1024)) as similarity
                 FROM memory_facts f
                 WHERE f.embedding IS NOT NULL
                   AND (f.embedding_model IS NULL OR f.embedding_model = ANY($3::text[]))
                   AND LENGTH(f.content) > 30
+                  {vec_temporal}
                 ORDER BY f.embedding::halfvec(1024) <=> $1::halfvec(1024)
                 LIMIT $2
                 """,
-                embedding, limit, model_aliases,
+                embedding, limit, model_aliases, *temporal_params,
             )
         results = [
             {**_row_to_dict(r), "similarity": float(r["similarity"])}
@@ -1881,6 +1924,109 @@ async def search_facts(
                 dynamic_floor = top_sim * 0.5
                 results = [r for r in results if r["similarity"] >= dynamic_floor]
         return results
+
+
+async def supersede_fact(
+    fact_id: str,
+    *,
+    new_content: str | None = None,
+    new_memory_id: str | None = None,
+    new_embedding: list[float] | None = None,
+    reason: str | None = None,
+) -> dict | None:
+    """Supersede a fact — set its valid_to=now() and optionally insert a
+    replacement with valid_from=now().
+
+    Phase K (v6.15): the bi-temporal equivalent of DELETE-and-INSERT for
+    facts. The old fact stays in the table (audit trail, point-in-time
+    queries) but is hidden from current-state searches (which filter to
+    ``valid_to IS NULL``).
+
+    If ``new_content`` is provided, a replacement fact is INSERTed in
+    the same transaction so the supersession is atomic. If only a
+    ``reason`` is given without a replacement, the old fact is just
+    marked as no-longer-valid (a "retraction" rather than a replacement).
+
+    Args:
+        fact_id: UUID of the fact to supersede.
+        new_content: If provided, insert a replacement fact with this
+            content and valid_from=now().
+        new_memory_id: Parent memory UUID for the replacement. If None,
+            inherits from the superseded fact.
+        new_embedding: Pre-computed embedding for the replacement. If
+            None, the replacement will have NULL embedding until the
+            re-embed scheduler picks it up.
+        reason: Free-form reason, stored in a comment log (not yet
+            persisted — future schema addition).
+
+    Returns:
+        ``{"superseded_id": str, "new_id": str | None, "reason": str | None}``
+        or None if the fact_id was not found / already superseded.
+    """
+    try:
+        old_uuid = UUID(fact_id)
+    except (ValueError, AttributeError):
+        return None
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # Fetch the old fact (for memory_id inheritance + existence check).
+            # Lock the row so a concurrent supersede doesn't race.
+            old = await conn.fetchrow(
+                """
+                SELECT id, memory_id, content
+                FROM memory_facts
+                WHERE id = $1
+                  AND valid_to IS NULL
+                FOR UPDATE
+                """,
+                old_uuid,
+            )
+            if old is None:
+                return None
+
+            # Mark the old fact as no-longer-valid.
+            await conn.execute(
+                """
+                UPDATE memory_facts
+                SET valid_to = now()
+                WHERE id = $1
+                """,
+                old_uuid,
+            )
+
+            new_id = None
+            if new_content is not None:
+                # Insert a replacement fact. valid_from defaults to now(),
+                # valid_to stays NULL (currently valid).
+                parent_memory_id = (
+                    UUID(new_memory_id)
+                    if new_memory_id
+                    else old["memory_id"]
+                )
+                embedding_param = None
+                if new_embedding is not None:
+                    embedding_param = np.array(new_embedding, dtype=np.float32)
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO memory_facts (memory_id, content, embedding,
+                                              embedding_model, created_at)
+                    VALUES ($1, $2, $3, $4, now())
+                    RETURNING id
+                    """,
+                    parent_memory_id,
+                    new_content,
+                    embedding_param,
+                    _cfg.embedding_model,
+                )
+                new_id = str(row["id"])
+
+    return {
+        "superseded_id": str(old_uuid),
+        "new_id": new_id,
+        "reason": reason,
+    }
 
 
 async def get_memory_facts(memory_id: str) -> list[dict]:
