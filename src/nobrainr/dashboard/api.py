@@ -77,11 +77,46 @@ async def api_graph(request: Request) -> JSONResponse:
 
     data = await queries.get_all_entities_for_graph(min_connections=min_conn)
 
-    # Cap to top N by mention_count before any layout work
+    # Cap node count — but keep organic structure by selecting hubs + their neighbors.
+    # Pure top-N by mention_count = all hubs, avg_deg ~16, spring_layout rings.
+    # Star-expand: take top hub nodes, add all immediate neighbors up to cap.
+    # This gives dense cores + sparse periphery = organic Louvain blob shapes.
     if len(data["nodes"]) > max_nodes:
+        # Build adjacency from edges
+        from collections import defaultdict as _dd
+        _adj: dict = _dd(set)
+        for e in data["edges"]:
+            _adj[e["data"]["source"]].add(e["data"]["target"])
+            _adj[e["data"]["target"]].add(e["data"]["source"])
+
+        # Sort all nodes by mention_count
         data["nodes"].sort(key=lambda n: n["data"].get("mention_count") or 0, reverse=True)
-        kept_ids = {n["data"]["id"] for n in data["nodes"][:max_nodes]}
-        data["nodes"] = data["nodes"][:max_nodes]
+        all_node_map = {n["data"]["id"]: n for n in data["nodes"]}
+
+        # Phase 1: seed hubs (top 25% or up to 800)
+        n_hubs = min(800, max_nodes // 4)
+        hub_ids: set[str] = {n["data"]["id"] for n in data["nodes"][:n_hubs]}
+
+        # Phase 2: add neighbors of hubs until cap reached
+        kept_ids: set[str] = set(hub_ids)
+        for hub_id in hub_ids:
+            if len(kept_ids) >= max_nodes:
+                break
+            for nbr in _adj[hub_id]:
+                if nbr in all_node_map:
+                    kept_ids.add(nbr)
+                    if len(kept_ids) >= max_nodes:
+                        break
+
+        # Fill remaining slots with next highest mention_count if still under cap
+        if len(kept_ids) < max_nodes:
+            for n in data["nodes"]:
+                if n["data"]["id"] not in kept_ids:
+                    kept_ids.add(n["data"]["id"])
+                    if len(kept_ids) >= max_nodes:
+                        break
+
+        data["nodes"] = [n for n in data["nodes"] if n["data"]["id"] in kept_ids]
         data["edges"] = [e for e in data["edges"]
                          if e["data"]["source"] in kept_ids and e["data"]["target"] in kept_ids]
 
