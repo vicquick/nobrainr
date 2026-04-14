@@ -125,20 +125,6 @@ const TYPE_COLORS: Record<string, string> = {
   organization: '#7d92b0',
 }
 
-// 24-color palette for community coloring — perceptually distinct on dark bg
-const COMMUNITY_PALETTE = [
-  '#7b8ec8', '#6ba87a', '#c46b6b', '#c4a46a', '#9585c4',
-  '#6b9e8f', '#c4886b', '#7d92b0', '#a8786b', '#88b06b',
-  '#b585c4', '#6b9ec4', '#c4c46a', '#b0606a', '#6bc4a4',
-  '#c490a0', '#8a9070', '#7070c4', '#c4a490', '#70b0a0',
-  '#b0a060', '#8060b0', '#60a0b0', '#c07060',
-]
-
-function communityColor(communityId: number | null | undefined): string {
-  if (communityId == null) return '#6b7280'
-  return COMMUNITY_PALETTE[Math.abs(communityId) % COMMUNITY_PALETTE.length]
-}
-
 const entityTypes = Object.keys(TYPE_COLORS)
 const { mobile } = useDisplay()
 const chatStore = useChatStore()
@@ -320,7 +306,7 @@ function initSigma() {
       x: node.data.x,
       y: node.data.y,
       size: Math.max(3, Math.min(18, Math.sqrt(mc) * 2.8)),
-      color: communityColor(node.data.community),
+      color: TYPE_COLORS[node.data.type] || '#6b7280',
       labelColor: 'rgba(255, 255, 255, 0.7)',
       nodeType: node.data.type,
       community: node.data.community,
@@ -337,7 +323,7 @@ function initSigma() {
         graph.addEdge(edge.data.source, edge.data.target, {
           label: edge.data.label,
           size: 1,
-          color: 'rgba(255, 255, 255, 0.045)',
+          color: 'rgba(255, 255, 255, 0.008)',
         })
       } catch {
         // duplicate edge
@@ -380,7 +366,7 @@ function initSigma() {
 
     // Defaults
     defaultNodeColor: '#6b7280',
-    defaultEdgeColor: 'rgba(255, 255, 255, 0.045)',
+    defaultEdgeColor: 'rgba(255, 255, 255, 0.008)',
     stagePadding: 40,
     zIndex: true,
     enableNodeHoverHighlighting: false,
@@ -501,11 +487,9 @@ function initSigma() {
         return res
       }
 
-      // Default overview: show intra-community edges, hide cross-community clutter
+      // Default overview: only show edges between hub nodes
       const [src, tgt] = graph!.extremities(edge)
-      const srcCommunity = graph!.getNodeAttribute(src, 'community')
-      const tgtCommunity = graph!.getNodeAttribute(tgt, 'community')
-      if (srcCommunity !== tgtCommunity || srcCommunity == null) {
+      if (!hubNodes.has(src) || !hubNodes.has(tgt)) {
         res.hidden = true
       }
 
