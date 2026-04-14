@@ -67,7 +67,23 @@ async def api_graph(request: Request) -> JSONResponse:
         min_conn = max(0, int(request.query_params.get("min_connections", "1")))
     except ValueError:
         min_conn = 1
+
+    # Cap node count for performance. Default: top 3500 by mention_count.
+    # 38k+ nodes → 3.5k nodes = 10x faster layout + smooth Sigma rendering.
+    try:
+        max_nodes = int(request.query_params.get("max_nodes", "3500"))
+    except ValueError:
+        max_nodes = 3500
+
     data = await queries.get_all_entities_for_graph(min_connections=min_conn)
+
+    # Cap to top N by mention_count before any layout work
+    if len(data["nodes"]) > max_nodes:
+        data["nodes"].sort(key=lambda n: n["data"].get("mention_count") or 0, reverse=True)
+        kept_ids = {n["data"]["id"] for n in data["nodes"][:max_nodes]}
+        data["nodes"] = data["nodes"][:max_nodes]
+        data["edges"] = [e for e in data["edges"]
+                         if e["data"]["source"] in kept_ids and e["data"]["target"] in kept_ids]
 
     # Filter to connected nodes only (nodes with at least one edge)
     connected_only = request.query_params.get("connected_only", "true").lower() != "false"
