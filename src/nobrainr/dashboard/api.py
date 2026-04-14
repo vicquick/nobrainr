@@ -37,7 +37,7 @@ def _valid_uuid(value: str) -> bool:
         return False
 
 
-_GRAPH_CACHE_PATH = "/tmp/nobrainr_graph_cache.json"
+_GRAPH_CACHE_PATH = "/app/graph_cache/graph.json"
 
 
 async def api_graph(request: Request) -> JSONResponse:
@@ -186,7 +186,7 @@ async def api_graph(request: Request) -> JSONResponse:
     return JSONResponse(data)
 
 
-_COMMUNITY_CACHE_PATH = "/tmp/nobrainr_community_graph_cache.json"
+_COMMUNITY_CACHE_PATH = "/app/graph_cache/communities.json"
 
 
 async def api_graph_communities(request: Request) -> JSONResponse:
