@@ -161,8 +161,8 @@ function drawLabelWithBg(
   const size = settings.labelSize
   const font = settings.labelFont
   const weight = settings.labelWeight
-  const color = data.labelColor || 'rgba(255, 255, 255, 0.7)'
-  const bgColor = data.labelBgColor || 'rgba(10, 10, 14, 0.8)'
+  const color = data.labelColor || 'rgba(255, 255, 255, 0.88)'
+  const bgColor = data.labelBgColor || 'rgba(10, 10, 14, 0.75)'
 
   context.font = `${weight} ${size}px ${font}`
   const textWidth = context.measureText(data.label).width
@@ -356,9 +356,9 @@ function initSigma() {
     labelSize: 11,
     labelFont: '"Inter", system-ui, sans-serif',
     labelWeight: '500',
-    labelDensity: 0.07,
-    labelGridCellSize: 80,
-    labelRenderedSizeThreshold: 8,
+    labelDensity: 0.12,
+    labelGridCellSize: 100,
+    labelRenderedSizeThreshold: 5,
 
     // Defaults
     defaultNodeColor: '#6b7280aa',
@@ -388,8 +388,8 @@ function initSigma() {
         } else if (focusedNeighbors.has(node)) {
           res.zIndex = 1
           res.forceLabel = true
-          res.labelColor = '#000000'
-          res.labelBgColor = 'rgba(255, 255, 255, 0.85)'
+          res.labelColor = 'rgba(255, 255, 255, 0.92)'
+          res.labelBgColor = 'rgba(10, 10, 14, 0.82)'
         } else {
           res.color = 'rgba(60, 60, 70, 0.15)'
           res.size = 1.5
@@ -409,8 +409,8 @@ function initSigma() {
         } else if (chatFocusedNeighbors.has(node)) {
           res.zIndex = 1
           res.forceLabel = true
-          res.labelColor = '#000000'
-          res.labelBgColor = 'rgba(255, 255, 255, 0.85)'
+          res.labelColor = 'rgba(255, 255, 255, 0.92)'
+          res.labelBgColor = 'rgba(10, 10, 14, 0.82)'
         } else {
           res.color = 'rgba(60, 60, 70, 0.15)'
           res.size = 1.5
