@@ -322,8 +322,8 @@ function initSigma() {
       try {
         graph.addEdge(edge.data.source, edge.data.target, {
           label: edge.data.label,
-          size: 1,
-          color: '#ffffff0d',
+          size: 0.8,
+          color: '#242438',
         })
       } catch {
         // duplicate edge
@@ -362,7 +362,7 @@ function initSigma() {
 
     // Defaults
     defaultNodeColor: '#6b7280aa',
-    defaultEdgeColor: '#ffffff0d',
+    defaultEdgeColor: '#242438',
     stagePadding: 40,
     zIndex: true,
     enableNodeHoverHighlighting: false,
@@ -381,10 +381,10 @@ function initSigma() {
       if (focusedNode) {
         if (node === focusedNode) {
           res.zIndex = 2
-          res.size = (res.size as number) * 1.4
+          res.size = (res.size as number) * 1.6
           res.forceLabel = true
-          res.labelColor = '#000000'
-          res.labelBgColor = 'rgba(255, 255, 255, 0.92)'
+          res.labelColor = 'rgba(255, 255, 255, 0.98)'
+          res.labelBgColor = 'rgba(8, 8, 16, 0.92)'
         } else if (focusedNeighbors.has(node)) {
           res.zIndex = 1
           res.forceLabel = true
@@ -402,10 +402,10 @@ function initSigma() {
       if (chatFocusedNodes.size > 0) {
         if (chatFocusedNodes.has(node)) {
           res.zIndex = 2
-          res.size = (res.size as number) * 1.4
+          res.size = (res.size as number) * 1.6
           res.forceLabel = true
-          res.labelColor = '#000000'
-          res.labelBgColor = 'rgba(255, 255, 255, 0.92)'
+          res.labelColor = 'rgba(255, 255, 255, 0.98)'
+          res.labelBgColor = 'rgba(8, 8, 16, 0.92)'
         } else if (chatFocusedNeighbors.has(node)) {
           res.zIndex = 1
           res.forceLabel = true
@@ -450,7 +450,7 @@ function initSigma() {
       // Click-focus: show only edges to focused node
       if (focusedNode) {
         if (graph!.extremities(edge).includes(focusedNode)) {
-          res.color = '#ffffff26'
+          res.color = '#5c5c8a'
           res.size = 1.5
           res.zIndex = 1
         } else {
@@ -463,7 +463,7 @@ function initSigma() {
       if (chatFocusedNodes.size > 0) {
         const [src, tgt] = graph!.extremities(edge)
         if (chatFocusedNodes.has(src) || chatFocusedNodes.has(tgt)) {
-          res.color = '#ffffff26'
+          res.color = '#5c5c8a'
           res.size = 1.5
           res.zIndex = 1
         } else {
@@ -478,7 +478,7 @@ function initSigma() {
         if (!searchMatches.has(src) || !searchMatches.has(tgt)) {
           res.hidden = true
         } else {
-          res.color = '#ffffff1a'
+          res.color = '#3a3a5c'
         }
         return res
       }
@@ -558,8 +558,8 @@ function initCommunitySigma() {
     if (graph.hasNode(edge.data.source) && graph.hasNode(edge.data.target)) {
       try {
         graph.addEdge(edge.data.source, edge.data.target, {
-          size: Math.max(1, Math.min(4, Math.sqrt(edge.data.weight) * 0.5)),
-          color: '#ffffff0f',
+          size: Math.max(0.8, Math.min(3, Math.sqrt(edge.data.weight) * 0.5)),
+          color: '#26263e',
         })
       } catch { /* dup */ }
     }
@@ -584,7 +584,7 @@ function initCommunitySigma() {
     labelGridCellSize: 120,
     labelRenderedSizeThreshold: 4,
     defaultNodeColor: '#6b7280',
-    defaultEdgeColor: '#ffffff0f',
+    defaultEdgeColor: '#26263e',
     stagePadding: 60,
     zIndex: true,
     enableNodeHoverHighlighting: false,
