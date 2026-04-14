@@ -106,8 +106,8 @@ class Settings(BaseSettings):
     chatgpt_distill_concurrency: int = 1
     chatgpt_distill_model: str = "qwen3.5:35b"
     # Fact extraction (NEW — Mem0-style atomic facts)
-    fact_extraction_interval_hours: float = 0.5  # 30min — high priority during initial backfill
-    fact_extraction_batch_size: int = 20
+    fact_extraction_interval_hours: float = 0.05  # 3min — aggressive during backfill
+    fact_extraction_batch_size: int = 200
     # Memory decay
     decay_interval_hours: float = 24.0
     decay_batch_size: int = 50
