@@ -3930,3 +3930,11 @@ def _affected(result: str) -> int:
     # asyncpg returns e.g. "UPDATE 42"
     parts = result.split()
     return int(parts[-1]) if parts else 0
+
+
+async def get_extraction_pending_count() -> int:
+    """Fast count of memories awaiting entity extraction."""
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT count(*) FROM memories WHERE extraction_status IS NULL OR extraction_status = 'failed'"
+        )

@@ -215,8 +215,7 @@ class Scheduler:
              settings.synthesis_interval_hours * 3600),
             ("chatgpt_distill", scheduler_jobs.chatgpt_distill,
              settings.chatgpt_distill_interval_hours * 3600),
-            ("fact_extraction", scheduler_jobs.fact_extraction,
-             settings.fact_extraction_interval_hours * 3600),
+            # fact_extraction runs via dedicated _run_extraction_loop (not here)
             ("contradiction_detection", scheduler_jobs.contradiction_detection,
              settings.contradiction_interval_hours * 3600),
             ("cross_machine_insights", scheduler_jobs.cross_machine_insights,
@@ -257,6 +256,9 @@ class Scheduler:
                     )
                 )
             )
+
+        # Dedicated extraction loop — runs continuously during backlog, idles when clear
+        self._tasks.append(asyncio.create_task(self._run_extraction_loop()))
 
         # Memory write queue worker — continuously drains memory_store
         # requests enqueued by the MCP tool. No initial delay: the queue
@@ -443,6 +445,53 @@ class Scheduler:
             # to acquire it before this job's next sleep→acquire cycle
             await asyncio.sleep(5)
             await asyncio.sleep(interval_seconds)
+
+    async def _run_extraction_loop(self) -> None:
+        """Dedicated extraction loop that runs continuously while backlog exists.
+
+        Unlike _run_periodic_llm, this loop skips the interval sleep when there
+        are pending memories — it grabs the GPU semaphore on every free cycle
+        to clear the backlog as fast as possible. Falls back to a normal interval
+        sleep when the queue is empty.
+        """
+        from nobrainr import scheduler_jobs
+        await asyncio.sleep(LLM_JOB_DELAYS.get("fact_extraction", 60))
+        idle_interval = settings.fact_extraction_interval_hours * 3600
+        job_timeout = LLM_JOB_TIMEOUT_OVERRIDES.get("fact_extraction", LLM_JOB_TIMEOUT)
+        while self._running:
+            try:
+                async with self._llm_semaphore:
+                    logger.info("Running LLM job: fact_extraction")
+                    result = await asyncio.wait_for(
+                        scheduler_jobs.fact_extraction(), timeout=job_timeout
+                    )
+                    await queries.log_scheduler_event("fact_extraction", result)
+                    logger.info("LLM job 'fact_extraction' completed: %s", result)
+            except asyncio.TimeoutError:
+                logger.warning("LLM job 'fact_extraction' timed out after %ds", job_timeout)
+                await queries.log_scheduler_event("fact_extraction", {
+                    "error": "timeout", "ran_at": datetime.now().isoformat(),
+                })
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("LLM job 'fact_extraction' failed")
+
+            # Fairness yield: always give other jobs a chance to acquire the semaphore
+            await asyncio.sleep(5)
+
+            # Check if there's still work — if yes, loop immediately instead of sleeping
+            try:
+                pending = await queries.get_extraction_pending_count()
+            except Exception:
+                pending = 1  # assume work exists on error
+
+            if pending > 0:
+                logger.debug("fact_extraction: %d pending, looping immediately", pending)
+                # No interval sleep — grab semaphore again ASAP
+            else:
+                logger.info("fact_extraction: backlog clear, sleeping %.0fs", idle_interval)
+                await asyncio.sleep(idle_interval)
 
     @staticmethod
     async def _job_maintenance() -> dict:
