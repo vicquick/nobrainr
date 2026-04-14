@@ -226,27 +226,36 @@ async def api_graph_communities(request: Request) -> JSONResponse:
             community_nodes[c].append(node["data"])
 
     # Build community meta-nodes
-    TYPE_COLORS = {
-        "person": "#7b8ec8", "project": "#6ba87a", "technology": "#9585c4",
-        "concept": "#c4a46a", "file": "#7a8290", "config": "#b09060",
-        "error": "#c46b6b", "location": "#6b9e8f", "organization": "#7d92b0",
-    }
+    COMMUNITY_PALETTE = [
+        "#7b8ec8", "#6ba87a", "#c46b6b", "#c4a46a", "#9585c4",
+        "#6b9e8f", "#c4886b", "#7d92b0", "#a8786b", "#88b06b",
+        "#b585c4", "#6b9ec4", "#c4c46a", "#b0606a", "#6bc4a4",
+        "#c490a0", "#8a9070", "#7070c4", "#c4a490", "#70b0a0",
+        "#b0a060", "#8060b0", "#60a0b0", "#c07060",
+    ]
     nodes = []
+    # Sort communities by size descending so stable palette assignment (largest = most distinct color)
+    sorted_community_ids = sorted(community_nodes.keys(), key=lambda c: -len(community_nodes[c]))
+    palette_index = {c_id: i for i, c_id in enumerate(sorted_community_ids)}
     for c_id, members in community_nodes.items():
         if len(members) < 3:
             continue
         # Centroid position
         cx = sum(m["x"] for m in members) / len(members)
         cy = sum(m["y"] for m in members) / len(members)
-        # Dominant type
+        # Dominant type (kept for metadata, not coloring)
         type_counts = defaultdict(int)
         for m in members:
             type_counts[m.get("type", "concept")] += 1
         dominant_type = max(type_counts, key=type_counts.get)
 
         meta = summary_map.get(c_id, {})
-        title = meta.get("title", f"Cluster {c_id}")
         top = community_top.get(c_id, [])
+        # Use LLM title if available, otherwise top entity names
+        title = meta.get("title") or (
+            ", ".join(e["name"] for e in top[:3]) if top else f"Cluster {c_id}"
+        )
+        color = COMMUNITY_PALETTE[palette_index.get(c_id, c_id) % len(COMMUNITY_PALETTE)]
 
         nodes.append({
             "data": {
@@ -257,7 +266,7 @@ async def api_graph_communities(request: Request) -> JSONResponse:
                 "y": cy,
                 "size": len(members),
                 "type": dominant_type,
-                "color": TYPE_COLORS.get(dominant_type, "#6b7280"),
+                "color": color,
                 "summary": meta.get("summary", ""),
                 "member_count": len(members),
                 "top_entities": top,
