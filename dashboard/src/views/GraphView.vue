@@ -114,15 +114,15 @@ import { useChatStore } from '@/stores/chat'
 import GraphSidePanel from '@/components/GraphSidePanel.vue'
 
 const TYPE_COLORS: Record<string, string> = {
-  person: '#5c7cfa',
-  project: '#2f9e44',
-  technology: '#7048e8',
-  concept: '#e67700',
-  file: '#6b7280',
-  config: '#d9480f',
-  error: '#e03131',
-  location: '#0ca678',
-  organization: '#1971c2',
+  person: '#5c7cfacc',
+  project: '#2f9e44cc',
+  technology: '#7048e8cc',
+  concept: '#e67700cc',
+  file: '#6b7280aa',
+  config: '#d9480fcc',
+  error: '#e03131cc',
+  location: '#0ca678cc',
+  organization: '#1971c2cc',
 }
 
 const entityTypes = Object.keys(TYPE_COLORS)
@@ -305,8 +305,8 @@ function initSigma() {
       label: node.data.label,
       x: node.data.x,
       y: node.data.y,
-      size: Math.max(3, Math.min(18, Math.sqrt(mc) * 2.8)),
-      color: TYPE_COLORS[node.data.type] || '#6b7280',
+      size: Math.max(2, Math.min(28, Math.pow(mc, 0.38) * 1.1)),
+      color: TYPE_COLORS[node.data.type] || '#6b7280aa',
       labelColor: 'rgba(255, 255, 255, 0.7)',
       nodeType: node.data.type,
       community: node.data.community,
@@ -323,7 +323,7 @@ function initSigma() {
         graph.addEdge(edge.data.source, edge.data.target, {
           label: edge.data.label,
           size: 1,
-          color: 'rgba(255, 255, 255, 0.008)',
+          color: 'rgba(255, 255, 255, 0.055)',
         })
       } catch {
         // duplicate edge
@@ -342,10 +342,6 @@ function initSigma() {
   })
 
   renderer = new Sigma(graph, sigmaContainer.value, {
-    // Node rendering — bordered circles for depth
-    defaultNodeType: 'bordered',
-    nodeProgramClasses: { bordered: BorderedNodeProgram },
-
     // Edge rendering — gl.LINES for performance
     defaultEdgeType: 'line',
     edgeProgramClasses: { line: EdgeLineProgram },
@@ -365,8 +361,8 @@ function initSigma() {
     labelRenderedSizeThreshold: 8,
 
     // Defaults
-    defaultNodeColor: '#6b7280',
-    defaultEdgeColor: 'rgba(255, 255, 255, 0.008)',
+    defaultNodeColor: '#6b7280aa',
+    defaultEdgeColor: 'rgba(255, 255, 255, 0.055)',
     stagePadding: 40,
     zIndex: true,
     enableNodeHoverHighlighting: false,
