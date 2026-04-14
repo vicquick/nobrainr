@@ -300,6 +300,38 @@ async def api_graph_communities(request: Request) -> JSONResponse:
                 }
             })
 
+    # Recompute positions using a dedicated spring layout on the meta-graph.
+    # Raw entity centroids cluster badly — the meta-graph needs its own layout
+    # so communities spread out proportionally to their sizes and connections.
+    import networkx as nx
+    import math as _math
+    meta_g = nx.Graph()
+    node_ids = [n["data"]["id"] for n in nodes]
+    sizes = {n["data"]["id"]: n["data"]["size"] for n in nodes}
+    for nid in node_ids:
+        meta_g.add_node(nid)
+    for e in edges:
+        meta_g.add_edge(e["data"]["source"], e["data"]["target"],
+                        weight=e["data"]["weight"])
+    if len(meta_g) > 1:
+        # Scale layout canvas proportional to largest community radius so
+        # big bubbles don't overlap.  Largest size ~839, smallest ~90.
+        max_size = max(sizes.values()) if sizes else 1
+        scale = _math.sqrt(max_size) * 12  # empirically good spread
+        pos = nx.spring_layout(
+            meta_g,
+            weight="weight",
+            scale=scale,
+            seed=42,
+            iterations=200,
+            k=scale * 0.6 / max(1, _math.sqrt(len(meta_g))),
+        )
+        for node in nodes:
+            nid = node["data"]["id"]
+            if nid in pos:
+                node["data"]["x"] = float(pos[nid][0])
+                node["data"]["y"] = float(pos[nid][1])
+
     result = {"nodes": nodes, "edges": edges}
 
     # Cache
