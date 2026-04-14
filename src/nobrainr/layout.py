@@ -29,10 +29,10 @@ logger = logging.getLogger("nobrainr")
 
 MERGE_THRESHOLD = 15  # communities smaller than this get merged
 
-# Performance tuning — reduced from original 300/80
-META_ITERATIONS_BASE = 150  # was 300
-COMMUNITY_ITERATIONS_BASE = 40  # was 80
-LARGE_COMMUNITY_THRESHOLD = 500  # use circular layout above this
+# Performance tuning
+META_ITERATIONS_BASE = 200
+COMMUNITY_ITERATIONS_BASE = 60
+LARGE_COMMUNITY_THRESHOLD = 5000  # only use circular layout for truly enormous communities
 
 
 def compute_graph_layout(
@@ -164,24 +164,32 @@ def compute_graph_layout(
 
         subgraph = G.subgraph(comm)
         # Scale inner layout: larger communities get more space
-        inner_scale = max(400, 180 * math.sqrt(len(comm)))
+        inner_scale = max(600, 260 * math.sqrt(len(comm)))
 
         # Very large communities: use circular (O(n) vs O(n*iters))
         if len(comm) > LARGE_COMMUNITY_THRESHOLD:
             pos = nx.circular_layout(subgraph, scale=inner_scale, center=(cx, cy))
         else:
-            # Adaptive iterations based on community size
-            local_iters = min(comm_iters, max(20, comm_iters * 100 // len(comm)))
+            # Adaptive iterations — larger communities need at least 50 to avoid ring artifacts
+            local_iters = max(50, min(comm_iters * 3, comm_iters * 150 // max(len(comm), 1)))
 
             try:
+                # Use spectral layout as seed — far better initial positions than random,
+                # avoids the ring formation that spring_layout gets stuck in on dense graphs
+                try:
+                    init_pos = nx.spectral_layout(subgraph, scale=inner_scale, center=(cx, cy))
+                except Exception:
+                    init_pos = None
                 pos = nx.spring_layout(
                     subgraph,
-                    k=3.0 / math.sqrt(max(len(comm), 1)),
+                    pos=init_pos,
+                    fixed=None,
+                    k=4.5 / math.sqrt(max(len(comm), 1)),
                     iterations=local_iters,
                     seed=42 + i,
                     scale=inner_scale,
                     center=(cx, cy),
-                    threshold=1e-3,  # Early termination
+                    threshold=5e-4,
                 )
             except Exception:
                 pos = nx.circular_layout(subgraph, scale=inner_scale, center=(cx, cy))
