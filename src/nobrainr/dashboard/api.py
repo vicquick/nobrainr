@@ -250,11 +250,15 @@ async def api_graph_communities(request: Request) -> JSONResponse:
         dominant_type = max(type_counts, key=type_counts.get)
 
         meta = summary_map.get(c_id, {})
-        top = community_top.get(c_id, [])
+        # Top entities from graph cache (by mention_count) — DB community_id
+        # doesn't match layout community_id so we can't use community_top here
+        top_members = sorted(members, key=lambda m: -(m.get("mention_count") or 0))[:5]
+        top = [
+            {"name": m["label"], "type": m.get("type", ""), "mentions": m.get("mention_count", 0)}
+            for m in top_members
+        ]
         # Use LLM title if available, otherwise top entity names
-        title = meta.get("title") or (
-            ", ".join(e["name"] for e in top[:3]) if top else f"Cluster {c_id}"
-        )
+        title = meta.get("title") or ", ".join(e["name"] for e in top[:3]) or f"Cluster {c_id}"
         color = COMMUNITY_PALETTE[palette_index.get(c_id, c_id) % len(COMMUNITY_PALETTE)]
 
         nodes.append({
