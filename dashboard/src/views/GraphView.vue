@@ -383,8 +383,8 @@ function initSigma() {
           res.zIndex = 2
           res.size = (res.size as number) * 1.6
           res.forceLabel = true
-          res.labelColor = 'rgba(255, 255, 255, 0.98)'
-          res.labelBgColor = 'rgba(8, 8, 16, 0.92)'
+          res.labelColor = '#000000'
+          res.labelBgColor = 'rgba(255, 255, 255, 0.95)'
         } else if (focusedNeighbors.has(node)) {
           res.zIndex = 1
           res.forceLabel = true
@@ -404,8 +404,8 @@ function initSigma() {
           res.zIndex = 2
           res.size = (res.size as number) * 1.6
           res.forceLabel = true
-          res.labelColor = 'rgba(255, 255, 255, 0.98)'
-          res.labelBgColor = 'rgba(8, 8, 16, 0.92)'
+          res.labelColor = '#000000'
+          res.labelBgColor = 'rgba(255, 255, 255, 0.95)'
         } else if (chatFocusedNeighbors.has(node)) {
           res.zIndex = 1
           res.forceLabel = true
