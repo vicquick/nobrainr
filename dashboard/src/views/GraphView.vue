@@ -323,7 +323,7 @@ function initSigma() {
         graph.addEdge(edge.data.source, edge.data.target, {
           label: edge.data.label,
           size: 1,
-          color: 'rgba(255, 255, 255, 0.055)',
+          color: '#ffffff0d',
         })
       } catch {
         // duplicate edge
@@ -362,7 +362,7 @@ function initSigma() {
 
     // Defaults
     defaultNodeColor: '#6b7280aa',
-    defaultEdgeColor: 'rgba(255, 255, 255, 0.055)',
+    defaultEdgeColor: '#ffffff0d',
     stagePadding: 40,
     zIndex: true,
     enableNodeHoverHighlighting: false,
@@ -450,7 +450,7 @@ function initSigma() {
       // Click-focus: show only edges to focused node
       if (focusedNode) {
         if (graph!.extremities(edge).includes(focusedNode)) {
-          res.color = 'rgba(255, 255, 255, 0.15)'
+          res.color = '#ffffff26'
           res.size = 1.5
           res.zIndex = 1
         } else {
@@ -463,7 +463,7 @@ function initSigma() {
       if (chatFocusedNodes.size > 0) {
         const [src, tgt] = graph!.extremities(edge)
         if (chatFocusedNodes.has(src) || chatFocusedNodes.has(tgt)) {
-          res.color = 'rgba(255, 255, 255, 0.15)'
+          res.color = '#ffffff26'
           res.size = 1.5
           res.zIndex = 1
         } else {
@@ -478,7 +478,7 @@ function initSigma() {
         if (!searchMatches.has(src) || !searchMatches.has(tgt)) {
           res.hidden = true
         } else {
-          res.color = 'rgba(255, 255, 255, 0.1)'
+          res.color = '#ffffff1a'
         }
         return res
       }
@@ -559,7 +559,7 @@ function initCommunitySigma() {
       try {
         graph.addEdge(edge.data.source, edge.data.target, {
           size: Math.max(1, Math.min(4, Math.sqrt(edge.data.weight) * 0.5)),
-          color: 'rgba(255, 255, 255, 0.06)',
+          color: '#ffffff0f',
         })
       } catch { /* dup */ }
     }
@@ -584,7 +584,7 @@ function initCommunitySigma() {
     labelGridCellSize: 120,
     labelRenderedSizeThreshold: 4,
     defaultNodeColor: '#6b7280',
-    defaultEdgeColor: 'rgba(255, 255, 255, 0.06)',
+    defaultEdgeColor: '#ffffff0f',
     stagePadding: 60,
     zIndex: true,
     enableNodeHoverHighlighting: false,
