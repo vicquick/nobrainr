@@ -227,11 +227,30 @@ async def api_graph_communities(request: Request) -> JSONResponse:
 
     # Build community meta-nodes
     COMMUNITY_PALETTE = [
-        "#7b8ec8", "#6ba87a", "#c46b6b", "#c4a46a", "#9585c4",
-        "#6b9e8f", "#c4886b", "#7d92b0", "#a8786b", "#88b06b",
-        "#b585c4", "#6b9ec4", "#c4c46a", "#b0606a", "#6bc4a4",
-        "#c490a0", "#8a9070", "#7070c4", "#c4a490", "#70b0a0",
-        "#b0a060", "#8060b0", "#60a0b0", "#c07060",
+        "#5c7cfa",  # indigo
+        "#f76707",  # deep orange
+        "#2f9e44",  # forest green
+        "#e03131",  # crimson
+        "#7048e8",  # violet
+        "#0ca678",  # teal
+        "#1971c2",  # ocean blue
+        "#c2255c",  # magenta
+        "#d9480f",  # burnt orange
+        "#5f3dc4",  # dark purple
+        "#1098ad",  # cyan
+        "#2b8a3e",  # deep green
+        "#9c36b5",  # purple
+        "#e67700",  # amber
+        "#1864ab",  # navy
+        "#087f5b",  # dark teal
+        "#a61e4d",  # dark rose
+        "#364fc7",  # cobalt
+        "#5c940d",  # olive
+        "#862e9c",  # dark violet
+        "#e8590c",  # orange-red
+        "#0b7285",  # deep cyan
+        "#c92a2a",  # deep red
+        "#2d6a4f",  # emerald
     ]
     nodes = []
     # Sort communities by size descending so stable palette assignment (largest = most distinct color)

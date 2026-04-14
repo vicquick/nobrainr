@@ -114,15 +114,15 @@ import { useChatStore } from '@/stores/chat'
 import GraphSidePanel from '@/components/GraphSidePanel.vue'
 
 const TYPE_COLORS: Record<string, string> = {
-  person: '#7b8ec8',
-  project: '#6ba87a',
-  technology: '#9585c4',
-  concept: '#c4a46a',
-  file: '#7a8290',
-  config: '#b09060',
-  error: '#c46b6b',
-  location: '#6b9e8f',
-  organization: '#7d92b0',
+  person: '#5c7cfa',
+  project: '#2f9e44',
+  technology: '#7048e8',
+  concept: '#e67700',
+  file: '#6b7280',
+  config: '#d9480f',
+  error: '#e03131',
+  location: '#0ca678',
+  organization: '#1971c2',
 }
 
 const entityTypes = Object.keys(TYPE_COLORS)
