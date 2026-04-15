@@ -63,6 +63,18 @@ LLM_JOB_TIMEOUT_OVERRIDES = {
     "community_detection": 90 * 60,  # 42k entities + 50 community summaries = slow
 }
 
+# Per-row timeout for memory_write_queue worker. If the dedup/extraction hangs
+# on a stuck llama-server (observed 2026-04-14 — GPU 97.7%, 0% util, worker
+# blocked mid-LLM-call for 22h), this ceiling guarantees the row gets freed
+# and the worker continues. P95 work duration is ~160s (see write_queue.py
+# reset_stale_processing docstring), so 10 min is generous.
+MEMORY_WRITE_WORKER_ROW_TIMEOUT = 10 * 60
+
+# How often the orphan reaper runs while the worker is alive. Belt-and-braces
+# alongside the per-row timeout: if the worker itself deadlocks (not just the
+# LLM call inside it), this still recovers orphans without needing a restart.
+STALE_PROCESSING_REAPER_INTERVAL = 5 * 60
+
 
 class Scheduler:
     """Asyncio-based periodic task runner for memory maintenance jobs."""
@@ -269,6 +281,14 @@ class Scheduler:
             asyncio.create_task(self._memory_write_worker())
         )
 
+        # Periodic orphan reaper. Defense-in-depth alongside the per-row
+        # timeout inside the worker itself: if the worker's event loop
+        # deadlocks (rather than just the LLM call inside it), this task
+        # still unsticks the queue without requiring a container restart.
+        self._tasks.append(
+            asyncio.create_task(self._stale_processing_reaper())
+        )
+
         sql_count = 7 + (2 if settings.monitoring_enabled else 0)
         logger.info(
             "Scheduler started with %d LLM jobs + %d SQL jobs. "
@@ -369,18 +389,21 @@ class Scheduler:
                 # backfill queue doesn't dogpile llama-server.
                 async with self._llm_semaphore:
                     try:
-                        result = await store_memory_with_extraction(
-                            content=row["content"],
-                            summary=row["summary"],
-                            tags=row["tags"],
-                            category=row["category"],
-                            source_type=row["source_type"] or "manual",
-                            source_machine=row["source_machine"],
-                            source_ref=row["source_ref"],
-                            confidence=row["confidence"] if row["confidence"] is not None else 1.0,
-                            metadata=row["metadata"],
-                            skip_dedup=bool(row["skip_dedup"]),
-                            contextual_prefix=row["contextual_prefix"],
+                        result = await asyncio.wait_for(
+                            store_memory_with_extraction(
+                                content=row["content"],
+                                summary=row["summary"],
+                                tags=row["tags"],
+                                category=row["category"],
+                                source_type=row["source_type"] or "manual",
+                                source_machine=row["source_machine"],
+                                source_ref=row["source_ref"],
+                                confidence=row["confidence"] if row["confidence"] is not None else 1.0,
+                                metadata=row["metadata"],
+                                skip_dedup=bool(row["skip_dedup"]),
+                                contextual_prefix=row["contextual_prefix"],
+                            ),
+                            timeout=MEMORY_WRITE_WORKER_ROW_TIMEOUT,
                         )
                         memory_id = (
                             result.get("id")
@@ -398,6 +421,19 @@ class Scheduler:
                         )
                     except asyncio.CancelledError:
                         raise
+                    except asyncio.TimeoutError:
+                        # The LLM (dedup/extraction) hung — don't let the
+                        # worker block the queue. Mark the row failed with
+                        # retry so it goes back to pending with backoff.
+                        logger.warning(
+                            "memory_write_worker: %s timed out after %ds — marking failed+retry",
+                            queue_id, MEMORY_WRITE_WORKER_ROW_TIMEOUT,
+                        )
+                        await write_queue.mark_failed(
+                            queue_id,
+                            error=f"worker row timeout ({MEMORY_WRITE_WORKER_ROW_TIMEOUT}s)",
+                            retry=True,
+                        )
                     except Exception as e:
                         logger.exception(
                             "memory_write_worker: processing %s failed", queue_id,
@@ -418,6 +454,37 @@ class Scheduler:
                 await asyncio.sleep(2)
 
         logger.info("memory_write_worker stopped")
+
+    async def _stale_processing_reaper(self) -> None:
+        """Periodically reset memory_write_queue rows stuck in 'processing'.
+
+        The worker itself carries a per-row timeout (see
+        ``MEMORY_WRITE_WORKER_ROW_TIMEOUT``) so the common case of a hung
+        LLM call is self-healing. This task exists for the rarer cases
+        where the worker's own event loop stalls (GIL wedged on a sync
+        call, asyncpg pool exhaustion, etc.) — situations where no
+        in-process watchdog could fire. The startup reaper covered
+        container-crash orphans; this covers alive-but-stuck orphans.
+        """
+        from nobrainr.db import write_queue
+
+        # Skip the first tick — the worker's own startup reaper already
+        # ran; no point resetting rows it just claimed.
+        await asyncio.sleep(STALE_PROCESSING_REAPER_INTERVAL)
+
+        while self._running:
+            try:
+                n = await write_queue.reset_stale_processing(stale_minutes=10)
+                if n > 0:
+                    logger.warning(
+                        "stale_processing_reaper: freed %d orphan row(s) "
+                        "(worker stalled mid-claim)", n,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("stale_processing_reaper: tick failed")
+            await asyncio.sleep(STALE_PROCESSING_REAPER_INTERVAL)
 
     async def _run_periodic_llm(
         self, name: str, job, interval_seconds: float, initial_delay: float,
