@@ -507,6 +507,38 @@ async def get_queue_stats() -> dict[str, int]:
         return {k: int(v or 0) for k, v in dict(row).items()}
 
 
+async def retry_failed(queue_id: str | UUID) -> bool:
+    """Fully reset a failed (or stuck) queue row back to pending.
+
+    Clears ALL timestamp fields so the worker's claim query picks it up
+    immediately. Returns True if the row was found and reset, False if not found.
+
+    This is the correct way to manually retry — partial resets that leave
+    ``started_at``/``completed_at`` set cause the row to be stuck even when
+    ``status='pending'``.
+    """
+    pool = await get_pool()
+    qid = UUID(queue_id) if isinstance(queue_id, str) else queue_id
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE memory_write_queue
+            SET status         = 'pending',
+                attempts       = 0,
+                error_message  = NULL,
+                next_attempt_at = now(),
+                started_at     = NULL,
+                completed_at   = NULL
+            WHERE id = $1
+            """,
+            qid,
+        )
+    updated = int(result.split()[-1])
+    if updated:
+        signal_pending()
+    return updated > 0
+
+
 async def prune_old_completed(older_than_hours: int = 72) -> int:
     """Retention sweep — delete done/failed rows older than N hours.
 

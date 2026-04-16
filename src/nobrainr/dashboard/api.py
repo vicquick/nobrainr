@@ -14,6 +14,7 @@ from starlette.routing import Route
 
 from nobrainr.config import settings
 from nobrainr.db import queries
+from nobrainr.db import write_queue
 from nobrainr.embeddings.ollama import embed_text
 from nobrainr.events import subscribe
 
@@ -517,6 +518,21 @@ async def api_memory_delete(request: Request) -> JSONResponse:
     if deleted:
         return JSONResponse({"status": "deleted"})
     return JSONResponse({"error": "Memory not found"}, status_code=404)
+
+
+async def api_queue_retry(request: Request) -> JSONResponse:
+    """Retry a failed or stuck write-queue item.
+
+    Fully resets the row (clears started_at, completed_at, attempts, error)
+    so the worker picks it up immediately.
+    """
+    queue_id = request.path_params["queue_id"]
+    if not _valid_uuid(queue_id):
+        return JSONResponse({"error": "Invalid queue_id"}, status_code=400)
+    found = await write_queue.retry_failed(queue_id)
+    if found:
+        return JSONResponse({"status": "pending"})
+    return JSONResponse({"error": "Queue item not found"}, status_code=404)
 
 
 async def api_timeline(request: Request) -> JSONResponse:
@@ -1210,6 +1226,7 @@ api_routes = [
     Route("/api/memories/{memory_id}/restore", api_memory_restore, methods=["POST"]),
     Route("/api/facts", api_facts_search),
     Route("/api/facts/stats", api_facts_stats),
+    Route("/api/queue/{queue_id}/retry", api_queue_retry, methods=["POST"]),
     Route("/api/timeline", api_timeline),
     Route("/api/node/{entity_id}", api_node_detail),
     Route("/api/stats", api_stats),
