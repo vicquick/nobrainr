@@ -386,7 +386,33 @@ async def _hybrid_search_rrf(
             if rid not in rows_by_id:
                 rows_by_id[rid] = row
 
-        sorted_ids = sorted(rrf_scores, key=rrf_scores.get, reverse=True)[:limit]
+        all_sorted = sorted(rrf_scores, key=rrf_scores.get, reverse=True)
+
+        # Source diversity cap: no single source_type > 50% of results.
+        # Without this, chatgpt (73.6% of corpus) dominates every query
+        # by sheer probability — ~7/10 results from chatgpt regardless of
+        # relevance. Only applies when caller hasn't already filtered by
+        # source_type, and only for limit >= 4 (too aggressive otherwise).
+        if source_type is None and limit >= 4:
+            max_per_source = max(1, limit // 2)
+            source_counts: dict[str, int] = {}
+            diverse_ids: list[str] = []
+            deferred: list[str] = []
+            for rid in all_sorted:
+                src = str(rows_by_id[rid].get("source_type") or "unknown")
+                if source_counts.get(src, 0) < max_per_source:
+                    source_counts[src] = source_counts.get(src, 0) + 1
+                    diverse_ids.append(rid)
+                else:
+                    deferred.append(rid)
+                if len(diverse_ids) >= limit:
+                    break
+            # Fill remaining slots if diversity reduced results below limit
+            if len(diverse_ids) < limit:
+                diverse_ids.extend(deferred[:limit - len(diverse_ids)])
+            sorted_ids = diverse_ids
+        else:
+            sorted_ids = all_sorted[:limit]
 
         results = []
         for rid in sorted_ids:
