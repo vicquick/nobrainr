@@ -13,8 +13,8 @@ export function useTimeline() {
   const categoryFilter = ref('')
   const machineFilter = ref('')
 
-  async function fetchTimeline() {
-    loading.value = true
+  async function fetchTimeline({ silent = false } = {}) {
+    if (!silent) loading.value = true
     offset.value = 0
     try {
       const params: Record<string, string | number> = { limit: PAGE_SIZE, offset: 0, include_queue: 1 }
