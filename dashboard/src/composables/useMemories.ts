@@ -8,7 +8,7 @@ export function useMemories() {
   const selectedMemory = ref<Memory | null>(null)
   const selectedEntities = ref<Entity[]>([])
   const selectedFacts = ref<Fact[]>([])
-  const loading = ref(false)
+  const loading = ref(true)
   const detailLoading = ref(false)
   const searchQuery = ref('')
   const categoryFilter = ref('')
