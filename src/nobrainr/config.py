@@ -123,6 +123,9 @@ class Settings(BaseSettings):
     # Memory quality scoring (LLM-assessed) — aggressive to clear 78% unscored backlog
     quality_scoring_interval_hours: float = 0.25
     quality_scoring_batch_size: int = 60
+    # Fact-augmented key expansion (LongMemEval pattern)
+    key_expansion_interval_hours: float = 0.5
+    key_expansion_batch_size: int = 30
     # Knowledge crawl
     knowledge_crawl_enabled: bool = True
     knowledge_crawl_interval_hours: float = 3.0
