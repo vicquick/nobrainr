@@ -520,11 +520,17 @@ async def api_memory_delete(request: Request) -> JSONResponse:
 
 
 async def api_timeline(request: Request) -> JSONResponse:
-    """Timeline data — memories ordered by date."""
+    """Timeline data — memories ordered by date.
+
+    When include_queue=1 and offset=0, pending/failed write-queue items
+    are merged in as ghost entries so the timeline shows memories that
+    are about to crystallize.
+    """
     category = request.query_params.get("category") or None
     source_machine = request.query_params.get("source_machine") or None
     limit = min(int(request.query_params.get("limit", "100")), 500)
     offset = max(int(request.query_params.get("offset", "0")), 0)
+    include_queue = request.query_params.get("include_queue") in {"1", "true", "yes"}
 
     memories = await queries.get_timeline_memories(
         limit=limit,
@@ -532,6 +538,21 @@ async def api_timeline(request: Request) -> JSONResponse:
         category=category,
         source_machine=source_machine,
     )
+
+    if include_queue and offset == 0:
+        queued = await queries.get_timeline_write_queue(
+            limit=min(limit, 50),
+            category=category,
+            source_machine=source_machine,
+        )
+        # Merge by created_at desc; queued keeps queue_status marker, stored rows don't.
+        merged = sorted(
+            queued + memories,
+            key=lambda r: r.get("created_at") or "",
+            reverse=True,
+        )
+        return JSONResponse(merged)
+
     return JSONResponse(memories)
 
 

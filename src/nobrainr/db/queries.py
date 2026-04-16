@@ -2716,6 +2716,47 @@ async def get_timeline_memories(
         return [_row_to_dict(row) for row in rows]
 
 
+async def get_timeline_write_queue(
+    *,
+    limit: int = 50,
+    category: str | None = None,
+    source_machine: str | None = None,
+) -> list[dict]:
+    """Pending/failed items from memory_write_queue, shaped like memories for the timeline."""
+    pool = await get_pool()
+    conditions = ["status IN ('pending', 'failed')"]
+    params: list = []
+    idx = 1
+
+    if category:
+        conditions.append(f"category = ${idx}")
+        params.append(category)
+        idx += 1
+
+    if source_machine:
+        conditions.append(f"source_machine = ${idx}")
+        params.append(source_machine)
+        idx += 1
+
+    params.append(limit)
+    where = " AND ".join(conditions)
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT id, content, summary, source_type, source_machine, tags,
+                   category, 0.0::real AS importance, enqueued_at AS created_at,
+                   status AS queue_status, attempts, max_attempts, error_message
+            FROM memory_write_queue
+            WHERE {where}
+            ORDER BY enqueued_at DESC
+            LIMIT ${idx}
+            """,
+            *params,
+        )
+        return [_row_to_dict(row) for row in rows]
+
+
 async def get_categories() -> list[str]:
     pool = await get_pool()
     async with pool.acquire() as conn:

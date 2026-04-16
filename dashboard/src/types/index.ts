@@ -18,6 +18,10 @@ export interface Memory {
   quality_specificity?: number | null
   quality_actionability?: number | null
   quality_self_containment?: number | null
+  queue_status?: 'pending' | 'failed'
+  attempts?: number
+  max_attempts?: number
+  error_message?: string | null
 }
 
 export interface Entity {

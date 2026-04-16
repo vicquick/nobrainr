@@ -17,13 +17,14 @@ export function useTimeline() {
     loading.value = true
     offset.value = 0
     try {
-      const params: Record<string, string | number> = { limit: PAGE_SIZE, offset: 0 }
+      const params: Record<string, string | number> = { limit: PAGE_SIZE, offset: 0, include_queue: 1 }
       if (categoryFilter.value) params.category = categoryFilter.value
       if (machineFilter.value) params.source_machine = machineFilter.value
       const { data } = await api.get<Memory[]>('/api/timeline', { params })
       memories.value = data
-      hasMore.value = data.length >= PAGE_SIZE
-      offset.value = data.length
+      const storedCount = data.filter(m => !m.queue_status).length
+      hasMore.value = storedCount >= PAGE_SIZE
+      offset.value = storedCount
     } finally {
       loading.value = false
     }
