@@ -19,6 +19,11 @@ _unhealthy_counts: dict[str, int] = {}
 # Track previously-seen containers to detect missing ones
 _previous_containers: set[str] | None = None
 
+# Dedup: track last time each anomaly text was stored as a memory
+# Key = anomaly text, Value = datetime stored. Prevents spamming identical alerts.
+_anomaly_last_stored: dict[str, datetime] = {}
+_ANOMALY_DEDUP_HOURS = 6  # don't re-store same alert within 6 hours
+
 
 async def check_docker_health(*, track_state: bool = True) -> dict:
     """Check Docker container health via subprocess calls.
@@ -191,7 +196,7 @@ async def check_system_resources() -> dict:
                     "total_mb": round(total_mb),
                     "used_percent": round(used_pct, 1),
                 }
-                if used_pct > 95:
+                if used_pct > 99:
                     result["warnings"].append(
                         f"GPU VRAM critical: {used_pct:.1f}% "
                         f"({round(total_mb - used_mb)}MB free)"
@@ -256,12 +261,20 @@ async def monitor_health() -> dict:
         anomalies.append(warning)
         logger.warning("Monitoring alert: %s", warning)
 
-    # Store anomalies as memories
+    # Store anomalies as memories (with dedup — don't re-store same alert within 6h)
     if anomalies:
         from nobrainr.services.memory import store_memory_with_extraction
 
         machine = settings.source_machine or socket.gethostname()
+        now = datetime.now(timezone.utc)
+        dedup_cutoff = now - timedelta(hours=_ANOMALY_DEDUP_HOURS)
+
         for anomaly in anomalies:
+            last_stored = _anomaly_last_stored.get(anomaly)
+            if last_stored and last_stored > dedup_cutoff:
+                logger.debug("Monitoring: skipping duplicate anomaly (stored %s ago): %s",
+                             now - last_stored, anomaly[:80])
+                continue
             try:
                 container_tag = _extract_container_name(anomaly)
                 tags = ["monitoring", "alert"]
@@ -276,6 +289,7 @@ async def monitor_health() -> dict:
                     source_machine=machine,
                     skip_dedup=True,
                 )
+                _anomaly_last_stored[anomaly] = now
                 stored_count += 1
             except Exception:
                 logger.exception("Failed to store monitoring anomaly: %s", anomaly)
