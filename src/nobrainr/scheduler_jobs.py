@@ -1346,6 +1346,100 @@ async def quality_scoring() -> dict:
     }
 
 
+KEY_EXPANSION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "keyphrases": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "3-5 alternative search keyphrases for this memory",
+        }
+    },
+    "required": ["keyphrases"],
+}
+
+
+async def key_expansion() -> dict:
+    """Generate alternative search keyphrases for memories without search_keys.
+
+    LongMemEval fact-augmented key expansion: for each memory, generate 3-5
+    alternative phrasings that someone might search to find it. Stored in
+    search_keys and included in the FTS GIN index so memories are findable
+    from more query angles — directly addresses the ~30% recall miss rate
+    from single-query retrieval.
+    """
+    model = settings.scheduler_llm_model
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        batch = await conn.fetch(
+            """
+            SELECT id, content, summary, category, source_type
+            FROM memories
+            WHERE search_keys IS NULL
+              AND tier < 3
+              AND LENGTH(content) >= 80
+            ORDER BY importance DESC, created_at DESC
+            LIMIT $1
+            """,
+            settings.key_expansion_batch_size,
+        )
+
+    if not batch:
+        return {"expanded": 0, "ran_at": datetime.now().isoformat()}
+
+    expanded = 0
+    for row in batch:
+        try:
+            text = row["summary"] or row["content"][:600]
+            category = row["category"] or "general"
+            source = row["source_type"] or "unknown"
+
+            result = await ollama_chat(
+                system=(
+                    "You generate alternative search keyphrases for a knowledge base. "
+                    "Given a memory, produce 3-5 short phrases (4-12 words each) that "
+                    "someone might type to find this memory. Think about:\n"
+                    "- The problem or symptom described\n"
+                    "- The tools, files, or commands involved\n"
+                    "- The solution or decision made\n"
+                    "- Common synonyms for technical terms used\n"
+                    "Phrases should be terse and search-like, not full sentences."
+                ),
+                user=f"Category: {category} | Source: {source}\n\n{text}",
+                schema=KEY_EXPANSION_SCHEMA,
+                model=model,
+                timeout=60.0,
+                think=False,
+            )
+
+            phrases = result.get("keyphrases", [])
+            # Filter: keep only non-empty, reasonably short phrases
+            clean = [p.strip() for p in phrases if isinstance(p, str) and 3 <= len(p.strip()) <= 120]
+            if not clean:
+                # Store empty string so we don't re-process
+                clean_str = ""
+            else:
+                clean_str = " | ".join(clean[:5])
+
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE memories SET search_keys = $1 WHERE id = $2",
+                    clean_str, row["id"],
+                )
+            if clean:
+                expanded += 1
+        except Exception:
+            logger.exception("key_expansion failed for memory %s", str(row["id"])[:8])
+        await _yield_to_live_requests()
+
+    return {
+        "expanded": expanded,
+        "batch_size": len(batch),
+        "ran_at": datetime.now().isoformat(),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Non-LLM monitoring jobs (thin wrappers — logic lives in monitoring.py)
 # ---------------------------------------------------------------------------
