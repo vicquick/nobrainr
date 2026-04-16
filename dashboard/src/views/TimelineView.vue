@@ -192,21 +192,20 @@ const groupedMemories = computed(() => {
 
 useSSE((evt) => {
   if (['memory_created', 'memory_updated', 'memory_deleted'].includes(evt.type)) {
-    fetchTimeline()
+    fetchTimeline({ silent: true })
   }
 })
 
 watch([categoryFilter, machineFilter], () => {
-  fetchTimeline()
+  fetchTimeline()  // filter change = intentional reload, show skeleton
 })
 
-// Queue poll: write-queue enqueue isn't wired to SSE, so do a gentle refresh
-// every 8s. Only runs while there are ghost entries visible OR on initial load.
+// Queue poll: silent background refresh — no skeleton flash
 let pollTimer: ReturnType<typeof setInterval> | null = null
 function startPoll() {
   if (pollTimer) return
   pollTimer = setInterval(() => {
-    if (document.visibilityState === 'visible') fetchTimeline()
+    if (document.visibilityState === 'visible') fetchTimeline({ silent: true })
   }, 8000)
 }
 function stopPoll() {
