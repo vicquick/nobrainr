@@ -158,6 +158,14 @@
                   >
                     <v-icon icon="mdi-alert-circle-outline" size="12" class="mr-1" />
                     rejected · {{ entry.attempts }}/{{ entry.max_attempts }}
+                    <button
+                      class="retry-btn"
+                      :disabled="retryingIds.has(entry.key)"
+                      :title="'Retry storing this memory'"
+                      @click.stop="retryQueue(entry)"
+                    >
+                      <v-icon :icon="retryingIds.has(entry.key) ? 'mdi-loading' : 'mdi-refresh'" size="11" :class="{ 'spin': retryingIds.has(entry.key) }" />
+                    </button>
                   </span>
 
                   <v-spacer />
@@ -214,6 +222,22 @@ const {
 
 // Expand state — track by entry key
 const expandedIds = ref<Set<string>>(new Set())
+// Retry in-progress tracking
+const retryingIds = ref<Set<string>>(new Set())
+
+async function retryQueue(entry: TimelineEntry) {
+  const queueId = entry.key  // for queue items key === memory id (queue row id)
+  retryingIds.value.add(entry.key)
+  retryingIds.value = new Set(retryingIds.value)
+  try {
+    await fetch(`/api/queue/${queueId}/retry`, { method: 'POST' })
+    // Refresh timeline after short delay so worker has time to claim it
+    setTimeout(() => fetchTimeline({ silent: true }), 1500)
+  } finally {
+    retryingIds.value.delete(entry.key)
+    retryingIds.value = new Set(retryingIds.value)
+  }
+}
 // Page state for chunk groups — entry key → chunk index
 const activePages = ref<Map<string, number>>(new Map())
 
@@ -583,6 +607,27 @@ onUnmounted(stopPoll)
 }
 .queue-marker--pending { color: rgb(var(--v-theme-warning)); }
 .queue-marker--failed  { color: rgb(var(--v-theme-error)); }
+
+.retry-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  border: 1px solid rgba(var(--v-theme-error), 0.3);
+  background: transparent;
+  color: rgb(var(--v-theme-error));
+  cursor: pointer;
+  margin-left: 4px;
+  opacity: 0.7;
+  transition: opacity 120ms, background 120ms;
+  vertical-align: middle;
+}
+.retry-btn:hover { opacity: 1; background: rgba(var(--v-theme-error), 0.1); }
+.retry-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.spin { animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
 .queue-marker__dots {
   display: inline-flex;
