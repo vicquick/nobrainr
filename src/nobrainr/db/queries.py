@@ -359,10 +359,12 @@ async def _hybrid_search_rrf(
             SELECT id, content, summary, source_type, source_machine, tags, category,
                    confidence, metadata, created_at, updated_at, importance, stability,
                    access_count, last_accessed_at, quality_score, embedding_model, tier,
-                   ts_rank(to_tsvector('simple', nb_unaccent(content)),
-                           plainto_tsquery('simple', nb_unaccent($1))) AS fts_rank
+                   ts_rank(
+                       to_tsvector('simple', nb_unaccent(content || ' ' || COALESCE(search_keys, ''))),
+                       plainto_tsquery('simple', nb_unaccent($1))
+                   ) AS fts_rank
             FROM memories
-            WHERE to_tsvector('simple', nb_unaccent(content))
+            WHERE to_tsvector('simple', nb_unaccent(content || ' ' || COALESCE(search_keys, '')))
                   @@ plainto_tsquery('simple', nb_unaccent($1))
               {fts_extra}{tier_filter}
             ORDER BY fts_rank DESC

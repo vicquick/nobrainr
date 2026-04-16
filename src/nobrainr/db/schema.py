@@ -40,6 +40,10 @@ ALTER TABLE memories ADD COLUMN IF NOT EXISTS extraction_status text;
 
 -- v3: Quality scoring columns
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS quality_score real;
+-- v3b: Fact-augmented key expansion (LongMemEval pattern) — LLM-generated
+--      alternative search keyphrases stored alongside content so memories
+--      are findable from more query angles even with lazy single-word searches.
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS search_keys TEXT;
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS quality_specificity smallint;
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS quality_actionability smallint;
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS quality_self_containment smallint;
@@ -112,7 +116,9 @@ CREATE OR REPLACE FUNCTION nb_unaccent(text) RETURNS text
     AS $$ SELECT public.unaccent($1) $$;
 DROP INDEX IF EXISTS idx_memories_content_fts;
 CREATE INDEX IF NOT EXISTS idx_memories_content_fts
-    ON memories USING gin (to_tsvector('simple', nb_unaccent(content)));
+    ON memories USING gin (
+        to_tsvector('simple', nb_unaccent(content || ' ' || COALESCE(search_keys, '')))
+    );
 
 -- Trigram index for fast ILIKE / similarity() fallback (names, short queries)
 CREATE INDEX IF NOT EXISTS idx_memories_content_trgm
