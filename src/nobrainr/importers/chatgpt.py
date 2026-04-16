@@ -17,6 +17,27 @@ from nobrainr.extraction.llm import ollama_chat
 
 logger = logging.getLogger("nobrainr.import.chatgpt")
 
+# Canonical machine name aliases — old/transient names → canonical
+_MACHINE_ALIASES: dict[str, str] = {
+    "laptop-a": "laptop-a",
+    "laptop-a": "laptop-a",
+    "laptop-a": "laptop-a",
+    "pc-a": "pc-a",
+    "pc-a": "pc-a",
+    "box-b": "box-b",
+    "box-b": "box-b",
+    "vps-a": "vps-a",
+    "vps": "vps-a",
+    "vps-a": "vps-a",
+}
+
+
+def _normalize_machine(name: str | None) -> str | None:
+    if not name:
+        return name
+    return _MACHINE_ALIASES.get(name, name)
+
+
 # Max chars to send to embedding model
 MAX_EMBED_CHARS = 6000
 
@@ -312,7 +333,7 @@ async def distill_conversations(
         title = row["title"] or "Untitled"
         messages = row["messages"] if isinstance(row["messages"], list) else json.loads(row["messages"])
         metadata = row["metadata"] if isinstance(row["metadata"], dict) else json.loads(row["metadata"] or "{}")
-        machine = source_machine or metadata.get("source_machine")
+        machine = _normalize_machine(source_machine or metadata.get("source_machine"))
 
         local_distilled = 0
         local_windows = 0
@@ -629,7 +650,7 @@ async def store_conversations_as_sessions(
             if isinstance(row["metadata"], dict)
             else json.loads(row["metadata"] or "{}")
         )
-        machine = source_machine or metadata.get("source_machine")
+        machine = _normalize_machine(source_machine or metadata.get("source_machine"))
 
         full_text, turn_count = _build_session_text(
             title, messages, max_chars=max_content_chars,
