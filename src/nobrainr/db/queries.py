@@ -3796,7 +3796,8 @@ async def auto_tier_memories() -> dict:
     Rules (applied in priority order):
     - Tier 0 (pinned): importance >= 0.9 AND access_count >= 10
     - Tier 1 (hot): accessed in last 7 days OR quality_score >= 0.8
-    - Tier 3 (cold): not accessed in 30+ days AND importance < 0.3 AND access_count < 3
+    - Tier 3 (cold): (not accessed in 30+ days AND importance < 0.3 AND access_count < 3)
+                     OR quality_score < 0.35 (LLM-assessed low quality, memory age > 7d)
     - Tier 2 (standard): everything else
 
     Never demotes manually-pinned tier 0 memories (those set via set_memory_tier).
@@ -3825,15 +3826,27 @@ async def auto_tier_memories() -> dict:
             """,
         )
 
-        # Demote to tier 3: cold memories
+        # Demote to tier 3: cold memories — low engagement OR low quality
         r3 = await conn.execute(
             """
             UPDATE memories SET tier = 3
             WHERE tier = 2
-              AND importance < 0.3
-              AND access_count < 3
-              AND (last_accessed_at IS NULL OR last_accessed_at < now() - interval '30 days')
-              AND created_at < now() - interval '30 days'
+              AND created_at < now() - interval '7 days'
+              AND (
+                  -- Low engagement: barely accessed, low importance, not recent
+                  (
+                      importance < 0.3
+                      AND access_count < 3
+                      AND (last_accessed_at IS NULL OR last_accessed_at < now() - interval '30 days')
+                      AND created_at < now() - interval '30 days'
+                  )
+                  OR
+                  -- Low quality score (LLM-assessed): regardless of access pattern
+                  (
+                      quality_score IS NOT NULL
+                      AND quality_score < 0.35
+                  )
+              )
             """,
         )
 
