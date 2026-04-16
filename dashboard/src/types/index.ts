@@ -22,6 +22,13 @@ export interface Memory {
   attempts?: number
   max_attempts?: number
   error_message?: string | null
+  metadata?: {
+    document_id?: string
+    chunk_index?: number
+    chunk_total?: number
+    document_title?: string
+    [key: string]: unknown
+  } | null
 }
 
 export interface Entity {

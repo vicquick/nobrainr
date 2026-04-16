@@ -2733,7 +2733,7 @@ async def get_timeline_memories(
         rows = await conn.fetch(
             f"""
             SELECT id, content, summary, source_type, source_machine, tags,
-                   category, importance, created_at
+                   category, importance, created_at, metadata
             FROM memories
             WHERE {where}
             ORDER BY created_at DESC
