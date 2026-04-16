@@ -6,7 +6,7 @@ const PAGE_SIZE = 50
 
 export function useTimeline() {
   const memories = ref<Memory[]>([])
-  const loading = ref(false)
+  const loading = ref(true)
   const loadingMore = ref(false)
   const offset = ref(0)
   const hasMore = ref(true)
