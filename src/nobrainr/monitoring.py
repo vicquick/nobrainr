@@ -19,10 +19,6 @@ _unhealthy_counts: dict[str, int] = {}
 # Track previously-seen containers to detect missing ones
 _previous_containers: set[str] | None = None
 
-# Dedup: track last time each anomaly text was stored as a memory
-# Key = anomaly text, Value = datetime stored. Prevents spamming identical alerts.
-_anomaly_last_stored: dict[str, datetime] = {}
-_ANOMALY_DEDUP_HOURS = 6  # don't re-store same alert within 6 hours
 
 
 async def check_docker_health(*, track_state: bool = True) -> dict:
@@ -261,38 +257,11 @@ async def monitor_health() -> dict:
         anomalies.append(warning)
         logger.warning("Monitoring alert: %s", warning)
 
-    # Store anomalies as memories (with dedup — don't re-store same alert within 6h)
+    # Anomalies go to logs and email digest only — not to the knowledge base.
+    # System health metrics are operational noise, not knowledge worth recalling.
     if anomalies:
-        from nobrainr.services.memory import store_memory_with_extraction
-
-        machine = settings.source_machine or socket.gethostname()
-        now = datetime.now(timezone.utc)
-        dedup_cutoff = now - timedelta(hours=_ANOMALY_DEDUP_HOURS)
-
         for anomaly in anomalies:
-            last_stored = _anomaly_last_stored.get(anomaly)
-            if last_stored and last_stored > dedup_cutoff:
-                logger.debug("Monitoring: skipping duplicate anomaly (stored %s ago): %s",
-                             now - last_stored, anomaly[:80])
-                continue
-            try:
-                container_tag = _extract_container_name(anomaly)
-                tags = ["monitoring", "alert"]
-                if container_tag:
-                    tags.append(container_tag)
-
-                await store_memory_with_extraction(
-                    content=anomaly,
-                    category="infrastructure",
-                    tags=tags,
-                    source_type="monitoring",
-                    source_machine=machine,
-                    skip_dedup=True,
-                )
-                _anomaly_last_stored[anomaly] = now
-                stored_count += 1
-            except Exception:
-                logger.exception("Failed to store monitoring anomaly: %s", anomaly)
+            logger.warning("Monitoring anomaly (not stored): %s", anomaly)
 
     return {
         "ran_at": datetime.now(timezone.utc).isoformat(),
