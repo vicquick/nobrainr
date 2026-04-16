@@ -364,6 +364,7 @@ async def ollama_chat(
     client = _get_llm_client()
 
     payload: dict = {
+        "model": "qwen3-35b",
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -530,6 +531,7 @@ async def ollama_generate(
     messages.append({"role": "user", "content": prompt})
 
     payload = {
+        "model": "qwen3-35b",
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
