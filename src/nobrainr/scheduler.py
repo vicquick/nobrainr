@@ -52,6 +52,8 @@ LLM_JOB_DELAYS = {
     "contextual_prefix_backfill": 5 * 60,
     # Tier-2 lesson tagger — classifies memories the SQL backfill missed.
     "lesson_classifier": 38 * 60,
+    # Fact-augmented key expansion (LongMemEval pattern)
+    "key_expansion": 7 * 60,
 }
 
 # Per-job timeout for LLM operations

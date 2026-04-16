@@ -34,23 +34,23 @@
         <div class="timeline-entries">
           <TransitionGroup name="crystallize">
           <div
-            v-for="mem in group.items"
-            :key="mem.id"
+            v-for="entry in group.items"
+            :key="entry.key"
             class="timeline-entry d-flex ga-3 mb-3"
             :class="{
-              'timeline-entry--ghost': mem.queue_status === 'pending',
-              'timeline-entry--rejected': mem.queue_status === 'failed',
+              'timeline-entry--ghost': entry.queue_status === 'pending',
+              'timeline-entry--rejected': entry.queue_status === 'failed',
             }"
           >
             <!-- Time -->
             <div
               class="text-caption pt-1"
-              :class="mem.queue_status ? 'text-warning' : 'text-medium-emphasis'"
+              :class="entry.queue_status ? 'text-warning' : 'text-medium-emphasis'"
               style="min-width: 56px; font-variant-numeric: tabular-nums;"
             >
-              <span v-if="mem.queue_status === 'pending'" class="ghost-tilde">~</span>
-              <span v-if="mem.queue_status === 'failed'" class="ghost-tilde">×</span>
-              {{ new Date(mem.created_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) }}
+              <span v-if="entry.queue_status === 'pending'" class="ghost-tilde">~</span>
+              <span v-if="entry.queue_status === 'failed'" class="ghost-tilde">×</span>
+              {{ new Date(entry.created_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) }}
             </div>
 
             <!-- Dot + line -->
@@ -58,66 +58,112 @@
               <div
                 class="timeline-dot"
                 :class="{
-                  'timeline-dot--pending': mem.queue_status === 'pending',
-                  'timeline-dot--failed': mem.queue_status === 'failed',
+                  'timeline-dot--pending': entry.queue_status === 'pending',
+                  'timeline-dot--failed': entry.queue_status === 'failed',
+                  'timeline-dot--chunked': entry.isChunkGroup,
                 }"
               />
               <div
                 class="timeline-stem"
-                :class="{ 'timeline-stem--flow': mem.queue_status === 'pending' }"
+                :class="{ 'timeline-stem--flow': entry.queue_status === 'pending' }"
               />
             </div>
 
             <!-- Card -->
-            <v-card variant="flat" class="flex-grow-1 timeline-card" :class="{
-              'timeline-card--ghost': mem.queue_status === 'pending',
-              'timeline-card--rejected': mem.queue_status === 'failed',
-            }">
+            <v-card
+              variant="flat"
+              class="flex-grow-1 timeline-card"
+              :class="{
+                'timeline-card--ghost': entry.queue_status === 'pending',
+                'timeline-card--rejected': entry.queue_status === 'failed',
+                'timeline-card--expanded': expandedIds.has(entry.key),
+                'timeline-card--clickable': true,
+              }"
+              @click="toggleExpand(entry.key)"
+            >
               <v-card-text class="pa-3">
-                <div
-                  class="text-body-2 font-weight-medium mb-1"
-                  :class="{ 'ghost-text': mem.queue_status }"
-                  style="line-height: 1.5;"
-                >
-                  {{ mem.summary || mem.content.slice(0, 200) + (mem.content.length > 200 ? '...' : '') }}
+                <!-- Header row -->
+                <div class="d-flex align-start ga-2 mb-1">
+                  <div
+                    class="text-body-2 font-weight-medium flex-grow-1"
+                    :class="{ 'ghost-text': entry.queue_status }"
+                    style="line-height: 1.5;"
+                  >
+                    {{ entry.isChunkGroup ? (entry.chunks[0].metadata?.document_title || entry.summary || entry.content.slice(0, 200)) : (entry.summary || entry.content.slice(0, 200) + (entry.content.length > 200 ? '…' : '')) }}
+                  </div>
+                  <v-icon
+                    :icon="expandedIds.has(entry.key) ? 'mdi-chevron-up' : 'mdi-chevron-down'"
+                    size="16"
+                    class="expand-icon mt-1"
+                    style="opacity: 0.4; flex-shrink: 0;"
+                  />
                 </div>
+
+                <!-- Preview (collapsed) -->
                 <div
-                  v-if="mem.summary"
+                  v-if="!expandedIds.has(entry.key)"
                   class="text-body-2 text-medium-emphasis mb-2"
-                  :class="{ 'ghost-text': mem.queue_status }"
+                  :class="{ 'ghost-text': entry.queue_status }"
                   style="line-height: 1.5;"
                 >
-                  {{ mem.content.slice(0, 180) }}{{ mem.content.length > 180 ? '...' : '' }}
+                  {{ currentPageContent(entry).slice(0, 180) }}{{ currentPageContent(entry).length > 180 ? '…' : '' }}
                 </div>
+
+                <!-- Expanded full content -->
+                <div
+                  v-else
+                  class="expanded-content mb-2"
+                  :class="{ 'ghost-text': entry.queue_status }"
+                >
+                  <div class="content-prose">{{ currentPageContent(entry) }}</div>
+                </div>
+
+                <!-- Chunk page navigator -->
+                <div v-if="entry.isChunkGroup && entry.chunks.length > 1" class="page-nav mb-2" @click.stop>
+                  <span class="page-nav__label">{{ entry.chunks.length }} pages</span>
+                  <button
+                    v-for="(chunk, i) in entry.chunks"
+                    :key="chunk.id"
+                    class="page-nav__btn"
+                    :class="{ 'page-nav__btn--active': (activePages.get(entry.key) ?? 0) === i }"
+                    @click.stop="setPage(entry.key, i)"
+                  >{{ i + 1 }}</button>
+                </div>
+                <div v-else-if="entry.isChunkGroup" class="page-nav mb-2">
+                  <span class="page-nav__label">1 of {{ entry.chunks[0].metadata?.chunk_total ?? 1 }} pages loaded</span>
+                </div>
+
+                <!-- Meta row -->
                 <div class="d-flex ga-2 align-center flex-wrap">
-                  <v-chip v-if="mem.category" size="x-small" variant="tonal" color="primary" class="font-weight-medium">
-                    {{ mem.category }}
+                  <v-chip v-if="entry.category" size="x-small" variant="tonal" color="primary" class="font-weight-medium">
+                    {{ entry.category }}
                   </v-chip>
-                  <v-chip v-if="mem.source_machine" size="x-small" variant="tonal" color="secondary" class="font-weight-medium">
-                    {{ mem.source_machine }}
+                  <v-chip v-if="entry.source_machine" size="x-small" variant="tonal" color="secondary" class="font-weight-medium">
+                    {{ entry.source_machine }}
                   </v-chip>
 
-                  <!-- Queue status marker: typographic, not a chip -->
+                  <!-- Queue status marker -->
                   <span
-                    v-if="mem.queue_status === 'pending'"
+                    v-if="entry.queue_status === 'pending'"
                     class="queue-marker queue-marker--pending"
-                    :title="`Awaiting extraction${mem.attempts ? ` (retry ${mem.attempts}/${mem.max_attempts})` : ''}`"
+                    :title="`Awaiting extraction${entry.attempts ? ` (retry ${entry.attempts}/${entry.max_attempts})` : ''}`"
                   >
                     <span class="queue-marker__dots"><i /><i /><i /></span>
                     drafting
                   </span>
                   <span
-                    v-else-if="mem.queue_status === 'failed'"
+                    v-else-if="entry.queue_status === 'failed'"
                     class="queue-marker queue-marker--failed"
-                    :title="mem.error_message || 'Write failed'"
+                    :title="entry.error_message || 'Write pipeline failed after max retries — memory was not stored'"
                   >
-                    rejected · {{ mem.attempts }}/{{ mem.max_attempts }}
+                    <v-icon icon="mdi-alert-circle-outline" size="12" class="mr-1" />
+                    rejected · {{ entry.attempts }}/{{ entry.max_attempts }}
                   </span>
 
                   <v-spacer />
-                  <div v-if="!mem.queue_status && mem.importance > 0" class="d-flex align-center ga-1">
+                  <div v-if="!entry.queue_status && entry.importance > 0" class="d-flex align-center ga-1">
                     <v-progress-linear
-                      :model-value="mem.importance * 100"
+                      :model-value="entry.importance * 100"
                       color="warning"
                       height="3"
                       rounded
@@ -148,10 +194,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, watch, onMounted, onUnmounted } from 'vue'
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useTimeline } from '@/composables/useTimeline'
 import { useStatsStore } from '@/stores/stats'
 import { useSSE } from '@/composables/useSSE'
+import type { Memory } from '@/types'
 
 const statsStore = useStatsStore()
 const {
@@ -165,6 +212,55 @@ const {
   loadMore,
 } = useTimeline()
 
+// Expand state — track by entry key
+const expandedIds = ref<Set<string>>(new Set())
+// Page state for chunk groups — entry key → chunk index
+const activePages = ref<Map<string, number>>(new Map())
+
+function toggleExpand(key: string) {
+  if (expandedIds.value.has(key)) {
+    expandedIds.value.delete(key)
+  } else {
+    expandedIds.value.add(key)
+  }
+  // trigger reactivity
+  expandedIds.value = new Set(expandedIds.value)
+}
+
+function setPage(key: string, page: number) {
+  activePages.value.set(key, page)
+  activePages.value = new Map(activePages.value)
+  // auto-expand when navigating pages
+  if (!expandedIds.value.has(key)) {
+    expandedIds.value.add(key)
+    expandedIds.value = new Set(expandedIds.value)
+  }
+}
+
+// ─── Entry shape ──────────────────────────────────────────────────────────────
+interface TimelineEntry {
+  key: string
+  created_at: string
+  summary: string | null
+  content: string
+  category: string | null
+  source_machine: string | null
+  importance: number
+  queue_status?: 'pending' | 'failed'
+  attempts?: number
+  max_attempts?: number
+  error_message?: string | null
+  isChunkGroup: boolean
+  chunks: Memory[]    // for chunk groups: all loaded chunks sorted by index
+}
+
+function currentPageContent(entry: TimelineEntry): string {
+  if (!entry.isChunkGroup) return entry.content
+  const page = activePages.value.get(entry.key) ?? 0
+  return entry.chunks[page]?.content ?? entry.content
+}
+
+// ─── Grouping ─────────────────────────────────────────────────────────────────
 const categoryOptions = computed(() => {
   if (!statsStore.stats) return []
   return statsStore.stats.by_category.map(c => c.category)
@@ -176,16 +272,93 @@ const machineOptions = computed(() => {
 })
 
 const groupedMemories = computed(() => {
-  const groups: Record<string, typeof memories.value> = {}
-  for (const mem of memories.value) {
-    const day = new Date(mem.created_at).toLocaleDateString(undefined, {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
+  // 1. Separate queue items (pending/failed) from stored memories
+  const queueItems = memories.value.filter(m => m.queue_status)
+  const stored = memories.value.filter(m => !m.queue_status)
+
+  // 2. Group chunks by document_id
+  const docGroups = new Map<string, Memory[]>()
+  const standalone: Memory[] = []
+
+  for (const mem of stored) {
+    const docId = mem.metadata?.document_id
+    if (docId) {
+      if (!docGroups.has(docId)) docGroups.set(docId, [])
+      docGroups.get(docId)!.push(mem)
+    } else {
+      standalone.push(mem)
+    }
+  }
+
+  // Sort chunks within each doc group
+  for (const chunks of docGroups.values()) {
+    chunks.sort((a, b) => (a.metadata?.chunk_index ?? 0) - (b.metadata?.chunk_index ?? 0))
+  }
+
+  // 3. Build flat entry list
+  const entries: TimelineEntry[] = []
+
+  // Queue items as standalone entries
+  for (const mem of queueItems) {
+    entries.push({
+      key: mem.id,
+      created_at: mem.created_at,
+      summary: mem.summary,
+      content: mem.content,
+      category: mem.category,
+      source_machine: mem.source_machine,
+      importance: mem.importance,
+      queue_status: mem.queue_status,
+      attempts: mem.attempts,
+      max_attempts: mem.max_attempts,
+      error_message: mem.error_message,
+      isChunkGroup: false,
+      chunks: [mem],
+    })
+  }
+
+  // Chunk groups — represent as single entry, keyed by document_id
+  for (const [docId, chunks] of docGroups) {
+    const first = chunks[0]
+    entries.push({
+      key: `doc:${docId}`,
+      created_at: first.created_at,
+      summary: first.metadata?.document_title as string ?? first.summary,
+      content: first.content,
+      category: first.category,
+      source_machine: first.source_machine,
+      importance: first.importance,
+      isChunkGroup: true,
+      chunks,
+    })
+  }
+
+  // Standalone stored memories
+  for (const mem of standalone) {
+    entries.push({
+      key: mem.id,
+      created_at: mem.created_at,
+      summary: mem.summary,
+      content: mem.content,
+      category: mem.category,
+      source_machine: mem.source_machine,
+      importance: mem.importance,
+      isChunkGroup: false,
+      chunks: [mem],
+    })
+  }
+
+  // 4. Sort all by created_at desc
+  entries.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+
+  // 5. Group by day
+  const groups: Record<string, TimelineEntry[]> = {}
+  for (const entry of entries) {
+    const day = new Date(entry.created_at).toLocaleDateString(undefined, {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
     })
     if (!groups[day]) groups[day] = []
-    groups[day].push(mem)
+    groups[day].push(entry)
   }
   return Object.entries(groups).map(([date, items]) => ({ date, items }))
 })
@@ -196,11 +369,8 @@ useSSE((evt) => {
   }
 })
 
-watch([categoryFilter, machineFilter], () => {
-  fetchTimeline()  // filter change = intentional reload, show skeleton
-})
+watch([categoryFilter, machineFilter], () => { fetchTimeline() })
 
-// Queue poll: silent background refresh — no skeleton flash
 let pollTimer: ReturnType<typeof setInterval> | null = null
 function startPoll() {
   if (pollTimer) return
@@ -217,7 +387,6 @@ onMounted(async () => {
   fetchTimeline()
   startPoll()
 })
-
 onUnmounted(stopPoll)
 </script>
 
@@ -255,6 +424,10 @@ onUnmounted(stopPoll)
   background: transparent;
   box-shadow: inset 0 0 0 1.5px rgba(var(--v-theme-error), 0.55);
 }
+.timeline-dot--chunked {
+  background: rgba(var(--v-theme-primary), 0.5);
+  box-shadow: 0 0 0 2px rgba(var(--v-theme-primary), 0.18);
+}
 .timeline-stem {
   width: 1px;
   flex-grow: 1;
@@ -277,8 +450,76 @@ onUnmounted(stopPoll)
   border: 1px solid rgba(255, 255, 255, 0.04);
   transition: border-color 150ms ease, background-color 320ms ease, opacity 320ms ease;
 }
-.timeline-card:hover {
+.timeline-card--clickable {
+  cursor: pointer;
+}
+.timeline-card--clickable:hover {
   border-color: rgba(255, 255, 255, 0.1);
+}
+.timeline-card--clickable:hover .expand-icon {
+  opacity: 0.7 !important;
+}
+.timeline-card--expanded {
+  border-color: rgba(var(--v-theme-primary), 0.2);
+}
+
+/* Expanded content */
+.expanded-content {
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  padding-top: 10px;
+  margin-top: 4px;
+}
+.content-prose {
+  font-size: 0.82rem;
+  line-height: 1.7;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  max-height: 480px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.content-prose::-webkit-scrollbar { width: 3px; }
+.content-prose::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 2px; }
+
+/* Page navigator */
+.page-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-top: 6px;
+}
+.page-nav__label {
+  font-size: 0.68rem;
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  letter-spacing: 0.03em;
+  margin-right: 4px;
+  user-select: none;
+}
+.page-nav__btn {
+  min-width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  font-size: 0.7rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 120ms, border-color 120ms, color 120ms;
+  line-height: 1;
+  padding: 0 5px;
+}
+.page-nav__btn:hover {
+  background: rgba(var(--v-theme-primary), 0.12);
+  border-color: rgba(var(--v-theme-primary), 0.3);
+  color: rgb(var(--v-theme-primary));
+}
+.page-nav__btn--active {
+  background: rgba(var(--v-theme-primary), 0.18);
+  border-color: rgba(var(--v-theme-primary), 0.4);
+  color: rgb(var(--v-theme-primary));
 }
 
 /* Ghost: memory in amber, not yet crystallized */
@@ -295,11 +536,9 @@ onUnmounted(stopPoll)
   border-radius: inherit;
   background: linear-gradient(
     110deg,
-    transparent 0%,
-    transparent 40%,
+    transparent 0%, transparent 40%,
     rgba(var(--v-theme-warning), 0.06) 50%,
-    transparent 60%,
-    transparent 100%
+    transparent 60%, transparent 100%
   );
   background-size: 280% 100%;
   animation: ghost-sweep 4.5s linear infinite;
@@ -309,7 +548,7 @@ onUnmounted(stopPoll)
   color: color-mix(in oklch, rgb(var(--v-theme-on-surface)) 78%, transparent);
 }
 
-/* Rejected: refined red restraint, not alarm */
+/* Rejected */
 .timeline-card--rejected {
   background-color: color-mix(in oklch, rgb(var(--v-theme-surface)) 96%, rgb(var(--v-theme-error)));
   border: 1px solid rgba(var(--v-theme-error), 0.18);
@@ -329,11 +568,11 @@ onUnmounted(stopPoll)
   opacity: 0.85;
 }
 
-/* Typographic queue marker — no chip, just a quiet signal */
+/* Typographic queue marker */
 .queue-marker {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   font-size: 0.7rem;
   font-weight: 500;
   letter-spacing: 0.04em;
@@ -361,24 +600,16 @@ onUnmounted(stopPoll)
 .queue-marker__dots i:nth-child(2) { animation-delay: 0.18s; }
 .queue-marker__dots i:nth-child(3) { animation-delay: 0.36s; }
 
-/* Crystallization transition: ghost → stored */
-.crystallize-enter-from {
-  opacity: 0;
-  transform: translateY(4px);
-}
+/* Crystallization transition */
+.crystallize-enter-from { opacity: 0; transform: translateY(4px); }
 .crystallize-enter-active,
-.crystallize-leave-active {
-  transition: opacity 340ms ease, transform 340ms ease;
-}
-.crystallize-leave-to {
-  opacity: 0;
-  transform: translateY(-2px);
-}
+.crystallize-leave-active { transition: opacity 340ms ease, transform 340ms ease; }
+.crystallize-leave-to { opacity: 0; transform: translateY(-2px); }
 .crystallize-move { transition: transform 420ms cubic-bezier(0.22, 0.61, 0.36, 1); }
 
 @keyframes dot-breathe {
   0%, 100% { box-shadow: inset 0 0 0 1.5px rgba(var(--v-theme-warning), 0.35); }
-  50%      { box-shadow: inset 0 0 0 1.5px rgba(var(--v-theme-warning), 0.85); }
+  50%       { box-shadow: inset 0 0 0 1.5px rgba(var(--v-theme-warning), 0.85); }
 }
 @keyframes stem-flow {
   0%   { background-position: 0 100%; }
@@ -390,15 +621,13 @@ onUnmounted(stopPoll)
 }
 @keyframes dot-wave {
   0%, 100% { opacity: 0.25; transform: translateY(0); }
-  50%      { opacity: 1;    transform: translateY(-1.5px); }
+  50%       { opacity: 1;    transform: translateY(-1.5px); }
 }
 @media (prefers-reduced-motion: reduce) {
   .timeline-dot--pending,
   .timeline-stem--flow,
   .timeline-card--ghost::before,
-  .queue-marker__dots i {
-    animation: none;
-  }
+  .queue-marker__dots i { animation: none; }
 }
 .skeleton-block {
   background: linear-gradient(90deg, rgb(var(--v-theme-surface)) 25%, rgba(255,255,255,0.03) 50%, rgb(var(--v-theme-surface)) 75%);
@@ -408,7 +637,7 @@ onUnmounted(stopPoll)
   height: 120px;
 }
 @keyframes shimmer {
-  0% { background-position: 200% 0; }
+  0%   { background-position: 200% 0; }
   100% { background-position: -200% 0; }
 }
 </style>
