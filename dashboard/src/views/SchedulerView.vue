@@ -96,11 +96,29 @@
                 :color="status?.running ? 'success' : 'error'"
                 size="small"
                 variant="tonal"
-                class="font-weight-medium"
+                class="font-weight-medium mr-2"
               >
                 <v-icon :icon="status?.running ? 'mdi-circle' : 'mdi-circle-outline'" size="8" class="mr-1" />
                 {{ status?.running ? 'Running' : 'Stopped' }}
               </v-chip>
+              <v-btn
+                v-if="status?.running"
+                size="small"
+                variant="tonal"
+                color="warning"
+                :loading="actionLoading"
+                prepend-icon="mdi-pause"
+                @click="pauseScheduler"
+              >Pause</v-btn>
+              <v-btn
+                v-else
+                size="small"
+                variant="tonal"
+                color="success"
+                :loading="actionLoading"
+                prepend-icon="mdi-play"
+                @click="resumeScheduler"
+              >Resume</v-btn>
             </div>
 
             <v-table v-if="status?.tasks.length" class="scheduler-table">
@@ -241,7 +259,7 @@ import { computed, onMounted } from 'vue'
 import { useScheduler } from '@/composables/useScheduler'
 import { useSSE } from '@/composables/useSSE'
 
-const { status, events, feedbackStats, health, loading, fetchScheduler } = useScheduler()
+const { status, events, feedbackStats, health, loading, actionLoading, fetchScheduler, pauseScheduler, resumeScheduler } = useScheduler()
 
 const extractionPct = computed(() => {
   if (!health.value) return 0

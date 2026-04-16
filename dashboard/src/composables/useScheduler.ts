@@ -9,6 +9,28 @@ export function useScheduler() {
   const health = ref<SystemHealth | null>(null)
   const loading = ref(true)
 
+  const actionLoading = ref(false)
+
+  async function pauseScheduler() {
+    actionLoading.value = true
+    try {
+      await api.post('/api/scheduler/pause')
+      await fetchScheduler()
+    } finally {
+      actionLoading.value = false
+    }
+  }
+
+  async function resumeScheduler() {
+    actionLoading.value = true
+    try {
+      await api.post('/api/scheduler/resume')
+      await fetchScheduler()
+    } finally {
+      actionLoading.value = false
+    }
+  }
+
   async function fetchScheduler() {
     loading.value = true
     try {
@@ -51,6 +73,9 @@ export function useScheduler() {
     feedbackStats,
     health,
     loading,
+    actionLoading,
     fetchScheduler,
+    pauseScheduler,
+    resumeScheduler,
   }
 }

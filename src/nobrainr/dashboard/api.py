@@ -681,6 +681,26 @@ async def api_scheduler(request: Request) -> JSONResponse:
     })
 
 
+async def api_scheduler_pause(request: Request) -> JSONResponse:
+    """Pause the scheduler (stop all background LLM jobs)."""
+    from nobrainr.scheduler import scheduler
+
+    if not scheduler.running:
+        return JSONResponse({"ok": False, "message": "Scheduler already stopped"})
+    await scheduler.stop()
+    return JSONResponse({"ok": True, "message": "Scheduler paused"})
+
+
+async def api_scheduler_resume(request: Request) -> JSONResponse:
+    """Resume the scheduler."""
+    from nobrainr.scheduler import scheduler
+
+    if scheduler.running:
+        return JSONResponse({"ok": False, "message": "Scheduler already running"})
+    scheduler.start()
+    return JSONResponse({"ok": True, "message": "Scheduler resumed"})
+
+
 async def api_recall(request: Request) -> JSONResponse:
     """Fast text-only memory search (PostgreSQL full-text, no embedding call).
 
@@ -1231,6 +1251,8 @@ api_routes = [
     Route("/api/node/{entity_id}", api_node_detail),
     Route("/api/stats", api_stats),
     Route("/api/scheduler", api_scheduler),
+    Route("/api/scheduler/pause", api_scheduler_pause, methods=["POST"]),
+    Route("/api/scheduler/resume", api_scheduler_resume, methods=["POST"]),
     Route("/api/recall", api_recall),
     Route("/api/smart-recall", api_smart_recall),
     Route("/api/entities", api_entities),
