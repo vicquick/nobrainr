@@ -7,7 +7,7 @@ export function useScheduler() {
   const events = ref<AgentEvent[]>([])
   const feedbackStats = ref<FeedbackStats | null>(null)
   const health = ref<SystemHealth | null>(null)
-  const loading = ref(false)
+  const loading = ref(true)
 
   async function fetchScheduler() {
     loading.value = true
