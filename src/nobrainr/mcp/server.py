@@ -443,6 +443,78 @@ def _auto_route_query(query: str) -> dict[str, bool]:
     return {"hybrid": True}
 
 
+def _extract_temporal_bounds(query: str) -> tuple[str | None, str | None]:
+    """Extract date_from / date_to from natural-language temporal phrases.
+
+    Runs in <1ms (regex only, no LLM). Called before search so agents
+    don't need to do date arithmetic manually. Returns ISO-8601 date
+    strings or None if no temporal phrase detected.
+
+    Patterns handled: "last N days/weeks/months", "yesterday", "today",
+    "this week/month/year", "past N days", "in [Month] [Year]", "since [date]".
+    """
+    import re
+    from datetime import date, timedelta
+
+    q = (query or "").lower()
+    today = date.today()
+
+    # "last N days / weeks / months / years"
+    m = re.search(r"\b(?:last|past)\s+(\d+)\s+(day|week|month|year)s?\b", q)
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        delta = {
+            "day": timedelta(days=n),
+            "week": timedelta(weeks=n),
+            "month": timedelta(days=n * 30),
+            "year": timedelta(days=n * 365),
+        }[unit]
+        return (today - delta).isoformat(), None
+
+    # "yesterday"
+    if "yesterday" in q:
+        y = today - timedelta(days=1)
+        return y.isoformat(), y.isoformat()
+
+    # "today"
+    if re.search(r"\btoday\b", q):
+        return today.isoformat(), today.isoformat()
+
+    # "this week"
+    if re.search(r"\bthis\s+week\b", q):
+        monday = today - timedelta(days=today.weekday())
+        return monday.isoformat(), None
+
+    # "this month"
+    if re.search(r"\bthis\s+month\b", q):
+        return today.replace(day=1).isoformat(), None
+
+    # "this year"
+    if re.search(r"\bthis\s+year\b", q):
+        return today.replace(month=1, day=1).isoformat(), None
+
+    # "in [Month] [Year]" e.g. "in March 2026" or "in march"
+    months = {
+        "january": 1, "february": 2, "march": 3, "april": 4,
+        "may": 5, "june": 6, "july": 7, "august": 8,
+        "september": 9, "october": 10, "november": 11, "december": 12,
+    }
+    m = re.search(r"\bin\s+(" + "|".join(months) + r")(?:\s+(\d{4}))?\b", q)
+    if m:
+        mon = months[m.group(1)]
+        year = int(m.group(2)) if m.group(2) else today.year
+        from calendar import monthrange
+        last_day = monthrange(year, mon)[1]
+        return date(year, mon, 1).isoformat(), date(year, mon, last_day).isoformat()
+
+    # "since [date]" e.g. "since 2026-03-01" or "since april 2026"
+    m = re.search(r"\bsince\s+(\d{4}-\d{2}-\d{2})\b", q)
+    if m:
+        return m.group(1), None
+
+    return None, None
+
+
 # ──────────────────────────────────────────────
 # Tool: memory_search
 # ──────────────────────────────────────────────
@@ -531,6 +603,15 @@ async def memory_search(
             return datetime.fromisoformat(s)
         except (ValueError, AttributeError):
             return None
+
+    # Auto-detect temporal phrases if agent didn't supply explicit bounds.
+    # e.g. "what did we do to nobrainr last week" → date_from = 7 days ago
+    if not date_from and not date_to:
+        auto_from, auto_to = _extract_temporal_bounds(query)
+        if auto_from:
+            date_from = auto_from
+        if auto_to:
+            date_to = auto_to
 
     parsed_from = _parse_iso(date_from)
     parsed_to = _parse_iso(date_to)
