@@ -38,6 +38,7 @@ async def store_memory(
     metadata: dict | None = None,
 ) -> dict:
     from nobrainr.config import settings
+    from nobrainr.utils.tags import canonicalize_tags
 
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -55,7 +56,7 @@ async def store_memory(
             source_type,
             source_machine,
             source_ref,
-            tags or [],
+            canonicalize_tags(tags),
             category,
             confidence,
             _jsonb(metadata),
@@ -492,10 +493,15 @@ async def update_memory(
     _change_type: str | None = None,
     _change_reason: str | None = None,
 ) -> dict | None:
+    from nobrainr.utils.tags import canonicalize_tags
+
     pool = await get_pool()
     sets = []
     params = []
     idx = 1
+
+    if tags is not None:
+        tags = canonicalize_tags(tags)
 
     for field, value in [
         ("content", content),
