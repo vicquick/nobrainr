@@ -517,6 +517,70 @@ def _extract_temporal_bounds(query: str) -> tuple[str | None, str | None]:
     return None, None
 
 
+async def _log_auto_negative_outcomes(
+    results: list[dict],
+    trace_id: str,
+    query: str,
+) -> None:
+    """Write synthetic was_useful=false rows when retrieval looks weak.
+
+    Two triggers, independent — each result can pick up both signals:
+      1. low_recall: fewer than auto_negative_low_recall_threshold results
+         came back. Every surfaced hit gets one negative since the query
+         came up thin overall.
+      2. low_rerank: the top-1 rerank score is below
+         auto_negative_low_rerank_threshold. Targeted negative against the
+         top hit so the feedback loop can down-rank it for this query
+         shape. Only fires when the reranker actually ran (rerank_score
+         present).
+
+    Fire-and-forget. Never raises — failure here should never block a
+    search response. Context is prefixed so the scheduler feedback job
+    can tell synthetic rows from human feedback.
+    """
+    try:
+        negatives: list[tuple[str, int, str]] = []  # (memory_id, rank, context)
+        low_recall = len(results) < settings.auto_negative_low_recall_threshold
+        if low_recall:
+            for r in results:
+                negatives.append(
+                    (r["id"], r.get("search_rank") or 1, "low_recall")
+                )
+
+        top = results[0]
+        top_rerank = top.get("rerank_score")
+        if (
+            top_rerank is not None
+            and top_rerank < settings.auto_negative_low_rerank_threshold
+        ):
+            negatives.append((top["id"], 1, "low_rerank"))
+
+        if not negatives:
+            return
+
+        # Dedup: if a single memory triggers both reasons, merge reasons
+        # into one row so we don't double-count in ratio aggregates.
+        merged: dict[tuple[str, int], list[str]] = {}
+        for mid, rank, ctx in negatives:
+            merged.setdefault((mid, rank), []).append(ctx)
+
+        for (mid, rank), reasons in merged.items():
+            context_str = (
+                settings.auto_negative_context_prefix + ",".join(reasons)
+            )
+            await queries.store_memory_outcome(
+                mid,
+                False,
+                context=context_str,
+                agent_id="auto-negative",
+                query_trace_id=trace_id,
+                query_text=query,
+                result_rank=rank,
+            )
+    except Exception:
+        logger.exception("auto-negative outcome logging failed")
+
+
 # ──────────────────────────────────────────────
 # Tool: memory_search
 # ──────────────────────────────────────────────
@@ -739,6 +803,16 @@ async def memory_search(
         row["search_trace_id"] = trace_id
         row["search_rank"] = rank
         row["search_query"] = query
+
+    # Auto-negative outcome signal (2026-04-18). Before this, memory_outcomes
+    # had 94K rows all was_useful=true — zero variance, so the scheduler
+    # feedback loop (integrate_feedback_scores) never adjusted anything.
+    # Log negatives when retrieval is thin so the ranker has something to
+    # learn from. Fire-and-forget — never block the search response.
+    if settings.auto_negative_outcomes_enabled and results:
+        asyncio.create_task(
+            _log_auto_negative_outcomes(results, trace_id, query)
+        )
 
     # Related-memories expansion (Phase Q, v6.16) — Graphiti-style graph
     # expansion on retrieval. Attach a ``related_memories`` field to each

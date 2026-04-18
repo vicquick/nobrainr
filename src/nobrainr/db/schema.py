@@ -348,6 +348,45 @@ CREATE INDEX IF NOT EXISTS idx_memory_outcomes_trace
     WHERE query_trace_id IS NOT NULL;
 
 -- ──────────────────────────────────────────────
+-- Retrieval eval harness (2026-04-18)
+-- ──────────────────────────────────────────────
+-- A hand-labeled golden set + per-run metrics so we catch retrieval
+-- regressions when changing embeddings, rerankers, or the RRF/HNSW
+-- parameters. Binary relevance: each query has a list of memory_ids
+-- that MUST be present in the top-K for the query to count as "hit."
+CREATE TABLE IF NOT EXISTS eval_golden_queries (
+    id              uuid DEFAULT uuidv7() PRIMARY KEY,
+    query           text NOT NULL,
+    expected_ids    uuid[] NOT NULL,
+    notes           text,
+    tags            text[] DEFAULT '{{}}'::text[],
+    active          boolean NOT NULL DEFAULT true,
+    created_at      timestamptz DEFAULT now(),
+    updated_at      timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_eval_golden_active
+    ON eval_golden_queries (active) WHERE active;
+
+-- One row per full eval sweep. per_query holds the breakdown so we can
+-- tell WHICH query regressed, not just that the mean recall dropped.
+CREATE TABLE IF NOT EXISTS eval_runs (
+    id              uuid DEFAULT uuidv7() PRIMARY KEY,
+    ran_at          timestamptz DEFAULT now(),
+    model_tag       text,       -- e.g. "qwen3.6-35b" / "qwen3.5-legacy"
+    embedding_model text,
+    reranker_model  text,
+    query_count     int NOT NULL,
+    recall_at_10    real,
+    mrr             real,
+    ndcg_at_10      real,
+    per_query       jsonb NOT NULL DEFAULT '[]'::jsonb,
+    config          jsonb NOT NULL DEFAULT '{{}}'::jsonb,
+    notes           text
+);
+CREATE INDEX IF NOT EXISTS idx_eval_runs_ran_at
+    ON eval_runs (ran_at DESC);
+
+-- ──────────────────────────────────────────────
 -- Drop unused legacy table
 -- ──────────────────────────────────────────────
 DROP TABLE IF EXISTS memory_relations;
