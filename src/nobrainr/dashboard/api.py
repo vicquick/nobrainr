@@ -1229,6 +1229,69 @@ async def api_galaxy(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+async def api_eval_runs(request: Request) -> JSONResponse:
+    """Last N retrieval eval sweeps — for the dashboard quality trend."""
+    from nobrainr.services.eval_retrieval import latest_eval_runs
+
+    try:
+        limit = int(request.query_params.get("limit", 30))
+    except ValueError:
+        limit = 30
+    runs = await latest_eval_runs(limit=max(1, min(limit, 200)))
+    for r in runs:
+        if r.get("ran_at"):
+            r["ran_at"] = r["ran_at"].isoformat()
+    return JSONResponse({"runs": runs})
+
+
+async def api_eval_run_now(request: Request) -> JSONResponse:
+    """Trigger a retrieval eval sweep immediately. Used for A/B comparisons
+    after a config change without waiting for the weekly scheduler tick.
+    """
+    from nobrainr.services.eval_retrieval import run_retrieval_eval
+
+    body: dict = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    result = await run_retrieval_eval(
+        model_tag=body.get("model_tag"),
+        notes=body.get("notes") or "manual",
+    )
+    return JSONResponse(result)
+
+
+async def api_eval_golden(request: Request) -> JSONResponse:
+    """List active golden queries so reviewers can vet/adjust them."""
+    from nobrainr.db.pool import get_pool
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id::text, query, expected_ids, notes, tags, active, created_at
+            FROM eval_golden_queries
+            ORDER BY created_at DESC
+            LIMIT 500
+            """
+        )
+    return JSONResponse({
+        "queries": [
+            {
+                "id": r["id"],
+                "query": r["query"],
+                "expected_ids": [str(eid) for eid in (r["expected_ids"] or [])],
+                "notes": r["notes"],
+                "tags": list(r["tags"] or []),
+                "active": r["active"],
+                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+            }
+            for r in rows
+        ]
+    })
+
+
 api_routes = [
     Route("/api/transcribe", api_transcribe, methods=["POST"]),
     Route("/api/tts", api_tts, methods=["POST"]),
@@ -1260,4 +1323,7 @@ api_routes = [
     Route("/api/tags", api_tags),
     Route("/api/events", api_events),
     Route("/api/monitoring", api_monitoring),
+    Route("/api/eval/runs", api_eval_runs),
+    Route("/api/eval/run", api_eval_run_now, methods=["POST"]),
+    Route("/api/eval/golden", api_eval_golden),
 ]

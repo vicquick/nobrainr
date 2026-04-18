@@ -177,6 +177,29 @@ class Settings(BaseSettings):
     lesson_classifier_interval_hours: float = 6.0
     lesson_classifier_batch_size: int = 10
 
+    # Retrieval eval harness (2026-04-18) — golden-set Recall@10/MRR/nDCG
+    # runs periodically so we spot regressions when swapping embedding
+    # models, rerankers, or RRF/HNSW parameters. Weekly default.
+    retrieval_eval_interval_hours: float = 168.0  # 7 days
+    retrieval_eval_k: int = 10
+
+    # Auto-negative outcome logging (2026-04-18) — feedback loop was dead
+    # because nothing ever wrote was_useful=false, so the importance adjuster
+    # had no variance to learn from. memory_search now auto-logs negatives
+    # when retrieval is weak, fed by the same trace_id the UI uses so the
+    # scheduler feedback job can down-rank misfiring memories.
+    auto_negative_outcomes_enabled: bool = True
+    # Log negative for every surfaced result when <N results come back. Low
+    # recall is a signal that none of them were strongly relevant.
+    auto_negative_low_recall_threshold: int = 3
+    # Log negative for top-1 when reranker score is below this. Threshold
+    # picked from the memory_search default threshold (0.3) — below that
+    # the cross-encoder is telling us "nothing here really matches."
+    auto_negative_low_rerank_threshold: float = 0.3
+    # Context string written to memory_outcomes.context so the signal is
+    # distinguishable from human feedback in the scheduler feedback loop.
+    auto_negative_context_prefix: str = "auto:"
+
     # Monitoring & Alerts
     monitoring_enabled: bool = True
     monitoring_interval_hours: float = 1.0

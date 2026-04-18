@@ -100,6 +100,7 @@ class Scheduler:
             {"name": "entity_pruning", "interval_hours": 4.0, "type": "sql"},
             {"name": "hub_dampening", "interval_hours": 4.0, "type": "sql"},
             {"name": "bridge_detection", "interval_hours": 6.0, "type": "sql"},
+            {"name": "retrieval_eval", "interval_hours": settings.retrieval_eval_interval_hours, "type": "sql"},
             {"name": "monitor_health", "interval_hours": settings.monitoring_interval_hours, "type": "system"},
             {"name": "email_digest", "interval_hours": 24.0, "type": "system"},
         ]
@@ -185,6 +186,13 @@ class Scheduler:
                     "bridge_detection",
                     self._job_bridge_detection,
                     6.0 * 3600,  # every 6 hours — after community_detection
+                )
+            ),
+            asyncio.create_task(
+                self._run_periodic(
+                    "retrieval_eval",
+                    self._job_retrieval_eval,
+                    settings.retrieval_eval_interval_hours * 3600,
                 )
             ),
         ]
@@ -588,6 +596,29 @@ class Scheduler:
             "feedback_adjusted": updated,
             "ran_at": datetime.now().isoformat(),
         }
+
+    @staticmethod
+    async def _job_retrieval_eval() -> dict:
+        """Run the retrieval golden-set eval and record metrics.
+
+        Weekly sweep of Recall@10 / MRR / nDCG@10 so we catch regressions
+        when swapping models or tweaking the RRF / reranker pipeline.
+        """
+        from nobrainr.services.eval_retrieval import run_retrieval_eval
+        try:
+            result = await run_retrieval_eval(
+                model_tag=settings.extraction_model,
+                notes="scheduler",
+            )
+        except Exception as exc:
+            logger.exception("retrieval_eval job failed")
+            return {
+                "status": "error",
+                "error": str(exc),
+                "ran_at": datetime.now().isoformat(),
+            }
+        result["ran_at"] = datetime.now().isoformat()
+        return result
 
     @staticmethod
     async def _job_memory_decay() -> dict:
