@@ -57,7 +57,17 @@ class Settings(BaseSettings):
     #  - "flashrank": ONNX, English-only MiniLM, ~100ms for 30 docs. Fallback for
     #    environments that can't install torch.
     reranker_enabled: bool = True
-    reranker_backend: str = "sentence-transformers"
+    # Backend preference order. "http" hits a dedicated TEI sidecar
+    # (ghcr.io/huggingface/text-embeddings-inference), keeps the backend
+    # container thin and model updates independent. Falls through to
+    # local sentence-transformers (then flashrank) on HTTP failure so
+    # the reranker stays available if the sidecar is mid-deploy.
+    reranker_backend: str = "http"
+    # URL of the TEI sidecar. Resolved in-cluster via Docker DNS on the
+    # `mcp` network (alias `reranker`). Override with NOBRAINR_RERANKER_URL
+    # if routing differs per deploy.
+    reranker_url: str = "http://reranker:80"
+    reranker_http_timeout_s: float = 30.0
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
     reranker_fallback_model: str = "ms-marco-MiniLM-L-12-v2"  # flashrank name
     # Cap concurrent cross-encoder runs. i5-13500 = 20 threads but a single
