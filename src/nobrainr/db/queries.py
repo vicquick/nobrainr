@@ -36,6 +36,7 @@ async def store_memory(
     category: str | None = None,
     confidence: float = 1.0,
     metadata: dict | None = None,
+    fts_context: str | None = None,
 ) -> dict:
     from nobrainr.config import settings
     from nobrainr.utils.tags import canonicalize_tags
@@ -46,8 +47,8 @@ async def store_memory(
             """
             INSERT INTO memories (content, summary, embedding, source_type, source_machine,
                                   source_ref, tags, category, confidence, metadata,
-                                  embedding_model)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)
+                                  embedding_model, fts_context)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12)
             RETURNING id, created_at
             """,
             content,
@@ -61,6 +62,7 @@ async def store_memory(
             confidence,
             _jsonb(metadata),
             settings.embedding_model,
+            fts_context,
         )
         result = {"id": str(row["id"]), "created_at": row["created_at"].isoformat()}
         publish("memory_created", {"id": result["id"]})
@@ -361,11 +363,11 @@ async def _hybrid_search_rrf(
                    confidence, metadata, created_at, updated_at, importance, stability,
                    access_count, last_accessed_at, quality_score, embedding_model, tier,
                    ts_rank(
-                       to_tsvector('simple', nb_unaccent(content || ' ' || COALESCE(search_keys, ''))),
+                       to_tsvector('simple', nb_unaccent(content || ' ' || COALESCE(search_keys, '') || ' ' || COALESCE(fts_context, ''))),
                        plainto_tsquery('simple', nb_unaccent($1))
                    ) AS fts_rank
             FROM memories
-            WHERE to_tsvector('simple', nb_unaccent(content || ' ' || COALESCE(search_keys, '')))
+            WHERE to_tsvector('simple', nb_unaccent(content || ' ' || COALESCE(search_keys, '') || ' ' || COALESCE(fts_context, '')))
                   @@ plainto_tsquery('simple', nb_unaccent($1))
               {fts_extra}{tier_filter}
             ORDER BY fts_rank DESC
@@ -410,6 +412,66 @@ async def _hybrid_search_rrf(
                 id_sql, *id_tokens, overfetch, *id_fparams,
             )
 
+        # 2c) Graph-aware branch (2026-04-19, HippoRAG-lite). Fuzzy-match the
+        # query against entities.canonical_name via pg_trgm, then lift memories
+        # linked to those entities. Cheap proxy for full Personalized PageRank
+        # that captures most of the associative-memory lift without the graph
+        # algorithm overhead. Only runs for queries of meaningful length
+        # (short queries → too many trigram candidates) and when the graph is
+        # populated. Optional via settings.graph_branch_enabled.
+        graph_rows: list = []
+        if (
+            _cfg.graph_branch_enabled
+            and text_query
+            and len(text_query) >= _cfg.graph_branch_min_query_chars
+        ):
+            g_extra, g_fparams, _ = _build_filter_clause(
+                4, tags, category, source_type, source_machine,
+                date_from=date_from, date_to=date_to,
+            )
+            # Set trigram threshold low enough to catch variations; hub
+            # dampening (idf specificity) keeps high-fanout entities from
+            # dominating — generic hubs like "Python" shouldn't swamp the
+            # retrieval for every query mentioning Python.
+            graph_sql = f"""
+                WITH matched_entities AS (
+                    SELECT id, similarity(canonical_name, $1) AS sim,
+                           COALESCE(specificity, 1.0) AS idf
+                    FROM entities
+                    WHERE canonical_name % $1
+                      AND similarity(canonical_name, $1) >= $2
+                    ORDER BY sim DESC
+                    LIMIT $3
+                )
+                SELECT m.id, m.content, m.summary, m.source_type, m.source_machine,
+                       m.tags, m.category, m.confidence, m.metadata,
+                       m.created_at, m.updated_at, m.importance, m.stability,
+                       m.access_count, m.last_accessed_at, m.quality_score,
+                       m.embedding_model, m.tier,
+                       SUM(me.sim * me.idf * COALESCE(em.confidence, 0.5)) AS graph_score
+                FROM memories m
+                JOIN entity_memories em ON em.memory_id = m.id
+                JOIN matched_entities me ON me.id = em.entity_id
+                WHERE true {g_extra}{tier_filter}
+                GROUP BY m.id
+                ORDER BY graph_score DESC
+                LIMIT $4
+            """
+            try:
+                graph_rows = await conn.fetch(
+                    graph_sql,
+                    text_query,
+                    _cfg.graph_branch_trigram_threshold,
+                    _cfg.graph_branch_max_entities,
+                    overfetch,
+                    *g_fparams,
+                )
+            except Exception as exc:
+                # If entities schema is missing specificity (older deploys),
+                # swallow — graph branch is additive, not load-bearing.
+                logger.debug("graph branch skipped: %s", exc)
+                graph_rows = []
+
         # 3) Reciprocal Rank Fusion
         rrf_scores: dict[str, float] = {}
         rows_by_id: dict[str, object] = {}
@@ -430,6 +492,17 @@ async def _hybrid_search_rrf(
         for rank, row in enumerate(id_rows, start=1):
             rid = str(row["id"])
             rrf_scores[rid] = rrf_scores.get(rid, 0.0) + 1.0 / (rrf_k + rank)
+            if rid not in rows_by_id:
+                rows_by_id[rid] = row
+
+        # Graph-aware branch. Dampened weight so it lifts associative
+        # matches without drowning the strictly-semantic top hits.
+        for rank, row in enumerate(graph_rows, start=1):
+            rid = str(row["id"])
+            rrf_scores[rid] = (
+                rrf_scores.get(rid, 0.0)
+                + _cfg.graph_branch_rrf_weight / (rrf_k + rank)
+            )
             if rid not in rows_by_id:
                 rows_by_id[rid] = row
 

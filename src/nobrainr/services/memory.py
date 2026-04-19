@@ -255,7 +255,11 @@ async def store_memory_with_extraction(
         except Exception:
             logger.exception("Write path decision failed, storing as new")
 
-    # Store new memory (ADD or SUPERSEDE fall-through)
+    # Store new memory (ADD or SUPERSEDE fall-through). Contextual BM25
+    # (2026-04-19): the same prefix we prepend to the embedding input is
+    # also written to the fts_context column so the FTS GIN index can see
+    # it — Anthropic's contextual-retrieval paper documents 35%→49%
+    # failure reduction when BOTH branches are contextualized.
     result = await queries.store_memory(
         content=content,
         embedding=embedding,
@@ -267,6 +271,7 @@ async def store_memory_with_extraction(
         category=category,
         confidence=confidence,
         metadata=metadata,
+        fts_context=contextual_prefix,
     )
 
     # For SUPERSEDE, backlink the archived memory

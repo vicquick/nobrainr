@@ -780,6 +780,23 @@ async def memory_search(
     else:
         results = all_results[0]
 
+    # Skip-when-dominant (2026-04-19): if the top-1 RRF score is
+    # strongly dominant over top-2 (ratio > threshold), the reranker
+    # can't meaningfully reorder — top-1 is going to stay top-1. Skip
+    # it and save the CPU for harder queries. Quality tier stays "A"
+    # because the ranking IS the confident one.
+    _rerank_skip_dominant = False
+    if (
+        settings.rerank_skip_when_dominant
+        and len(results) >= 2
+        and results[0].get("rrf_score") is not None
+        and results[1].get("rrf_score") is not None
+    ):
+        r0 = float(results[0]["rrf_score"])
+        r1 = float(results[1]["rrf_score"]) or 1e-9
+        if r0 / r1 >= settings.rerank_skip_dominance_ratio:
+            _rerank_skip_dominant = True
+
     # Rerank with cross-encoder if enabled. Skip if we've already burned
     # most of the budget on earlier stages — returning an RRF-sorted
     # result at tier C is strictly better than a timeout at tier E.
@@ -787,6 +804,7 @@ async def memory_search(
         settings.reranker_enabled
         and len(results) > 1
         and not _over(settings.search_rerank_budget_frac)
+        and not _rerank_skip_dominant
     ):
         # Reranker gets the remaining budget as its hard cap. If torch /
         # the thread pool is contended (UMAP pre-warm, parallel inference)
