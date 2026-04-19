@@ -157,6 +157,40 @@ async def _rerank_flashrank(
     return reranked
 
 
+async def _rerank_http(
+    query: str,
+    results: list[dict],
+    limit: int,
+) -> list[dict]:
+    """Rerank via a remote text-embeddings-inference (TEI) sidecar.
+
+    Posts {query, texts} to `<reranker_url>/rerank` and gets back a
+    sorted list of {index, score}. Keeps the nobrainr backend image
+    thin (no 560MB reranker weights baked in) and lets us upgrade the
+    reranker independently of the backend deploy cycle.
+    """
+    import httpx
+
+    passages = _build_passages(results)
+    texts = [text for text, _meta in passages]
+    url = settings.reranker_url.rstrip("/") + "/rerank"
+
+    async with httpx.AsyncClient(timeout=settings.reranker_http_timeout_s) as client:
+        resp = await client.post(url, json={"query": query, "texts": texts})
+        resp.raise_for_status()
+        scored = resp.json()
+
+    # TEI returns list of {index, score} sorted by score desc
+    reranked: list[dict] = []
+    for item in scored[:limit]:
+        idx = int(item["index"])
+        if 0 <= idx < len(passages):
+            _text, meta = passages[idx]
+            meta["rerank_score"] = round(float(item["score"]), 4)
+            reranked.append(meta)
+    return reranked
+
+
 async def rerank(
     query: str,
     results: list[dict],
@@ -167,7 +201,9 @@ async def rerank(
 
     Backend selection is controlled by ``NOBRAINR_RERANKER_BACKEND``:
 
-    - ``sentence-transformers`` (default): multilingual BGE reranker.
+    - ``http`` (default from 2026-04-19): remote TEI sidecar, keeps the
+      backend image slim. Falls through to local on HTTP failure.
+    - ``sentence-transformers``: in-process multilingual BGE reranker.
     - ``flashrank``: English-only ONNX fallback.
 
     On any backend failure the function returns ``results[:limit]`` so search
@@ -200,8 +236,18 @@ async def rerank(
         return results[:limit]
 
     try:
-        # Primary path
-        if backend == "sentence-transformers" and _check_sentence_transformers():
+        # Remote TEI sidecar — primary path when reranker_backend="http".
+        # Keeps the backend image thin; model updates decouple from deploys.
+        if backend == "http":
+            try:
+                return await _rerank_http(query, results, limit)
+            except Exception:
+                logger.exception(
+                    "TEI reranker failed, falling through to sentence-transformers"
+                )
+
+        # In-process sentence-transformers path (legacy / fallback)
+        if backend in ("sentence-transformers", "http") and _check_sentence_transformers():
             try:
                 return await _rerank_sentence_transformers(query, results, limit)
             except Exception:
