@@ -44,6 +44,12 @@ ALTER TABLE memories ADD COLUMN IF NOT EXISTS quality_score real;
 --      alternative search keyphrases stored alongside content so memories
 --      are findable from more query angles even with lazy single-word searches.
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS search_keys TEXT;
+-- Contextual BM25 column (2026-04-19, Anthropic contextual retrieval). The
+-- contextual prefix is already prepended to the EMBEDDING input — this
+-- column routes the same prefix into the FTS GIN index so keyword queries
+-- also benefit from chunk-situating context. Documented 35% → 49% failure
+-- reduction when both embeddings AND BM25 see the prefix, not just embed.
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS fts_context TEXT;
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS quality_specificity smallint;
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS quality_actionability smallint;
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS quality_self_containment smallint;
@@ -114,10 +120,21 @@ DROP INDEX IF EXISTS idx_memories_content_fts_en;
 CREATE OR REPLACE FUNCTION nb_unaccent(text) RETURNS text
     LANGUAGE sql IMMUTABLE PARALLEL SAFE STRICT
     AS $$ SELECT public.unaccent($1) $$;
+-- Contextual BM25: the FTS index now includes fts_context (situational
+-- prefix) alongside content + search_keys (fact-augmented key expansion).
+-- Dropping and recreating the old index is safe — any query that reads the
+-- index will fall through to a seq scan for the few seconds of the rebuild.
 DROP INDEX IF EXISTS idx_memories_content_fts;
 CREATE INDEX IF NOT EXISTS idx_memories_content_fts
     ON memories USING gin (
-        to_tsvector('simple', nb_unaccent(content || ' ' || COALESCE(search_keys, '')))
+        to_tsvector(
+            'simple',
+            nb_unaccent(
+                content || ' '
+                || COALESCE(search_keys, '') || ' '
+                || COALESCE(fts_context, '')
+            )
+        )
     );
 
 -- Trigram index for fast ILIKE / similarity() fallback (names, short queries)
