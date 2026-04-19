@@ -1229,6 +1229,103 @@ async def api_galaxy(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+async def api_health_detailed(request: Request) -> JSONResponse:
+    """Real health signals for ops — not just "container up".
+
+    Returns search latency quantiles over the last minute, reranker
+    queue depth, DB pool usage, write queue depth, and scheduler job
+    overdueness. Cheap — every field is a short SQL or in-memory read,
+    no LLM calls, no rerank.
+    """
+    from nobrainr.services.metrics import (
+        rerank_queue_stats,
+        search_latency_stats,
+    )
+    from nobrainr.db.pool import get_pool
+
+    pool = await get_pool()
+    db_stats: dict = {}
+    try:
+        db_stats = {
+            "pool_size": pool.get_size(),
+            "pool_in_use": pool.get_size() - pool.get_idle_size(),
+            "pool_idle": pool.get_idle_size(),
+            "pool_max": pool.get_max_size(),
+            "pool_min": pool.get_min_size(),
+        }
+    except Exception:
+        pass
+
+    async with pool.acquire() as conn:
+        write_queue_depth = await conn.fetchval(
+            "SELECT COUNT(*) FROM memory_write_queue WHERE status IN ('pending','processing')"
+        )
+        write_queue_stale = await conn.fetchval(
+            """
+            SELECT COUNT(*) FROM memory_write_queue
+            WHERE status = 'processing'
+              AND started_at < now() - interval '10 minutes'
+            """
+        )
+        overdue_jobs = await conn.fetch(
+            """
+            SELECT metadata->>'job' AS job,
+                   MAX(created_at) AS last_run,
+                   now() - MAX(created_at) AS since
+            FROM agent_events
+            WHERE event_type = 'scheduler'
+              AND created_at > now() - interval '48 hours'
+            GROUP BY metadata->>'job'
+            HAVING now() - MAX(created_at) > interval '6 hours'
+            ORDER BY since DESC
+            LIMIT 10
+            """
+        )
+        extraction_pending = await conn.fetchval(
+            "SELECT COUNT(*) FROM memories WHERE extraction_status IS NULL OR extraction_status = 'failed'"
+        )
+        quality_unscored = await conn.fetchval(
+            "SELECT COUNT(*) FROM memories WHERE quality_score IS NULL"
+        )
+
+    payload = {
+        "search": search_latency_stats(),
+        "rerank_queue": rerank_queue_stats(),
+        "db": db_stats,
+        "write_queue": {
+            "depth": int(write_queue_depth or 0),
+            "stale_processing": int(write_queue_stale or 0),
+        },
+        "scheduler": {
+            "overdue_jobs_6h": [
+                {"job": r["job"], "last_run": r["last_run"].isoformat(), "since_s": int(r["since"].total_seconds())}
+                for r in overdue_jobs if r["job"]
+            ],
+        },
+        "backlog": {
+            "extraction_pending": int(extraction_pending or 0),
+            "quality_unscored": int(quality_unscored or 0),
+        },
+        "config": {
+            "search_hard_timeout_s": settings.search_hard_timeout_s,
+            "reranker_concurrency": settings.reranker_concurrency,
+            "reranker_queue_timeout_s": settings.reranker_queue_timeout_s,
+        },
+    }
+
+    # Simple traffic-light for ops
+    p99 = payload["search"].get("p99_ms", 0)
+    status = "ok"
+    if p99 > 10000:
+        status = "degraded"
+    if (payload["write_queue"]["stale_processing"] > 0
+            or payload["rerank_queue"].get("current", 0) > 5):
+        status = "degraded"
+    payload["status"] = status
+
+    return JSONResponse(payload)
+
+
 async def api_eval_runs(request: Request) -> JSONResponse:
     """Last N retrieval eval sweeps — for the dashboard quality trend."""
     from nobrainr.services.eval_retrieval import latest_eval_runs
@@ -1326,4 +1423,5 @@ api_routes = [
     Route("/api/eval/runs", api_eval_runs),
     Route("/api/eval/run", api_eval_run_now, methods=["POST"]),
     Route("/api/eval/golden", api_eval_golden),
+    Route("/api/health/detailed", api_health_detailed),
 ]

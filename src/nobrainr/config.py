@@ -70,12 +70,22 @@ class Settings(BaseSettings):
     # responsive under any batch load.
     reranker_queue_timeout_s: float = 10.0
 
+    # End-to-end deadline for memory_search. Above this we short-circuit
+    # expensive stages (rerank, related_memories, chunk_context) and return
+    # whatever we have with a `quality_tier` tag so the caller sees it
+    # got a degraded result instead of a hang. 20s is generous for the
+    # happy path but ruthless under load.
+    search_hard_timeout_s: float = 20.0
+    # Skip the reranker if we've already burned this fraction of the
+    # budget on earlier stages. 0.75 = if ≥15s used out of 20s, skip.
+    search_rerank_budget_frac: float = 0.75
+
     # Security
     cors_origins: list[str] = ["http://localhost:8420"]
     max_content_length: int = 50000  # 50KB max memory content
 
     # Extraction (knowledge graph)
-    extraction_model: str = "qwen3.5:35b"
+    extraction_model: str = "qwen3.6:35b"
     extraction_enabled: bool = True
 
     # Chat (RAG)
@@ -97,7 +107,7 @@ class Settings(BaseSettings):
     source_machine: str = ""
 
     # LLM scheduler jobs — BALANCED MODE: fact extraction + graph evolution
-    scheduler_llm_model: str = "qwen3.5:35b"
+    scheduler_llm_model: str = "qwen3.6:35b"
     summarize_interval_hours: float = 1.0
     summarize_batch_size: int = 20
     consolidation_interval_hours: float = 2.0
@@ -113,7 +123,7 @@ class Settings(BaseSettings):
     chatgpt_distill_interval_hours: float = 2.0  # 2h — backlog done, free GPU for fact extraction
     chatgpt_distill_batch_size: int = 15  # reduced: ~45min/run, releases LLM lock sooner
     chatgpt_distill_concurrency: int = 1
-    chatgpt_distill_model: str = "qwen3.5:35b"
+    chatgpt_distill_model: str = "qwen3.6:35b"
     # Fact extraction (NEW — Mem0-style atomic facts)
     fact_extraction_interval_hours: float = 0.05  # 3min — aggressive during backfill
     fact_extraction_batch_size: int = 200
