@@ -70,6 +70,32 @@ class Settings(BaseSettings):
     # responsive under any batch load.
     reranker_queue_timeout_s: float = 10.0
 
+    # Reranker skip-when-dominant (2026-04-19). If top-1 RRF score is
+    # ≥ rerank_skip_dominance_ratio × top-2 score, skip the reranker —
+    # the cross-encoder can't meaningfully reorder when RRF already has
+    # a clear winner. Saves CPU on easy queries so the reranker is free
+    # when it actually matters. 1.8× is empirically dominant.
+    rerank_skip_when_dominant: bool = True
+    rerank_skip_dominance_ratio: float = 1.8
+
+    # Graph-aware 4th RRF branch (2026-04-19, HippoRAG-lite). Fuzzy-matches
+    # query terms against entities.canonical_name via pg_trgm and lifts
+    # memories that are linked to matched entities in the knowledge graph.
+    # Captures most of the associative-memory lift (HippoRAG 2 reported +7%
+    # on multi-hop tasks) without running full Personalized PageRank.
+    graph_branch_enabled: bool = True
+    # Short queries match too many trigram candidates and slow the branch
+    # down for no quality gain. Skip if query is below this.
+    graph_branch_min_query_chars: int = 8
+    # pg_trgm similarity threshold for entity fuzzy match.
+    graph_branch_trigram_threshold: float = 0.3
+    # Max entities to consider after trigram match.
+    graph_branch_max_entities: int = 20
+    # Graph branch contributes at this RRF weight — less than 1.0 so pure
+    # vector/FTS hits still dominate when they are strong, but enough to
+    # surface associative matches vector alone would miss.
+    graph_branch_rrf_weight: float = 0.6
+
     # End-to-end deadline for memory_search. Above this we short-circuit
     # expensive stages (rerank, related_memories, chunk_context) and return
     # whatever we have with a `quality_tier` tag so the caller sees it

@@ -2121,6 +2121,14 @@ async def contextual_prefix_backfill() -> dict:
             new_embedding = await embed_text(embed_input)
 
             meta["contextual_prefix"] = prefix
+            # Contextual BM25 (2026-04-19): also push the prefix into
+            # the dedicated fts_context column so the FTS GIN index
+            # sees it — the embedding was already enriched above.
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE memories SET fts_context = $1 WHERE id = $2::uuid",
+                    prefix, str(memory_id),
+                )
             await queries.update_memory(
                 str(memory_id),
                 embedding=new_embedding,
