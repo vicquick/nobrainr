@@ -76,7 +76,11 @@ class Settings(BaseSettings):
     # a clear winner. Saves CPU on easy queries so the reranker is free
     # when it actually matters. 1.8× is empirically dominant.
     rerank_skip_when_dominant: bool = True
-    rerank_skip_dominance_ratio: float = 1.8
+    # Raised from 1.8 → 2.5 (2026-04-19): 1.8 caused some rank-1 hits
+    # that the reranker would have promoted from rank-2 to lose out. A
+    # 2.5× gap means RRF had a truly dominant winner and the reranker
+    # really can't change it.
+    rerank_skip_dominance_ratio: float = 2.5
 
     # Graph-aware 4th RRF branch (2026-04-19, HippoRAG-lite). Fuzzy-matches
     # query terms against entities.canonical_name via pg_trgm and lifts
@@ -87,14 +91,18 @@ class Settings(BaseSettings):
     # Short queries match too many trigram candidates and slow the branch
     # down for no quality gain. Skip if query is below this.
     graph_branch_min_query_chars: int = 8
-    # pg_trgm similarity threshold for entity fuzzy match.
-    graph_branch_trigram_threshold: float = 0.3
+    # pg_trgm similarity threshold for entity fuzzy match. 0.5 empirically
+    # (2026-04-19 eval): 0.3 was too loose and pulled semi-matching
+    # entities that RRF-boosted irrelevant memories past the correct
+    # rank-1 hits, causing a -6pp Recall@10 regression. 0.5 requires real
+    # word-level overlap before the graph branch fires.
+    graph_branch_trigram_threshold: float = 0.5
     # Max entities to consider after trigram match.
-    graph_branch_max_entities: int = 20
-    # Graph branch contributes at this RRF weight — less than 1.0 so pure
-    # vector/FTS hits still dominate when they are strong, but enough to
-    # surface associative matches vector alone would miss.
-    graph_branch_rrf_weight: float = 0.6
+    graph_branch_max_entities: int = 10
+    # Graph branch contributes at this RRF weight — kept below 0.5 so
+    # strong vector + FTS hits keep ownership of the top ranks; graph
+    # branch is additive signal for multi-hop, not a prior.
+    graph_branch_rrf_weight: float = 0.35
 
     # End-to-end deadline for memory_search. Above this we short-circuit
     # expensive stages (rerank, related_memories, chunk_context) and return
