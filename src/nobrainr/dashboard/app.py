@@ -58,16 +58,21 @@ _patch_mcp_session_init_race()
 
 
 async def _warm_graph_cache():
-    """Background task: pre-compute graph layout cache on startup."""
+    """Background task: pre-compute graph layout cache on startup.
+
+    Deferred to +5min on 2026-04-19: networkx spring_layout on 3500+
+    nodes pegs CPU for several minutes and starves the reranker /
+    memory_search pipeline. The graph cache only serves the dashboard
+    /api/graph endpoint — it should never delay MCP search.
+    """
     import os
     from nobrainr.dashboard.api import _GRAPH_CACHE_PATH
     if os.path.exists(_GRAPH_CACHE_PATH):
         return  # already cached (shouldn't happen after redeploy, but be safe)
     try:
-        await asyncio.sleep(10)  # let DB pool settle
+        await asyncio.sleep(300)
         from nobrainr.dashboard.api import api_graph
         from starlette.requests import Request
-        # Build a fake request with refresh=true
         scope = {"type": "http", "method": "GET", "path": "/api/graph", "query_string": b"refresh=true", "headers": []}
         request = Request(scope)
         await api_graph(request)
@@ -146,10 +151,14 @@ async def lifespan(app):
     # Pre-warm graph layout cache (runs in background, ~60s)
     asyncio.create_task(_warm_graph_cache())
 
-    # Pre-warm UMAP galaxy cache so the first dashboard load is instant
+    # Pre-warm UMAP galaxy cache so the first dashboard load is instant.
+    # Pushed to +10min on 2026-04-19: Galaxy + graph-layout pre-warm both
+    # peg CPU for minutes and on a 14-vCPU container they starve live
+    # MCP memory_search (reranker is CPU too). Galaxy only benefits the
+    # dashboard UI — it should never delay search.
     async def _warm_galaxy():
         try:
-            await asyncio.sleep(30)  # let DB + graph settle first
+            await asyncio.sleep(600)
             from nobrainr.dashboard.api import api_galaxy
             from starlette.requests import Request
             scope = {"type": "http", "method": "GET", "path": "/api/galaxy",
