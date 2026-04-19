@@ -25,6 +25,22 @@ RUN uv pip install --system --no-cache .
 
 # Run as non-root user
 RUN useradd --create-home --shell /bin/bash nobrainr
+
+# Pre-download the cross-encoder reranker into the image layer. Without
+# this the 560MB weights download at first-search time, and because
+# the reranker runs under an asyncio semaphore (see services/reranker),
+# every concurrent search queues behind the download. Observed on
+# 2026-04-19: fresh container → MCP memory_search hung for minutes
+# right after rebuild, not because of code but because of HF download.
+# Baking the weights makes rebuild→search-ready deterministic at the
+# cost of a ~560MB image layer.
+ENV HF_HOME=/opt/hf_cache \
+    SENTENCE_TRANSFORMERS_HOME=/opt/hf_cache \
+    HF_HUB_DISABLE_TELEMETRY=1
+RUN mkdir -p /opt/hf_cache && \
+    python -c "from sentence_transformers import CrossEncoder; CrossEncoder('BAAI/bge-reranker-v2-m3', max_length=512, device='cpu')" && \
+    chown -R nobrainr:nobrainr /opt/hf_cache
+
 USER nobrainr
 
 # Expose MCP SSE port
