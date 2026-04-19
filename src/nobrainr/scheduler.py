@@ -11,6 +11,30 @@ logger = logging.getLogger("nobrainr")
 
 INITIAL_DELAY_SECONDS = 60
 
+# Per-SQL-job initial delays (seconds). Prevents thundering-herd on boot
+# where every periodic job fires inside the first minute and pegs CPU.
+# LLM jobs already have LLM_JOB_DELAYS below; this is the analog for
+# non-LLM SQL maintenance. Spread across 0-90min so a rebuild doesn't
+# re-saturate the host while the service is still warming caches.
+SQL_JOB_DELAYS: dict[str, float] = {
+    # Fast + cheap — fire early so maintenance metrics are fresh
+    "maintenance": 60,
+    "feedback_integration": 120,
+    "monitor_health": 30,
+    "email_digest": 300,
+    # Medium — one per 5-10 min through first half hour
+    "memory_decay": 300,
+    "auto_tier": 600,
+    "entity_pruning": 900,
+    "hub_dampening": 1200,
+    "bridge_detection": 1500,
+    # Slow / heavy — defer past the boot warm-up window
+    # retrieval_eval runs 30 searches each with reranker, saturates CPU
+    # for minutes. Keep out of the first 30min so interactive callers
+    # have a predictable warm-up.
+    "retrieval_eval": 3600,
+}
+
 # Staggered initial delays for LLM jobs (seconds).
 # Designed for post-extraction graph optimization:
 #   Phase 1: Clean the graph (dedup, connect, describe, cluster)
@@ -327,8 +351,14 @@ class Scheduler:
         logger.info("Scheduler stopped")
 
     async def _run_periodic(self, name: str, job, interval_seconds: float) -> None:
-        """Run a job periodically with initial delay and exception resilience."""
-        await asyncio.sleep(INITIAL_DELAY_SECONDS)
+        """Run a job periodically with initial delay and exception resilience.
+
+        The per-job delay comes from SQL_JOB_DELAYS so restarts don't fire
+        every maintenance job in the first minute. Falls back to the
+        global INITIAL_DELAY_SECONDS when a job isn't listed.
+        """
+        initial = SQL_JOB_DELAYS.get(name, INITIAL_DELAY_SECONDS)
+        await asyncio.sleep(initial)
         while self._running:
             try:
                 logger.info("Running scheduled job: %s", name)

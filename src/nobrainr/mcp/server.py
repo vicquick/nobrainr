@@ -639,9 +639,24 @@ async def memory_search(
     """
     import asyncio
     from datetime import datetime
+    from time import monotonic
 
     limit = max(1, min(limit, 100))
     threshold = max(0.0, min(threshold, 1.0))
+
+    # Budget tracking (2026-04-19): each expensive stage checks elapsed
+    # against search_hard_timeout_s before running. Stages that don't
+    # fit drop out of the pipeline and the result is tagged with
+    # `quality_tier` so the caller knows which stages ran.
+    _t0 = monotonic()
+    _budget_s = settings.search_hard_timeout_s
+    quality_tier = "A"  # A=full, B=no-related, C=no-rerank, D=vec-only, E=timeout
+
+    def _elapsed() -> float:
+        return monotonic() - _t0
+
+    def _over(frac: float) -> bool:
+        return _elapsed() > _budget_s * frac
 
     # Auto-routing query planner — Phase B G2 (v6.7). When enabled, pick the
     # best retrieval strategy for this query shape. Overrides any explicit
@@ -765,8 +780,14 @@ async def memory_search(
     else:
         results = all_results[0]
 
-    # Rerank with cross-encoder if enabled
-    if settings.reranker_enabled and len(results) > 1:
+    # Rerank with cross-encoder if enabled. Skip if we've already burned
+    # most of the budget on earlier stages — returning an RRF-sorted
+    # result at tier C is strictly better than a timeout at tier E.
+    if (
+        settings.reranker_enabled
+        and len(results) > 1
+        and not _over(settings.search_rerank_budget_frac)
+    ):
         try:
             from nobrainr.services.reranker import rerank
             results = await rerank(query, results, limit=limit)
@@ -774,11 +795,14 @@ async def memory_search(
             import logging
             logging.getLogger("nobrainr").exception("Reranker failed, using original ranking")
             results = results[:limit]
+            quality_tier = "C"
     else:
+        if settings.reranker_enabled and len(results) > 1:
+            quality_tier = "C"  # budget exhausted before rerank
         results = results[:limit]
 
     # Expand chunk context: fetch adjacent chunks for continuity
-    if settings.chunk_context_window > 0:
+    if settings.chunk_context_window > 0 and not _over(0.9):
         results = await queries.expand_chunk_context(results, window=settings.chunk_context_window)
 
     # Record interest signal for the search query
@@ -819,7 +843,11 @@ async def memory_search(
     # result listing top-3 memories that share entities with it. One
     # batched SQL query with a window function, so this is O(1) extra
     # round-trips regardless of limit. Opt-in because not every caller
-    # wants the extra payload.
+    # wants the extra payload. Budget-gated: dropped at tier B if we
+    # ran tight on time.
+    if include_related and results and _over(0.9):
+        quality_tier = "B"
+        include_related = False
     if include_related and results:
         try:
             related_map = await queries.get_related_memories_batch(
@@ -835,6 +863,21 @@ async def memory_search(
             )
             for row in results:
                 row["related_memories"] = []
+
+    # Stamp quality tier + elapsed ms on every row so callers can reason
+    # about degradation. Cheap — tiny string + int per result.
+    elapsed_ms = int(_elapsed() * 1000)
+    for row in results:
+        row["quality_tier"] = quality_tier
+        row["search_elapsed_ms"] = elapsed_ms
+
+    # Record for the /api/health/detailed endpoint so operators can see
+    # p95/p99 search latency over the last minute.
+    try:
+        from nobrainr.services.metrics import record_search_latency
+        record_search_latency(elapsed_ms)
+    except Exception:
+        pass
 
     return results
 
