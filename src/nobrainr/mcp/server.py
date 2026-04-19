@@ -788,9 +788,24 @@ async def memory_search(
         and len(results) > 1
         and not _over(settings.search_rerank_budget_frac)
     ):
+        # Reranker gets the remaining budget as its hard cap. If torch /
+        # the thread pool is contended (UMAP pre-warm, parallel inference)
+        # we fall through to RRF order rather than block the caller.
+        remaining = max(0.5, _budget_s - _elapsed())
         try:
             from nobrainr.services.reranker import rerank
-            results = await rerank(query, results, limit=limit)
+            results = await asyncio.wait_for(
+                rerank(query, results, limit=limit),
+                timeout=remaining,
+            )
+        except asyncio.TimeoutError:
+            import logging
+            logging.getLogger("nobrainr").warning(
+                "Reranker exceeded remaining budget %.1fs — tier C fallback",
+                remaining,
+            )
+            results = results[:limit]
+            quality_tier = "C"
         except Exception:
             import logging
             logging.getLogger("nobrainr").exception("Reranker failed, using original ranking")
