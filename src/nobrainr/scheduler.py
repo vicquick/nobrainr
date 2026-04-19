@@ -603,8 +603,40 @@ class Scheduler:
 
         Weekly sweep of Recall@10 / MRR / nDCG@10 so we catch regressions
         when swapping models or tweaking the RRF / reranker pipeline.
+
+        Gate: skip if eval_runs already has a row within one interval
+        window. Without this, every container restart fires the sweep
+        again, which saturates the reranker on CPU for minutes and
+        starves live memory_search requests (observed 2026-04-19).
         """
         from nobrainr.services.eval_retrieval import run_retrieval_eval
+
+        pool = await queries.get_pool()
+        interval_s = settings.retrieval_eval_interval_hours * 3600
+        # Leave a small buffer so the first tick after a legitimate
+        # interval expiry still qualifies (clock drift / job-start delay).
+        cutoff_s = interval_s * 0.95
+        async with pool.acquire() as conn:
+            recent = await conn.fetchval(
+                """
+                SELECT 1 FROM eval_runs
+                WHERE ran_at > now() - ($1 || ' seconds')::interval
+                LIMIT 1
+                """,
+                str(cutoff_s),
+            )
+        if recent:
+            logger.info(
+                "retrieval_eval: skipping — recent run within "
+                "%.1fh window",
+                cutoff_s / 3600,
+            )
+            return {
+                "status": "skipped",
+                "reason": "recent_run_exists",
+                "ran_at": datetime.now().isoformat(),
+            }
+
         try:
             result = await run_retrieval_eval(
                 model_tag=settings.extraction_model,

@@ -37,12 +37,16 @@ def test_hex_with_one_digit_included():
 
 def test_issue_number():
     assert extract_id_tokens("Issue 175 Master LV") == ["175"]
-    assert extract_id_tokens("fix for issue #42") == ["42"]
+    # 2-digit issue #s are dropped as too-short; 3+ digits pass.
+    assert extract_id_tokens("fix for issue #42") == []
+    assert extract_id_tokens("fix for issue #420") == ["420"]
 
 
 def test_pr_number():
     assert extract_id_tokens("PR 147 Qwen3-14B AI") == ["147"]
-    assert extract_id_tokens("pull 92 review") == ["92"]
+    # pull 92 = 2 digits, below min — dropped.
+    assert extract_id_tokens("pull 92 review") == []
+    assert extract_id_tokens("pull 920 review") == ["920"]
 
 
 def test_bare_hash_in_prose_not_mistaken_for_issue():
@@ -61,7 +65,17 @@ def test_full_uuid_preserved():
 def test_bare_hash_without_keyword_matches():
     # # followed by digits should match even without a preceding word
     # boundary ("fixes #42" — space-to-# is not a \b transition).
-    assert extract_id_tokens("fixes #42 today") == ["42"]
+    # 2-digit numbers are dropped as too-short for reliable ILIKE match.
+    assert extract_id_tokens("fixes #42 today") == []
+    assert extract_id_tokens("fixes #421 today") == ["421"]
+
+
+def test_drops_too_short_tokens():
+    # Short tokens cause full-table scans + too-broad matches. Drop them
+    # after regex capture rather than contorting every regex to enforce
+    # length. Minimum 3 chars.
+    assert extract_id_tokens("issue 42 mini") == []
+    assert extract_id_tokens("issue 420 mini") == ["420"]
 
 
 def test_deduplicates():

@@ -94,4 +94,7 @@ def extract_id_tokens(query: str) -> list[str]:
             seen.add(num)
             out.append(num)
 
-    return out
+    # Drop tokens shorter than 3 chars — they trigger a full-table ILIKE
+    # scan and match too broadly ("42" matches every content with that
+    # digit sequence). A too-short token is a false signal, not a hit.
+    return [t for t in out if len(t) >= 3]

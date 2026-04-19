@@ -31,6 +31,21 @@ logger = logging.getLogger("nobrainr")
 _ST_AVAILABLE: bool | None = None
 _FLASHRANK_AVAILABLE: bool | None = None
 
+# Cap concurrent rerank calls. The BGE cross-encoder runs on CPU and each call
+# processes up to 150 candidates through a transformer — saturates 10+ cores
+# when stacked. On 2026-04-19 a 30-query eval sweep saturated the i5-13500 and
+# starved live MCP memory_search for minutes (they queued behind reranking).
+# Semaphore keeps interactive latency predictable at the cost of a little
+# batch-job throughput. Settable via NOBRAINR_RERANKER_CONCURRENCY.
+_RERANK_SEMAPHORE: asyncio.Semaphore | None = None
+
+
+def _get_rerank_semaphore() -> asyncio.Semaphore:
+    global _RERANK_SEMAPHORE
+    if _RERANK_SEMAPHORE is None:
+        _RERANK_SEMAPHORE = asyncio.Semaphore(settings.reranker_concurrency)
+    return _RERANK_SEMAPHORE
+
 
 def _check_sentence_transformers() -> bool:
     global _ST_AVAILABLE
@@ -163,21 +178,45 @@ async def rerank(
 
     backend = (settings.reranker_backend or "sentence-transformers").lower()
 
-    # Primary path
-    if backend == "sentence-transformers" and _check_sentence_transformers():
-        try:
-            return await _rerank_sentence_transformers(query, results, limit)
-        except Exception:
-            logger.exception(
-                "sentence-transformers reranker failed, falling back to flashrank"
-            )
+    # Serialize CPU-heavy reranker work so batch jobs (eval sweeps, LLM
+    # scheduler jobs with rerank fallback) can't starve interactive
+    # memory_search. Waiting here is correct — the results list is already
+    # bounded (≤ overfetch) so the semaphore hold is short for any single
+    # caller; it only clamps total concurrency across the process.
+    sem = _get_rerank_semaphore()
+    try:
+        acquired = await asyncio.wait_for(
+            sem.acquire(), timeout=settings.reranker_queue_timeout_s,
+        )
+    except asyncio.TimeoutError:
+        # Too many reranks queued — skip rather than keep the caller
+        # hanging. Better to return a merely-RRF-sorted list than to
+        # block a chat response for 60s+. Caller sees results without
+        # rerank_score, which the MCP layer passes through cleanly.
+        logger.warning(
+            "rerank queue timeout after %ss — falling back to RRF order",
+            settings.reranker_queue_timeout_s,
+        )
+        return results[:limit]
 
-    # Fallback / explicit choice
-    if _check_flashrank():
-        try:
-            return await _rerank_flashrank(query, results, limit)
-        except Exception:
-            logger.exception("flashrank reranker failed, falling through to no-op")
+    try:
+        # Primary path
+        if backend == "sentence-transformers" and _check_sentence_transformers():
+            try:
+                return await _rerank_sentence_transformers(query, results, limit)
+            except Exception:
+                logger.exception(
+                    "sentence-transformers reranker failed, falling back to flashrank"
+                )
 
-    # Last-ditch no-op
-    return results[:limit]
+        # Fallback / explicit choice
+        if _check_flashrank():
+            try:
+                return await _rerank_flashrank(query, results, limit)
+            except Exception:
+                logger.exception("flashrank reranker failed, falling through to no-op")
+
+        # Last-ditch no-op
+        return results[:limit]
+    finally:
+        sem.release()
