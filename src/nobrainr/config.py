@@ -60,6 +60,15 @@ class Settings(BaseSettings):
     reranker_backend: str = "sentence-transformers"
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
     reranker_fallback_model: str = "ms-marco-MiniLM-L-12-v2"  # flashrank name
+    # Cap concurrent cross-encoder runs. i5-13500 = 20 threads but a single
+    # bge-reranker-v2-m3 call on 150 docs spins 10+ cores. Set to 2 so a
+    # batch caller can't lock out interactive search. See incident
+    # 2026-04-19: 30-query eval sweep pegged CPU at 1063% for minutes.
+    reranker_concurrency: int = 2
+    # Hard cap on how long a rerank can wait for the semaphore before it
+    # gives up and returns pre-rerank order. Keeps interactive search
+    # responsive under any batch load.
+    reranker_queue_timeout_s: float = 10.0
 
     # Security
     cors_origins: list[str] = ["http://localhost:8420"]
