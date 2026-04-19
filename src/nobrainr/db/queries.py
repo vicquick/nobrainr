@@ -374,6 +374,42 @@ async def _hybrid_search_rrf(
             text_query, overfetch, *fts_fparams,
         )
 
+        # 2b) Literal ID-token branch (2026-04-19). Hex hashes, issue/PR
+        # numbers, UUID-prefixes get tokenised away by FTS and carry no
+        # signal in the embedding — so commit-hash-specific queries
+        # ("commit 798461a6") used to miss even when the exact memory
+        # existed in the corpus. Run an extra substring match on each
+        # ID token and feed it into RRF with the standard weight.
+        from nobrainr.utils.id_tokens import extract_id_tokens
+        id_tokens = extract_id_tokens(text_query)
+        id_rows: list = []
+        if id_tokens:
+            # Params: $1..$N = tokens, $N+1 = limit, $N+2+ = filter params
+            n = len(id_tokens)
+            token_ors = " OR ".join(
+                f"content ILIKE '%' || ${i + 1} || '%' "
+                f"OR COALESCE(search_keys, '') ILIKE '%' || ${i + 1} || '%'"
+                for i in range(n)
+            )
+            id_extra, id_fparams, _ = _build_filter_clause(
+                n + 2, tags, category, source_type, source_machine,
+                date_from=date_from, date_to=date_to,
+            )
+            id_sql = f"""
+                SELECT id, content, summary, source_type, source_machine, tags, category,
+                       confidence, metadata, created_at, updated_at, importance, stability,
+                       access_count, last_accessed_at, quality_score, embedding_model, tier,
+                       1.0::real AS literal_score
+                FROM memories
+                WHERE ({token_ors})
+                  {id_extra}{tier_filter}
+                ORDER BY importance DESC NULLS LAST, updated_at DESC
+                LIMIT ${n + 1}
+            """
+            id_rows = await conn.fetch(
+                id_sql, *id_tokens, overfetch, *id_fparams,
+            )
+
         # 3) Reciprocal Rank Fusion
         rrf_scores: dict[str, float] = {}
         rows_by_id: dict[str, object] = {}
@@ -384,6 +420,14 @@ async def _hybrid_search_rrf(
             rows_by_id[rid] = row
 
         for rank, row in enumerate(fts_rows, start=1):
+            rid = str(row["id"])
+            rrf_scores[rid] = rrf_scores.get(rid, 0.0) + 1.0 / (rrf_k + rank)
+            if rid not in rows_by_id:
+                rows_by_id[rid] = row
+
+        # Literal branch gets full RRF weight — an exact hash match is
+        # AS strong a signal as a high-ranked vector or FTS hit.
+        for rank, row in enumerate(id_rows, start=1):
             rid = str(row["id"])
             rrf_scores[rid] = rrf_scores.get(rid, 0.0) + 1.0 / (rrf_k + rank)
             if rid not in rows_by_id:
