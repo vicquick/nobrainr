@@ -109,12 +109,70 @@ async def enqueue_memory_write(
 ) -> dict[str, str]:
     """Enqueue a pending memory write. Fast path — single INSERT, no LLM.
 
-    Returns ``{queue_id, enqueued_at}``. Wakes the worker loop via
-    ``signal_pending`` so the write starts processing immediately instead
-    of waiting for the next poll tick.
+    Cheap SHA256 pre-check (2026-04-20): if an identical-content row
+    already exists as a pending/processing queue row OR was stored as a
+    memory in the last 7 days, short-circuit and return that row's id
+    instead of enqueuing a true duplicate. Saves an entire LLM dedup call
+    (30-90s under n_parallel=1) per near-instant dupe. Same-content detection
+    is strict byte equality — the LLM semantic dedup remains for true
+    rewording / paraphrase cases.
+
+    Returns ``{queue_id, enqueued_at, deduped?}``. Wakes the worker loop
+    via ``signal_pending`` so the write starts processing immediately
+    instead of waiting for the next poll tick.
     """
+    import hashlib
+
+    content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+
     pool = await get_pool()
     async with pool.acquire() as conn:
+        # Content-hash dedup: existing queue row (any active status)?
+        existing = await conn.fetchrow(
+            """
+            SELECT id, status, enqueued_at
+            FROM memory_write_queue
+            WHERE encode(sha256(content::bytea), 'hex') = $1
+              AND status IN ('pending', 'processing', 'done')
+              AND enqueued_at > now() - interval '7 days'
+            ORDER BY enqueued_at ASC
+            LIMIT 1
+            """,
+            content_hash,
+        )
+        if existing:
+            logger.info(
+                "enqueue dedup: identical content already in queue (%s, status=%s) — returning existing queue_id",
+                existing["id"], existing["status"],
+            )
+            return {
+                "queue_id": str(existing["id"]),
+                "enqueued_at": existing["enqueued_at"].isoformat(),
+                "deduped": True,
+            }
+        # Content-hash dedup: already stored as a memory recently?
+        stored = await conn.fetchrow(
+            """
+            SELECT id, created_at
+            FROM memories
+            WHERE encode(sha256(content::bytea), 'hex') = $1
+              AND created_at > now() - interval '7 days'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            content_hash,
+        )
+        if stored:
+            logger.info(
+                "enqueue dedup: identical content already stored as memory %s — skipping",
+                stored["id"],
+            )
+            return {
+                "queue_id": str(stored["id"]),
+                "enqueued_at": stored["created_at"].isoformat(),
+                "deduped": True,
+            }
+
         row = await conn.fetchrow(
             """
             INSERT INTO memory_write_queue (
