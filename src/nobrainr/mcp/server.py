@@ -1100,6 +1100,7 @@ async def memory_aggregate(
             schema=_AGGREGATE_SCHEMA,
             num_ctx=8192,
             think=False,
+            caller_kind="live",
         )
     except Exception as exc:
         return {
