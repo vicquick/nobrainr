@@ -35,14 +35,22 @@ mcp = FastMCP(
         "1. ALWAYS call `memory_search` before starting any task — check what's already known. "
         "This is CRITICAL: past sessions may have solved the same problem, established conventions, "
         "or documented gotchas. Searching first prevents duplicate work and repeated mistakes.\n"
-        "2. Use `memory_store` to save learnings, decisions, patterns, and context. Writes are "
-        "queued — the tool returns in <50ms with a `queue_id`, and a background worker processes "
-        "the full pipeline (embedding, dedup, entity extraction). You usually don't need to wait.\n"
-        "3. Call `memory_feedback` after using search results — report if they were helpful. Pass "
+        "2. If the task involves an ARCHITECTURAL or TECHNICAL CHOICE (stack selection, config "
+        "policy, trade-off, 'should we do X or Y') — ALSO call `decision_search(query, scope=...)` "
+        "to see if this is already settled policy. Decisions are separate from free-form memories: "
+        "they're prescriptive choices with rationale + rejected alternatives. Re-arguing a "
+        "decided choice wastes cycles.\n"
+        "3. Use `memory_store` for observations/learnings — things you DISCOVERED. Use "
+        "`decision_store(scope, decision, rationale, constraints=, alternatives_rejected=)` for "
+        "explicit CHOICES you make. The distinction matters: learnings are descriptive ('BGE "
+        "CPU is 1s/doc'), decisions are prescriptive ('cap BGE at 8'). Writes are queued — the "
+        "tool returns in <50ms with a `queue_id`, and a background worker processes the full "
+        "pipeline (embedding, dedup, entity extraction). You usually don't need to wait.\n"
+        "4. Call `memory_feedback` after using search results — report if they were helpful. Pass "
         "through `search_trace_id`, `search_rank`, and `search_query` from the original result so "
         "we can compute rank-aware metrics (MRR/NDCG).\n"
-        "4. Call `memory_reflect` at session end with a batch of learnings from the session.\n"
-        "5. Use `log_event` to record significant agent activity (session starts, decisions, completions).\n\n"
+        "5. Call `memory_reflect` at session end with a batch of learnings from the session.\n"
+        "6. Use `log_event` to record significant agent activity (session starts, decisions, completions).\n\n"
         "## Write path — queued by default\n"
         "- `memory_store` returns `{status: 'queued', queue_id, enqueued_at}` in <50ms. The worker\n"
         "  processes writes FIFO through the same embedding+dedup+extraction pipeline as before.\n"
@@ -59,6 +67,11 @@ mcp = FastMCP(
         "- `memory_search` — hybrid semantic + text search, reranked. Every result row carries\n"
         "  `search_trace_id`, `search_rank` (1-indexed), and `search_query` so you can close the\n"
         "  feedback loop via memory_feedback and populate MRR/NDCG metrics. Prefer `hybrid=True`.\n"
+        "  Results include learnings, decisions, and all other memory types mixed together.\n"
+        "- `decision_search` — DECISIONS ONLY (category='decision', status='active' by default).\n"
+        "  Use BEFORE making an architectural or technical choice to see prior policy. Takes\n"
+        "  optional `scope` prefix ('nobrainr', 'bimavo/gaeb-parser') and `status` filter.\n"
+        "  Results come back without the noise of free-form memories.\n"
         "- `memory_query` — structured filtering by tags, category, source.\n"
         "- `entity_search` / `entity_graph` — knowledge graph exploration.\n"
         "- `graph_search` / `fact_search` — entity-graph and fact-layer retrieval.\n\n"
@@ -75,7 +88,10 @@ mcp = FastMCP(
         "The MCP server always runs on bimavo but memories are created by agents on many machines. "
         "Wrong source_machine = broken recall by machine. When in doubt, check hostname or read CLAUDE.md.\n"
         "- Use canonical categories: architecture, debugging, deployment, infrastructure, patterns, "
-        "tooling, security, frontend, backend, data, business, documentation, session-log, insight.\n"
+        "tooling, security, frontend, backend, data, business, documentation, session-log, insight, decision.\n"
+        "- Decision vs learning: a LEARNING is a discovery ('found that X behaves Y'); a DECISION\n"
+        "  is a deliberate choice ('we picked A over B because C'). If you write 'we use X instead\n"
+        "  of Y because Z' in a memory, that belongs in `decision_store`, not `memory_store`.\n"
         "- Feedback improves future search ranking — always report usefulness with the trace fields.\n"
         "- Maintenance runs automatically; `memory_maintenance` is available for manual runs."
     ),
@@ -1312,6 +1328,11 @@ async def decision_store(
     all_tags = sorted(set((tags or []) + ["decision", scope_root]))
 
     from nobrainr.db import write_queue
+    # skip_dedup=True for decisions: they're forward-looking singleton writes
+    # meant to be distinct records. Running the LLM dedup/merge classifier
+    # just slows the queue without value — and if a new decision happens to
+    # look like an old one, SUPERSEDING is the right action (see `supersedes`
+    # parameter), not automatic merge.
     enq = await write_queue.enqueue_memory_write(
         content=content,
         summary=f"Decision: {decision}",
@@ -1322,6 +1343,7 @@ async def decision_store(
         source_ref=None,
         confidence=confidence,
         metadata=meta.to_dict(),
+        skip_dedup=True,
     )
     return {
         "status": "queued",
