@@ -49,6 +49,7 @@ async def expand_query(query: str) -> list[str]:
             timeout=15.0,
             keep_alive="24h",
             think=False,
+            caller_kind="live",
         )
         variants = result.get("queries", [])
         # Deduplicate and filter empties

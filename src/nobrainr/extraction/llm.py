@@ -43,12 +43,57 @@ import json
 import logging
 import random
 import re
+import time
 
 import httpx
 
 from nobrainr.config import settings
 
 logger = logging.getLogger("nobrainr")
+
+
+# ──────────────────────────────────────────────
+# Live-vs-scheduler priority cooldown (2026-04-20)
+# ──────────────────────────────────────────────
+# llama-server is pinned at n_parallel=1 (Qwen3.6 hybrid SWA requires it).
+# That means ONE request in-flight at a time, FIFO. Background scheduler
+# jobs (quality_scoring, entity_merging, etc.) and live MCP calls (memory
+# extraction on agent-driven stores, chat, tool invocations) all share the
+# same single slot. Without priority, scheduler work starves interactive
+# UX for minutes at a time.
+#
+# This module keeps a monotonic "last live call" timestamp. Any scheduler
+# call checks it before dispatching and yields for up to `cooldown_s` if a
+# live call fired recently. Cascades naturally: as long as agents keep
+# calling, scheduler stays paused. Once agents go quiet, scheduler
+# resumes. Live calls themselves never wait.
+#
+# This is not perfect priority — a scheduler call already in-flight can
+# still delay the next live call by up to `timeout` seconds — but it
+# eliminates the common case where scheduler fires back-to-back for
+# minutes and completely starves the agent path. As the KB backlog
+# drains over time, scheduler LLM rate drops to ~1 call / few min and
+# the cooldown becomes invisible.
+_last_live_call_ts: float = 0.0
+_LIVE_COOLDOWN_S: float = 5.0
+_LIVE_COOLDOWN_POLL_S: float = 0.5
+
+
+def _mark_live_call() -> None:
+    """Bump the last-live-call timestamp. Called by MCP request paths."""
+    global _last_live_call_ts
+    _last_live_call_ts = time.monotonic()
+
+
+async def _wait_for_live_quiet(caller_kind: str) -> None:
+    """If this is a scheduler call and a live call fired recently, yield."""
+    if caller_kind != "scheduler":
+        return
+    while True:
+        remaining = _LIVE_COOLDOWN_S - (time.monotonic() - _last_live_call_ts)
+        if remaining <= 0:
+            return
+        await asyncio.sleep(min(_LIVE_COOLDOWN_POLL_S, remaining))
 
 # ──────────────────────────────────────────────
 # Retry + timeout policy (see module docstring for rationale)
@@ -331,6 +376,7 @@ async def ollama_chat(
     max_retries: int = DEFAULT_LLM_MAX_RETRIES,
     keep_alive: str = "24h",
     think: bool = False,
+    caller_kind: str = "scheduler",
 ) -> dict:
     """Send a schema-constrained request to llama-server (OpenAI-compatible API).
 
@@ -361,6 +407,14 @@ async def ollama_chat(
     Returns:
         Parsed JSON dict from the LLM response.
     """
+    # Priority cooldown: scheduler calls yield briefly if a live MCP call
+    # fired in the last few seconds. Live callers skip this entirely and
+    # bump the timestamp so subsequent scheduler traffic backs off.
+    if caller_kind == "live":
+        _mark_live_call()
+    else:
+        await _wait_for_live_quiet(caller_kind)
+
     client = _get_llm_client()
 
     payload: dict = {
