@@ -1359,6 +1359,37 @@ async def api_eval_run_now(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+async def api_extraction_eval_runs(request: Request) -> JSONResponse:
+    """Last N extraction-eval sweeps (A/B current vs prior LLM)."""
+    from nobrainr.services.eval_extraction import list_runs
+
+    try:
+        limit = int(request.query_params.get("limit", 30))
+    except ValueError:
+        limit = 30
+    runs = await list_runs(limit=max(1, min(limit, 200)))
+    return JSONResponse({"runs": runs})
+
+
+async def api_extraction_eval_run_now(request: Request) -> JSONResponse:
+    """Trigger an extraction eval sweep immediately."""
+    from nobrainr.config import settings
+    from nobrainr.services.eval_extraction import run_extraction_eval
+
+    body: dict = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    result = await run_extraction_eval(
+        candidate_model=body.get("candidate_model") or settings.extraction_model,
+        incumbent_model=body.get("incumbent_model")
+            or settings.extraction_eval_incumbent_model,
+        sample_size=int(body.get("sample_size", settings.extraction_eval_sample_size)),
+    )
+    return JSONResponse(result)
+
+
 async def api_eval_golden(request: Request) -> JSONResponse:
     """List active golden queries so reviewers can vet/adjust them."""
     from nobrainr.db.pool import get_pool
@@ -1423,5 +1454,7 @@ api_routes = [
     Route("/api/eval/runs", api_eval_runs),
     Route("/api/eval/run", api_eval_run_now, methods=["POST"]),
     Route("/api/eval/golden", api_eval_golden),
+    Route("/api/eval/extraction/runs", api_extraction_eval_runs),
+    Route("/api/eval/extraction/run", api_extraction_eval_run_now, methods=["POST"]),
     Route("/api/health/detailed", api_health_detailed),
 ]
