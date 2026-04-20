@@ -257,19 +257,23 @@
           </div>
 
           <!-- Recent LLM calls -->
-          <div v-if="health.llm_activity?.recent_calls?.length">
-            <div class="text-caption text-medium-emphasis mb-2">Recent LLM calls (last {{ health.llm_activity.recent_calls.length }})</div>
-            <div class="llm-call-list">
-              <div v-for="(call, i) in recentCallsReversed" :key="i" class="llm-call-row"
+          <div v-if="recentCallsReversed.length">
+            <div class="text-caption text-medium-emphasis mb-2">
+              Recent LLM calls
+              <span class="ml-1">· avg {{ avgDuration }}s · {{ liveRatio }}% live</span>
+            </div>
+            <TransitionGroup name="llm-list" tag="div" class="llm-call-list">
+              <div v-for="call in recentCallsReversed" :key="call.started_at" class="llm-call-row"
                 :class="`llm-call--${call.status}`">
                 <span class="caller-dot" :class="`caller-dot--${call.caller_kind}`" :title="call.caller_kind" />
-                <span class="text-body-2 text-truncate flex-grow-1">{{ call.prompt_preview || '(no prompt)' }}</span>
-                <span class="text-caption font-mono text-medium-emphasis ml-2">{{ formatDuration(call.duration_ms) }}</span>
-                <v-icon v-if="call.status === 'in_flight'" icon="mdi-loading" size="14" class="ml-2 rotate" />
-                <v-icon v-else-if="call.status === 'ok'" icon="mdi-check" size="14" class="ml-2 text-success" />
-                <v-icon v-else icon="mdi-alert" size="14" class="ml-2 text-error" />
+                <span class="llm-prompt" :title="call.prompt_preview">{{ call.prompt_preview || '(no prompt)' }}</span>
+                <span class="llm-duration font-mono">{{ displayDuration(call, now) }}</span>
+                <v-icon v-if="call.status === 'in_flight'" icon="mdi-loading" size="14" class="ml-2 rotate text-info" />
+                <v-icon v-else-if="call.status === 'ok'" icon="mdi-check-circle" size="14" class="ml-2 text-success" />
+                <v-icon v-else-if="call.status === 'timeout'" icon="mdi-clock-alert" size="14" class="ml-2 text-warning" />
+                <v-icon v-else icon="mdi-alert-circle" size="14" class="ml-2 text-error" />
               </div>
-            </div>
+            </TransitionGroup>
           </div>
           <div v-else class="text-caption text-medium-emphasis">No recent LLM calls</div>
         </v-card-text>
@@ -318,19 +322,45 @@ const POLL_INTERVAL = 10_000
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let countdownTimer: ReturnType<typeof setInterval> | null = null
 
+// `now` ticks every second so in-flight call durations update live
+const now = ref(Date.now() / 1000)
+let tickTimer: ReturnType<typeof setInterval> | null = null
+
 const recentCallsReversed = computed(() =>
-  (health.value?.llm_activity?.recent_calls ?? []).slice().reverse().slice(0, 10)
+  (health.value?.llm_activity?.recent_calls ?? []).slice().reverse().slice(0, 12)
 )
+
+const avgDuration = computed(() => {
+  const done = recentCallsReversed.value.filter(c => c.status !== 'in_flight' && c.duration_ms > 0)
+  if (!done.length) return '—'
+  const mean = done.reduce((a, c) => a + c.duration_ms, 0) / done.length / 1000
+  return mean.toFixed(1)
+})
+
+const liveRatio = computed(() => {
+  const calls = recentCallsReversed.value
+  if (!calls.length) return 0
+  const live = calls.filter(c => c.caller_kind === 'live').length
+  return Math.round((live / calls.length) * 100)
+})
 
 function formatAge(s: number): string {
   if (s < 60) return `${s}s`
   if (s < 3600) return `${Math.floor(s / 60)}m${s % 60}s`
   return `${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m`
 }
-function formatDuration(ms: number): string {
-  if (!ms) return '—'
-  if (ms < 1000) return `${ms}ms`
-  return `${(ms / 1000).toFixed(1)}s`
+
+function displayDuration(call: LlmCall, nowSec: number): string {
+  if (call.status === 'in_flight') {
+    const elapsed = nowSec - call.started_at
+    if (elapsed < 1) return '<1s'
+    if (elapsed < 60) return `${elapsed.toFixed(0)}s`
+    return `${Math.floor(elapsed / 60)}m${Math.floor(elapsed % 60)}s`
+  }
+  if (!call.duration_ms) return '—'
+  if (call.duration_ms < 1000) return `${call.duration_ms}ms`
+  if (call.duration_ms < 60_000) return `${(call.duration_ms / 1000).toFixed(1)}s`
+  return `${Math.floor(call.duration_ms / 60_000)}m${Math.floor((call.duration_ms % 60_000) / 1000)}s`
 }
 function categoryColor(cat: string | null | undefined): string {
   if (!cat) return 'default'
@@ -427,6 +457,8 @@ onMounted(() => {
   fetchStats()
   fetchHealth()
   pollTimer = setInterval(() => { fetchStats(); fetchHealth() }, POLL_INTERVAL)
+  // Live tick every 1s so in-flight call ages update smoothly between polls
+  tickTimer = setInterval(() => { now.value = Date.now() / 1000 }, 1000)
   countdownTimer = setInterval(() => {
     countdown.value = countdown.value <= 1 ? 10 : countdown.value - 1
   }, 1000)
@@ -435,6 +467,7 @@ onMounted(() => {
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
   if (countdownTimer) clearInterval(countdownTimer)
+  if (tickTimer) clearInterval(tickTimer)
 })
 </script>
 
@@ -501,26 +534,83 @@ onUnmounted(() => {
 .llm-row {
   display: flex;
   align-items: center;
-  padding: 4px 0;
+  padding: 6px 0;
   border-bottom: 1px solid rgba(255,255,255,0.04);
+  font-size: 13px;
 }
 .llm-row:last-child { border-bottom: none; }
-.font-mono { font-family: ui-monospace, "JetBrains Mono", monospace; }
-.llm-call-list { max-height: 280px; overflow-y: auto; }
+.font-mono {
+  font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  font-feature-settings: "tnum" 1;
+}
+
+.llm-call-list {
+  max-height: 360px;
+  overflow-y: auto;
+  border-top: 1px solid rgba(255,255,255,0.04);
+  margin-top: 4px;
+  padding-top: 4px;
+}
 .llm-call-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 12px 1fr 52px 16px;
   align-items: center;
-  padding: 4px 0;
-  font-size: 12px;
+  gap: 8px;
+  padding: 7px 4px;
+  font-size: 12.5px;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+  color: rgb(var(--v-theme-on-surface));
 }
-.llm-call--in_flight { opacity: 0.9; }
-.llm-call--error { opacity: 0.7; }
+.llm-call-row:last-child { border-bottom: none; }
+
+.llm-prompt {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12.5px;
+  color: rgba(255,255,255,0.82);
+  min-width: 0;
+}
+
+.llm-duration {
+  font-size: 11.5px;
+  color: rgba(255,255,255,0.55);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.llm-call--in_flight { background: rgba(33,150,243,0.04); }
+.llm-call--in_flight .llm-prompt { color: rgba(255,255,255,1); font-weight: 500; }
+.llm-call--in_flight .llm-duration { color: rgb(var(--v-theme-info)); }
+.llm-call--error { opacity: 0.65; }
+.llm-call--timeout { opacity: 0.78; }
+
 .caller-dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  margin-right: 8px; flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
-.caller-dot--live { background: rgb(var(--v-theme-success)); box-shadow: 0 0 6px rgba(0,200,83,0.6); }
-.caller-dot--scheduler { background: rgba(255,255,255,0.25); }
+.caller-dot--live {
+  background: rgb(var(--v-theme-success));
+  box-shadow: 0 0 6px rgba(0,200,83,0.55);
+  animation: pulse-live 2.2s ease-in-out infinite;
+}
+.caller-dot--scheduler {
+  background: rgba(255,255,255,0.32);
+}
+@keyframes pulse-live {
+  0%, 100% { opacity: 0.75; transform: scale(1); }
+  50%      { opacity: 1;    transform: scale(1.15); }
+}
 @keyframes rotate { from { transform: rotate(0); } to { transform: rotate(360deg); } }
 .rotate { animation: rotate 1.2s linear infinite; }
+
+/* TransitionGroup: new items slide in, old ones fade out — no full redraw flicker */
+.llm-list-enter-active,
+.llm-list-leave-active { transition: all 320ms cubic-bezier(.2, .9, .3, 1); }
+.llm-list-enter-from   { opacity: 0; transform: translateY(-6px); }
+.llm-list-leave-to     { opacity: 0; transform: translateY(6px); }
+.llm-list-leave-active { position: absolute; width: calc(100% - 32px); }
+.llm-list-move         { transition: transform 320ms cubic-bezier(.2, .9, .3, 1); }
 </style>
