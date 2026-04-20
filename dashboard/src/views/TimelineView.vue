@@ -16,6 +16,19 @@
         clearable
         style="max-width: 200px;"
       />
+      <!-- Write queue indicator — polls /api/health/detailed.write_queue every 15s -->
+      <v-chip
+        v-if="queueInfo"
+        :color="queueChipColor"
+        variant="tonal"
+        size="small"
+        class="ml-auto queue-chip"
+        :class="{ 'queue-chip--busy': queueInfo.depth > 0 }"
+        :title="queueTitle"
+      >
+        <v-icon start size="14" :icon="queueChipIcon" />
+        queue: {{ queueInfo.depth }}<span v-if="queueInfo.stale_processing > 0"> · stale {{ queueInfo.stale_processing }}</span>
+      </v-chip>
     </div>
 
     <!-- Loading -->
@@ -406,12 +419,59 @@ function stopPoll() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
 }
 
+// ── Write queue indicator (polls /api/health/detailed every 15s) ─────────
+interface QueueInfo { depth: number; stale_processing: number }
+const queueInfo = ref<QueueInfo | null>(null)
+let queueTimer: ReturnType<typeof setInterval> | null = null
+
+async function fetchQueue() {
+  if (document.visibilityState !== 'visible') return
+  try {
+    const r = await fetch('/api/health/detailed')
+    if (!r.ok) return
+    const d = await r.json()
+    if (d?.write_queue) queueInfo.value = d.write_queue as QueueInfo
+  } catch { /* transient — next tick will retry */ }
+}
+
+const queueChipColor = computed(() => {
+  const q = queueInfo.value
+  if (!q) return 'default'
+  if (q.stale_processing > 0) return 'error'
+  if (q.depth > 100) return 'warning'
+  if (q.depth > 20) return 'info'
+  if (q.depth > 0) return 'success'
+  return 'default'
+})
+
+const queueChipIcon = computed(() => {
+  const q = queueInfo.value
+  if (!q) return 'mdi-clock-outline'
+  if (q.stale_processing > 0) return 'mdi-alert-circle-outline'
+  if (q.depth === 0) return 'mdi-check-circle-outline'
+  return 'mdi-database-sync-outline'
+})
+
+const queueTitle = computed(() => {
+  const q = queueInfo.value
+  if (!q) return 'write queue status loading…'
+  const parts = [`${q.depth} pending/processing`]
+  if (q.stale_processing > 0) parts.push(`${q.stale_processing} stale (>10min)`)
+  parts.push('polls /api/health/detailed every 15s')
+  return parts.join(' · ')
+})
+
 onMounted(async () => {
   await statsStore.fetchStats()
   fetchTimeline()
   startPoll()
+  fetchQueue()
+  queueTimer = setInterval(fetchQueue, 15000)
 })
-onUnmounted(stopPoll)
+onUnmounted(() => {
+  stopPoll()
+  if (queueTimer) { clearInterval(queueTimer); queueTimer = null }
+})
 </script>
 
 <style scoped>
@@ -423,6 +483,18 @@ onUnmounted(stopPoll)
   padding: 4px 14px;
   border-radius: 8px;
   white-space: nowrap;
+}
+/* Queue indicator — subtle by default, animated pulse when work in flight */
+.queue-chip {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+.queue-chip--busy :deep(.v-icon) {
+  animation: queue-pulse 1.8s ease-in-out infinite;
+}
+@keyframes queue-pulse {
+  0%, 100% { opacity: 0.6; }
+  50%      { opacity: 1; }
 }
 .timeline-line {
   flex-grow: 1;
