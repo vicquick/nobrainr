@@ -1238,6 +1238,153 @@ async def memory_delete(memory_id: str) -> dict:
 
 
 # ──────────────────────────────────────────────
+# Decision memory tools (2026-04-20, ADR-style)
+# ──────────────────────────────────────────────
+# Distinct from free-form memories. A decision is a CHOICE with rationale
+# and rejected alternatives — prescriptive, not descriptive. Pattern from
+# DecisionNode, adapted for our shared Postgres KB. See
+# nobrainr.models.decisions.DecisionMetadata for the full "why" and schema.
+
+
+@mcp.tool()
+async def decision_store(
+    scope: str,
+    decision: str,
+    rationale: str,
+    constraints: list[str] | None = None,
+    alternatives_rejected: list[str] | None = None,
+    supersedes: list[str] | None = None,
+    tags: list[str] | None = None,
+    source_machine: str | None = None,
+    confidence: float = 1.0,
+) -> dict:
+    """Store an ADR-style decision. Different from a learning — a decision is a
+    forward-looking CHOICE with rationale + rejected alternatives, meant to
+    prevent future-you re-arguing it.
+
+    Use when you explicitly pick path A over path B. Use memory_store with
+    category='learning' for observations/discoveries.
+
+    Args:
+        scope: Dotted subsystem path — 'nobrainr/retrieval', 'bimavo/gaeb-parser'.
+        decision: One-sentence imperative. 'Cap BGE reranker at 8 candidates'.
+        rationale: Why this path — concrete reasons, not vibes.
+        constraints: Hard limits that rule out alternatives. e.g. ['20GB VRAM'].
+        alternatives_rejected: Paths considered + short reason each was dropped.
+        supersedes: Memory-IDs of prior decisions this replaces. Set their
+            status='superseded' separately if you want to retire them from search.
+        tags: Extra tags. Always prepends ['decision', <scope-first-segment>].
+        source_machine: Defaults to hostname.
+        confidence: 0-1 reliability. Default 1.0.
+
+    Returns {status, queue_id, enqueued_at} — same shape as memory_store.
+    """
+    from nobrainr.models.decisions import DecisionMetadata
+
+    try:
+        meta = DecisionMetadata(
+            scope=scope,
+            decision=decision,
+            rationale=rationale,
+            constraints=constraints or [],
+            alternatives_rejected=alternatives_rejected or [],
+            supersedes=supersedes or [],
+        )
+    except Exception as exc:
+        return {"error": f"Invalid decision metadata: {exc}"}
+
+    # Content = human-readable rendering so the full decision is searchable
+    # via both embedding + FTS without requiring metadata lookup.
+    parts = [
+        f"DECISION ({scope}): {decision}",
+        f"Rationale: {rationale}",
+    ]
+    if meta.constraints:
+        parts.append("Constraints:\n" + "\n".join(f"- {c}" for c in meta.constraints))
+    if meta.alternatives_rejected:
+        parts.append("Alternatives rejected:\n" + "\n".join(
+            f"- {a}" for a in meta.alternatives_rejected))
+    if meta.supersedes:
+        parts.append("Supersedes: " + ", ".join(meta.supersedes))
+    content = "\n\n".join(parts)
+
+    scope_root = scope.split("/", 1)[0]
+    all_tags = sorted(set((tags or []) + ["decision", scope_root]))
+
+    from nobrainr.db import write_queue
+    enq = await write_queue.enqueue_memory_write(
+        content=content,
+        summary=f"Decision: {decision}",
+        tags=all_tags,
+        category="decision",
+        source_type="agent",
+        source_machine=source_machine,
+        source_ref=None,
+        confidence=confidence,
+        metadata=meta.to_dict(),
+    )
+    return {
+        "status": "queued",
+        "queue_id": enq["queue_id"],
+        "enqueued_at": enq["enqueued_at"],
+        "scope": scope,
+        "message": (
+            "Decision queued. Poll memory_store_status(queue_id) for the "
+            "memory_id. Retrieve later with decision_search(scope=...)."
+        ),
+    }
+
+
+@mcp.tool()
+async def decision_search(
+    query: str,
+    *,
+    scope: str | None = None,
+    status: str = "active",
+    limit: int = 10,
+) -> dict:
+    """Search decisions only (category='decision') — filters out observational
+    learnings and other free-form memories so agents get only prescriptive
+    prior choices. Use this before making an architectural choice, not
+    memory_search, to avoid re-debating settled policy.
+
+    Args:
+        query: Natural language search. Matches against scope + decision +
+            rationale + constraints (all embedded together).
+        scope: Optional exact-prefix scope filter. 'nobrainr' matches
+            'nobrainr/retrieval' and 'nobrainr/extraction'.
+        status: 'active' (default), 'deprecated', 'superseded', or '*' for all.
+        limit: Max results. Default 10.
+    """
+    # Delegate to memory_search with category='decision' then post-filter.
+    from nobrainr.embeddings.ollama import embed_text
+    embedding = await embed_text(query)
+    raw = await queries.search_memories(
+        embedding=embedding,
+        limit=max(limit * 3, 30),  # overfetch so post-filter on scope/status has room
+        text_query=query,
+        category="decision",
+    )
+    out: list[dict] = []
+    for m in raw:
+        md = m.get("metadata") or {}
+        if isinstance(md, str):
+            import json as _json
+            try:
+                md = _json.loads(md)
+            except Exception:
+                md = {}
+        if scope and not str(md.get("scope", "")).startswith(scope):
+            continue
+        if status != "*" and md.get("status", "active") != status:
+            continue
+        out.append(m)
+        if len(out) >= limit:
+            break
+    return {"decisions": out, "count": len(out), "scope": scope, "status": status}
+
+
+# ──────────────────────────────────────────────
 # Procedural memory tools (Phase C G4, 2026-04-12, v6.8)
 # ──────────────────────────────────────────────
 # Letta + LangGraph-inspired: agent-writable rules and instructions that
