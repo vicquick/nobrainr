@@ -1250,6 +1250,7 @@ async def api_health_detailed(request: Request) -> JSONResponse:
     overdueness. Cheap — every field is a short SQL or in-memory read,
     no LLM calls, no rerank.
     """
+    from nobrainr.extraction.llm import llm_activity_snapshot as _llm_activity_snapshot
     from nobrainr.services.metrics import (
         rerank_queue_stats,
         search_latency_stats,
@@ -1280,6 +1281,44 @@ async def api_health_detailed(request: Request) -> JSONResponse:
               AND started_at < now() - interval '10 minutes'
             """
         )
+        # Live view of what the worker is actively chewing on. Helps users
+        # see the queue is actually moving when the bare depth counter
+        # looks stuck for a few minutes on a heavy row.
+        wq_processing_rows = await conn.fetch(
+            """
+            SELECT id, category, source_machine, skip_dedup, attempts,
+                   extract(epoch from (now()-started_at))::int AS age_s,
+                   left(summary, 80) AS summary_preview,
+                   left(content, 180) AS content_preview
+            FROM memory_write_queue
+            WHERE status='processing'
+            ORDER BY started_at ASC
+            LIMIT 5
+            """
+        )
+        # Category breakdown so users can see *what kind* of work is queued
+        # (decisions/insights that do full LLM pipeline vs session-log noise).
+        wq_by_category = await conn.fetch(
+            """
+            SELECT COALESCE(category, '(uncategorised)') AS category, COUNT(*) AS n
+            FROM memory_write_queue
+            WHERE status='pending'
+            GROUP BY category
+            ORDER BY n DESC
+            LIMIT 12
+            """
+        )
+        wq_recent_done = await conn.fetch(
+            """
+            SELECT id, category, result_status,
+                   extract(epoch from (completed_at - COALESCE(started_at, enqueued_at)))::int AS duration_s,
+                   left(summary, 60) AS summary_preview
+            FROM memory_write_queue
+            WHERE status='done' AND completed_at > now() - interval '5 minutes'
+            ORDER BY completed_at DESC
+            LIMIT 10
+            """
+        )
         overdue_jobs = await conn.fetch(
             """
             SELECT metadata->>'job' AS job,
@@ -1308,7 +1347,35 @@ async def api_health_detailed(request: Request) -> JSONResponse:
         "write_queue": {
             "depth": int(write_queue_depth or 0),
             "stale_processing": int(write_queue_stale or 0),
+            "currently_processing": [
+                {
+                    "id": str(r["id"]),
+                    "category": r["category"],
+                    "source_machine": r["source_machine"],
+                    "skip_dedup": bool(r["skip_dedup"]),
+                    "attempts": r["attempts"],
+                    "age_s": int(r["age_s"] or 0),
+                    "summary": r["summary_preview"] or "",
+                    "content_preview": r["content_preview"] or "",
+                }
+                for r in wq_processing_rows
+            ],
+            "pending_by_category": [
+                {"category": r["category"], "count": int(r["n"])}
+                for r in wq_by_category
+            ],
+            "recent_completions": [
+                {
+                    "id": str(r["id"]),
+                    "category": r["category"],
+                    "result_status": r["result_status"],
+                    "duration_s": int(r["duration_s"] or 0),
+                    "summary": r["summary_preview"] or "",
+                }
+                for r in wq_recent_done
+            ],
         },
+        "llm_activity": _llm_activity_snapshot(),
         "scheduler": {
             "overdue_jobs_6h": [
                 {"job": r["job"], "last_run": r["last_run"].isoformat(), "since_s": int(r["since"].total_seconds())}

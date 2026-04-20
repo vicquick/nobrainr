@@ -79,6 +79,34 @@ _LIVE_COOLDOWN_S: float = 5.0
 _LIVE_COOLDOWN_POLL_S: float = 0.5
 
 
+# ── LLM activity ring buffer (2026-04-20) ─────────────────────────────
+# Rolling window of recent llama-server call metadata, exposed via
+# /api/health/detailed for dashboard observability. Pure in-memory, no
+# persistence — when the container restarts the buffer starts fresh.
+# Keeps the dashboard's "Live Pulse" honest: the queue depth alone
+# doesn't tell you whether the LLM is actively working or stalled.
+import collections as _collections
+_LLM_ACTIVITY_MAX = 30
+_llm_recent_calls: "_collections.deque[dict]" = _collections.deque(maxlen=_LLM_ACTIVITY_MAX)
+_llm_active_calls: int = 0
+
+
+def llm_activity_snapshot() -> dict:
+    """Return a JSON-serialisable snapshot of recent LLM activity."""
+    return {
+        "active_calls": _llm_active_calls,
+        "recent_calls": list(_llm_recent_calls),
+    }
+
+
+def _llm_finalize(call_record: dict, start_ts: float, status: str) -> None:
+    """Mark an LLM call record as completed. Patches the deque entry in place."""
+    global _llm_active_calls
+    call_record["status"] = status
+    call_record["duration_ms"] = int((time.monotonic() - start_ts) * 1000)
+    _llm_active_calls = max(0, _llm_active_calls - 1)
+
+
 def _mark_live_call() -> None:
     """Bump the last-live-call timestamp. Called by MCP request paths."""
     global _last_live_call_ts
@@ -415,6 +443,23 @@ async def ollama_chat(
     else:
         await _wait_for_live_quiet(caller_kind)
 
+    # Record LLM call for dashboard observability. We push the start
+    # marker now and patch it with the outcome + duration below.
+    global _llm_active_calls
+    call_start_ts = time.monotonic()
+    # Short, bounded prompt preview (never leaks full prompts — just
+    # enough for the user to know *what kind* of work is in flight).
+    _prompt_preview = (user or system or "")[:80].replace("\n", " ").strip()
+    call_record = {
+        "started_at": time.time(),
+        "caller_kind": caller_kind,
+        "prompt_preview": _prompt_preview,
+        "status": "in_flight",
+        "duration_ms": 0,
+    }
+    _llm_recent_calls.append(call_record)
+    _llm_active_calls += 1
+
     client = _get_llm_client()
 
     payload: dict = {
@@ -471,6 +516,7 @@ async def ollama_chat(
                     )
                     await asyncio.sleep(prev_sleep)
                     continue
+                _llm_finalize(call_record, call_start_ts, "error")
                 raise last_exc
 
             # Non-retryable HTTP error (e.g. 404, 400) — surface immediately.
@@ -487,6 +533,7 @@ async def ollama_chat(
                     )
                     await asyncio.sleep(prev_sleep)
                     continue
+                _llm_finalize(call_record, call_start_ts, "error")
                 raise last_exc
 
             data = resp.json()
@@ -507,8 +554,10 @@ async def ollama_chat(
                     )
                     await asyncio.sleep(prev_sleep)
                     continue
+                _llm_finalize(call_record, call_start_ts, "error")
                 raise last_exc
 
+            _llm_finalize(call_record, call_start_ts, "ok")
             return _extract_json(content, schema)
 
         except (httpx.ReadTimeout, httpx.WriteTimeout) as exc:
@@ -525,6 +574,7 @@ async def ollama_chat(
                 "lengthen timeout or accept the failure)",
                 type(exc).__name__, timeout,
             )
+            _llm_finalize(call_record, call_start_ts, "timeout")
             raise
 
         except RETRYABLE_EXCEPTIONS as exc:
@@ -537,6 +587,7 @@ async def ollama_chat(
                 )
                 await asyncio.sleep(prev_sleep)
                 continue
+            _llm_finalize(call_record, call_start_ts, "error")
             raise
 
         except json.JSONDecodeError as exc:
@@ -550,10 +601,12 @@ async def ollama_chat(
                 )
                 await asyncio.sleep(prev_sleep)
                 continue
+            _llm_finalize(call_record, call_start_ts, "error")
             raise
 
     # Unreachable — each branch either returns or raises — but keep a guard
     # for type-checker completeness.
+    _llm_finalize(call_record, call_start_ts, "error")
     raise last_exc or RuntimeError("ollama_chat exhausted retries with no error captured")
 
 
@@ -616,6 +669,7 @@ async def ollama_generate(
                     )
                     await asyncio.sleep(prev_sleep)
                     continue
+                _llm_finalize(call_record, call_start_ts, "error")
                 raise last_exc
             resp.raise_for_status()
             content = (

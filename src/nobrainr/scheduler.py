@@ -477,6 +477,13 @@ class Scheduler:
                                 metadata=row["metadata"],
                                 skip_dedup=bool(row["skip_dedup"]),
                                 contextual_prefix=row["contextual_prefix"],
+                                # Preserve the original event time: when the
+                                # agent enqueued this row (not when we got
+                                # around to processing it). Otherwise a
+                                # memory about Saturday's audit looks like
+                                # it happened today because the queue was
+                                # backlogged. See 2026-04-20 timeline bug.
+                                event_ts=row["enqueued_at"],
                             ),
                             timeout=MEMORY_WRITE_WORKER_ROW_TIMEOUT,
                         )
