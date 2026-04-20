@@ -10,6 +10,7 @@ Provides store_memory_with_extraction() which handles:
 import asyncio
 import logging
 import re
+from datetime import datetime  # noqa: F401 — type-hint annotation only
 
 from nobrainr.config import settings
 from nobrainr.db import queries
@@ -156,6 +157,7 @@ async def store_memory_with_extraction(
     metadata: dict | None = None,
     skip_dedup: bool = False,
     contextual_prefix: str | None = None,
+    event_ts: "datetime | None" = None,
 ) -> dict:
     """Store a memory with embedding, write-path decision, and async entity extraction.
 
@@ -284,6 +286,7 @@ async def store_memory_with_extraction(
         confidence=confidence,
         metadata=metadata,
         fts_context=contextual_prefix,
+        event_ts=event_ts,
     )
 
     # For SUPERSEDE, backlink the archived memory

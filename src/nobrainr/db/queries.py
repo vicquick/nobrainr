@@ -37,7 +37,17 @@ async def store_memory(
     confidence: float = 1.0,
     metadata: dict | None = None,
     fts_context: str | None = None,
+    event_ts: "datetime | None" = None,
 ) -> dict:
+    """Insert a new memory row.
+
+    event_ts (2026-04-20): when provided, overrides the default now() for
+    created_at. The write queue worker passes the queue row's
+    enqueued_at so the timeline reflects *when the agent observed the
+    event*, not *when the LLM pipeline finished processing it*. Without
+    this, a memory enqueued 2 days ago but dequeued today shows up as
+    "today" on the dashboard — misleading for historical recall.
+    """
     from nobrainr.config import settings
     from nobrainr.utils.tags import canonicalize_tags
 
@@ -47,8 +57,8 @@ async def store_memory(
             """
             INSERT INTO memories (content, summary, embedding, source_type, source_machine,
                                   source_ref, tags, category, confidence, metadata,
-                                  embedding_model, fts_context)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12)
+                                  embedding_model, fts_context, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, COALESCE($13, now()))
             RETURNING id, created_at
             """,
             content,
@@ -63,6 +73,7 @@ async def store_memory(
             _jsonb(metadata),
             settings.embedding_model,
             fts_context,
+            event_ts,
         )
         result = {"id": str(row["id"]), "created_at": row["created_at"].isoformat()}
         publish("memory_created", {"id": result["id"]})
