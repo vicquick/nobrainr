@@ -79,6 +79,15 @@ class Settings(BaseSettings):
     # gives up and returns pre-rerank order. Keeps interactive search
     # responsive under any batch load.
     reranker_queue_timeout_s: float = 10.0
+    # Max candidates sent to the cross-encoder. BGE-reranker-v2-m3 on CPU
+    # Candle is ~1-2s per real-memory text; 8 fits reliably inside the 20s
+    # search_hard_timeout_s even under GPU/CPU contention from extraction.
+    # Replaces the old "full 150 candidates Anthropic recipe" approach which
+    # worked only with GPU — blocked here by Qwen3.6-35B VRAM reservation.
+    # 4-branch RRF already does strong upstream selection so the quality
+    # delta vs 150 is modest on this hybrid pipeline. Raise to 30+ if TEI
+    # gets a GPU slot (requires reducing Qwen --ctx-size to free VRAM).
+    reranker_max_candidates: int = 8
 
     # Reranker skip-when-dominant (2026-04-19). If top-1 RRF score is
     # ≥ rerank_skip_dominance_ratio × top-2 score, skip the reranker —
@@ -170,7 +179,13 @@ class Settings(BaseSettings):
     chatgpt_distill_model: str = "qwen3.6:35b"
     # Fact extraction (NEW — Mem0-style atomic facts)
     fact_extraction_interval_hours: float = 0.05  # 3min — aggressive during backfill
-    fact_extraction_batch_size: int = 200
+    # Cut 200 → 20 on 2026-04-20: a 200-memory batch holds the LLM semaphore
+    # for 10-30min, starving quality_scoring + all other LLM jobs (observed:
+    # quality_scoring last_run was 6h old with 33K unscored backlog). With
+    # batch=20 the extraction loop yields every ~2min, letting sibling jobs
+    # get their turn. Total throughput similar since the fairness yield
+    # sleeps only 5s between batches when backlog exists.
+    fact_extraction_batch_size: int = 20
     # Memory decay
     decay_interval_hours: float = 24.0
     decay_batch_size: int = 50
@@ -245,6 +260,15 @@ class Settings(BaseSettings):
     # models, rerankers, or RRF/HNSW parameters. Weekly default.
     retrieval_eval_interval_hours: float = 168.0  # 7 days
     retrieval_eval_k: int = 10
+
+    # Extraction eval harness (2026-04-20) — A/B current vs prior LLM on
+    # a sample of memories, comparing entity/relationship overlap +
+    # self-judge semantic equivalence. Weekly. Set
+    # NOBRAINR_EXTRACTION_EVAL_INCUMBENT_MODEL to the pre-swap model so
+    # we can catch quality regressions before committing to a new one.
+    extraction_eval_interval_hours: float = 168.0  # 7 days
+    extraction_eval_sample_size: int = 10
+    extraction_eval_incumbent_model: str = "qwen3.5:35b"
 
     # Auto-negative outcome logging (2026-04-18) — feedback loop was dead
     # because nothing ever wrote was_useful=false, so the importance adjuster

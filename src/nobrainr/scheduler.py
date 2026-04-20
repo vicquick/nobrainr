@@ -125,6 +125,7 @@ class Scheduler:
             {"name": "hub_dampening", "interval_hours": 4.0, "type": "sql"},
             {"name": "bridge_detection", "interval_hours": 6.0, "type": "sql"},
             {"name": "retrieval_eval", "interval_hours": settings.retrieval_eval_interval_hours, "type": "sql"},
+            {"name": "extraction_eval", "interval_hours": settings.extraction_eval_interval_hours, "type": "sql"},
             {"name": "monitor_health", "interval_hours": settings.monitoring_interval_hours, "type": "system"},
             {"name": "email_digest", "interval_hours": 24.0, "type": "system"},
         ]
@@ -217,6 +218,13 @@ class Scheduler:
                     "retrieval_eval",
                     self._job_retrieval_eval,
                     settings.retrieval_eval_interval_hours * 3600,
+                )
+            ),
+            asyncio.create_task(
+                self._run_periodic(
+                    "extraction_eval",
+                    self._job_extraction_eval,
+                    settings.extraction_eval_interval_hours * 3600,
                 )
             ),
         ]
@@ -679,6 +687,46 @@ class Scheduler:
                 "error": str(exc),
                 "ran_at": datetime.now().isoformat(),
             }
+        result["ran_at"] = datetime.now().isoformat()
+        return result
+
+    @staticmethod
+    async def _job_extraction_eval() -> dict:
+        """A/B extraction eval (current model vs prior) on a sample of memories.
+
+        Gate: skip if a run already exists within one interval window — the
+        judge path is slow (~1-2min per sample) and frequent repeats have
+        no value.
+        """
+        from nobrainr.services.eval_extraction import run_extraction_eval
+
+        pool = await queries.get_pool()
+        interval_s = settings.extraction_eval_interval_hours * 3600
+        cutoff_s = interval_s * 0.95
+        async with pool.acquire() as conn:
+            recent = await conn.fetchval(
+                """
+                SELECT 1 FROM extraction_eval_runs
+                WHERE ran_at > now() - ($1 || ' seconds')::interval
+                LIMIT 1
+                """,
+                str(cutoff_s),
+            )
+        if recent:
+            logger.info("extraction_eval: skipping — recent run within %.1fh window",
+                        cutoff_s / 3600)
+            return {"status": "skipped", "reason": "recent_run_exists",
+                    "ran_at": datetime.now().isoformat()}
+        try:
+            result = await run_extraction_eval(
+                candidate_model=settings.extraction_model,
+                incumbent_model=settings.extraction_eval_incumbent_model,
+                sample_size=settings.extraction_eval_sample_size,
+            )
+        except Exception as exc:
+            logger.exception("extraction_eval job failed")
+            return {"status": "error", "error": str(exc),
+                    "ran_at": datetime.now().isoformat()}
         result["ran_at"] = datetime.now().isoformat()
         return result
 
