@@ -88,6 +88,7 @@ async def decompose_query(query: str) -> list[str]:
             temperature=0.2,
             num_ctx=512,
             timeout=15.0,
+            caller_kind="live",
             think=False,
         )
         subs = result.get("sub_queries", [])
@@ -153,6 +154,7 @@ async def global_search(query: str, *, max_communities: int = 30) -> dict:
                 num_ctx=1024,
                 timeout=15.0,
                 think=False,
+                caller_kind="live",
             )
             if result.get("relevant") and result.get("score", 0) >= 0.3:
                 comm["relevance_score"] = result["score"]
