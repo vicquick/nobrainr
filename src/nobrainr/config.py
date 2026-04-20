@@ -185,7 +185,7 @@ class Settings(BaseSettings):
     # batch=20 the extraction loop yields every ~2min, letting sibling jobs
     # get their turn. Total throughput similar since the fairness yield
     # sleeps only 5s between batches when backlog exists.
-    fact_extraction_batch_size: int = 20
+    fact_extraction_batch_size: int = 200
     # Memory decay
     decay_interval_hours: float = 24.0
     decay_batch_size: int = 50
