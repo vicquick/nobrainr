@@ -682,23 +682,36 @@ async def api_scheduler(request: Request) -> JSONResponse:
 
 
 async def api_scheduler_pause(request: Request) -> JSONResponse:
-    """Pause the scheduler (stop all background LLM jobs)."""
+    """Soft-pause the scheduler's background LLM maintenance jobs.
+
+    Does NOT stop the memory_write_worker or the stale_processing_reaper —
+    queue drain keeps flowing. Previous behaviour (calling scheduler.stop)
+    killed those as collateral because they shared the _running flag, which
+    silently froze the write queue any time a user tried to "pause scheduler
+    to free GPU". See decision `nobrainr/scheduler` pause-bug 2026-04-20.
+    """
     from nobrainr.scheduler import scheduler
 
     if not scheduler.running:
-        return JSONResponse({"ok": False, "message": "Scheduler already stopped"})
-    await scheduler.stop()
-    return JSONResponse({"ok": True, "message": "Scheduler paused"})
+        return JSONResponse({"ok": False, "message": "Scheduler not running"})
+    if scheduler._llm_jobs_paused:
+        return JSONResponse({"ok": False, "message": "LLM jobs already paused"})
+    scheduler._llm_jobs_paused = True
+    return JSONResponse({"ok": True, "message": "Scheduler LLM jobs paused (queue worker still active)"})
 
 
 async def api_scheduler_resume(request: Request) -> JSONResponse:
-    """Resume the scheduler."""
+    """Resume the scheduler's background LLM maintenance jobs."""
     from nobrainr.scheduler import scheduler
 
-    if scheduler.running:
-        return JSONResponse({"ok": False, "message": "Scheduler already running"})
-    scheduler.start()
-    return JSONResponse({"ok": True, "message": "Scheduler resumed"})
+    if not scheduler.running:
+        # Full cold-start path: scheduler was fully stopped (not soft-paused)
+        scheduler.start()
+        return JSONResponse({"ok": True, "message": "Scheduler started"})
+    if not scheduler._llm_jobs_paused:
+        return JSONResponse({"ok": False, "message": "LLM jobs already running"})
+    scheduler._llm_jobs_paused = False
+    return JSONResponse({"ok": True, "message": "Scheduler LLM jobs resumed"})
 
 
 async def api_recall(request: Request) -> JSONResponse:

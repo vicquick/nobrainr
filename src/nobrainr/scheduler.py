@@ -108,6 +108,18 @@ class Scheduler:
     def __init__(self):
         self._tasks: list[asyncio.Task] = []
         self._running = False
+        # Separate lifecycle flag for the memory_write_worker loop. Before
+        # 2026-04-20 the worker used `self._running` and so was silently
+        # stopped by /api/scheduler/pause, causing the queue to freeze the
+        # moment anyone tried to "pause scheduler to free GPU for queue
+        # drain". Keeping it independent means pause/resume only affects
+        # background LLM maintenance jobs — queue writes keep flowing.
+        self._write_queue_running = False
+        # Soft pause for LLM maintenance jobs. Set True by /api/scheduler/pause
+        # to stop entity_merging/quality_scoring/etc without cancelling tasks
+        # (avoids the 30s tear-down + re-setup ping of full stop/start, and
+        # keeps the write queue worker + reaper untouched).
+        self._llm_jobs_paused = False
         self._llm_semaphore = asyncio.Semaphore(1)  # Hardcoded: single GPU, serialize LLM jobs
 
     @property
@@ -161,6 +173,7 @@ class Scheduler:
         if self._running:
             return
         self._running = True
+        self._write_queue_running = True
 
         # Non-LLM jobs (existing)
         self._tasks = [
@@ -422,7 +435,10 @@ class Scheduler:
             # A reaper failure should never block the worker from starting.
             logger.exception("memory_write_worker: orphan reset failed (continuing)")
 
-        while self._running:
+        # Use independent lifecycle flag so /api/scheduler/pause doesn't
+        # silently kill the queue worker. Pause should only affect the
+        # background LLM maintenance jobs, not durable write processing.
+        while self._write_queue_running:
             try:
                 row = await write_queue.claim_next_pending()
                 if row is None:
@@ -436,9 +452,17 @@ class Scheduler:
                     queue_id, row["attempts"], row["max_attempts"],
                 )
 
-                # Share the LLM semaphore with periodic jobs so a busy
-                # backfill queue doesn't dogpile llama-server.
-                async with self._llm_semaphore:
+                # DO NOT share the scheduler LLM semaphore. llama-server
+                # already serialises at HTTP (n_parallel=1) so the Python-
+                # level semaphore was redundant — and if any scheduler LLM
+                # job hung on its call while holding it, the write queue
+                # worker blocked forever on semaphore acquire (observed
+                # 2026-04-20: worker stopped after 1 row because entity_merging
+                # held _llm_semaphore on a stuck call; queue froze at 124
+                # pending for 30+ min). Dropping the semaphore lets worker
+                # proceed independently; priority is already handled by the
+                # live-vs-scheduler cooldown in extraction/llm.py.
+                if True:
                     try:
                         result = await asyncio.wait_for(
                             store_memory_with_extraction(
@@ -543,6 +567,12 @@ class Scheduler:
         """Run an LLM job periodically with semaphore, timeout, and staggered start."""
         await asyncio.sleep(initial_delay)
         while self._running:
+            # Soft-pause: when /api/scheduler/pause is called we skip
+            # starting new LLM work but keep the loop alive so /resume
+            # resumes instantly without re-creating tasks.
+            if self._llm_jobs_paused:
+                await asyncio.sleep(5)
+                continue
             job_timeout = LLM_JOB_TIMEOUT_OVERRIDES.get(name, LLM_JOB_TIMEOUT)
             try:
                 async with self._llm_semaphore:
@@ -577,6 +607,9 @@ class Scheduler:
         idle_interval = settings.fact_extraction_interval_hours * 3600
         job_timeout = LLM_JOB_TIMEOUT_OVERRIDES.get("fact_extraction", LLM_JOB_TIMEOUT)
         while self._running:
+            if self._llm_jobs_paused:
+                await asyncio.sleep(5)
+                continue
             try:
                 async with self._llm_semaphore:
                     logger.info("Running LLM job: fact_extraction")
