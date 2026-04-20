@@ -403,6 +403,27 @@ CREATE TABLE IF NOT EXISTS eval_runs (
 CREATE INDEX IF NOT EXISTS idx_eval_runs_ran_at
     ON eval_runs (ran_at DESC);
 
+-- Extraction eval (qwen3.6 vs qwen3.5 A/B, LLM-judge self-scored).
+-- Each run re-extracts a sample of memories with the candidate model
+-- and compares entities + relationships against the on-disk extraction
+-- produced by the incumbent. Judge is the candidate itself (Qwen3.6 as
+-- self-judge) — avoids Anthropic API per data-sovereignty policy.
+CREATE TABLE IF NOT EXISTS extraction_eval_runs (
+    id                  uuid DEFAULT uuidv7() PRIMARY KEY,
+    ran_at              timestamptz DEFAULT now(),
+    candidate_model     text NOT NULL,    -- "qwen3.6:35b"
+    incumbent_model     text NOT NULL,    -- "qwen3.5:35b"
+    sample_size         int  NOT NULL,
+    entity_f1           real,             -- mean F1 of entity-name overlap
+    relation_f1         real,             -- mean F1 of relationship-triplet overlap
+    judge_score         real,             -- mean LLM-judge semantic-equivalence 0-1
+    per_memory          jsonb NOT NULL DEFAULT '[]'::jsonb,
+    config              jsonb NOT NULL DEFAULT '{{}}'::jsonb,
+    notes               text
+);
+CREATE INDEX IF NOT EXISTS idx_extraction_eval_runs_ran_at
+    ON extraction_eval_runs (ran_at DESC);
+
 -- ──────────────────────────────────────────────
 -- Drop unused legacy table
 -- ──────────────────────────────────────────────

@@ -171,7 +171,12 @@ async def _rerank_http(
     """
     import httpx
 
-    passages = _build_passages(results)
+    # Cap candidates sent to the cross-encoder. BGE-reranker-v2-m3 on CPU
+    # Candle is ~1-2s/doc on real memory texts — 150 blows the 20s search
+    # budget. See config.reranker_max_candidates docstring for the full
+    # trade-off write-up (RRF does upstream work, so cap is modest loss).
+    capped = results[: settings.reranker_max_candidates]
+    passages = _build_passages(capped)
     texts = [text for text, _meta in passages]
     url = settings.reranker_url.rstrip("/") + "/rerank"
 
