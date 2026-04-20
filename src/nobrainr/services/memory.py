@@ -197,6 +197,18 @@ async def store_memory_with_extraction(
     embed_input = ". ".join(embed_parts) + ". " + content if embed_parts else content
     embedding = await embed_text(embed_input)
 
+    # Fast-path for low-value auto-captured categories: skip the LLM
+    # dedup classifier entirely. session-log auto-captures from claude-code
+    # Stop hooks land ~3× per session (even with client cooldown some slip
+    # through), and dedup LLM takes 30-90s under n_parallel=1 to rule each
+    # one NOOP — a full minute of GPU time spent to say "we already have
+    # this". Short-circuiting here turns writes from 60-90s into 1-2s and
+    # makes the queue drain fast. True semantic similarity is still caught
+    # by the SHA256 pre-check in enqueue_memory_write (below).
+    _FAST_PATH_CATEGORIES = {"session-log"}
+    if category in _FAST_PATH_CATEGORIES:
+        skip_dedup = True
+
     # Write-path decision: ADD / UPDATE / SUPERSEDE / NOOP
     if settings.extraction_enabled and not skip_dedup:
         try:
