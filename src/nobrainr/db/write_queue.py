@@ -132,7 +132,7 @@ async def enqueue_memory_write(
             """
             SELECT id, status, enqueued_at
             FROM memory_write_queue
-            WHERE encode(sha256(content::bytea), 'hex') = $1
+            WHERE encode(sha256(convert_to(content, 'UTF8')), 'hex') = $1
               AND status IN ('pending', 'processing', 'done')
               AND enqueued_at > now() - interval '7 days'
             ORDER BY enqueued_at ASC
@@ -155,7 +155,7 @@ async def enqueue_memory_write(
             """
             SELECT id, created_at
             FROM memories
-            WHERE encode(sha256(content::bytea), 'hex') = $1
+            WHERE encode(sha256(convert_to(content, 'UTF8')), 'hex') = $1
               AND created_at > now() - interval '7 days'
             ORDER BY created_at DESC
             LIMIT 1
