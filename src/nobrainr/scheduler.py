@@ -654,10 +654,37 @@ class Scheduler:
     @staticmethod
     async def _job_maintenance() -> dict:
         """Recompute importance + decay stability + analyze + apply retention
-        (audit_log >7d, memory_versions keep-5)."""
-        importance_count = await queries.recompute_importance()
-        decay_count = await queries.decay_stability()
-        retention = await queries.analyze_tables()
+        (audit_log >7d, memory_versions keep-5).
+
+        Guards against overlap with another maintenance invocation (scheduler
+        tick racing an MCP-triggered run, or a prior tick still finishing)
+        via a session-scoped Postgres advisory lock. ``pg_try_advisory_lock``
+        returns false instead of blocking, so we just skip cleanly when
+        another run is already in flight rather than queue up and deadlock.
+
+        The lock key ``0x4e4252:maintenance`` is arbitrary — just needs to be
+        stable across processes. 1735289411 ≈ hash('nobrainr_maintenance').
+        """
+        pool = await queries.get_pool()
+        LOCK_KEY = 1735289411
+        async with pool.acquire() as conn:
+            acquired = await conn.fetchval(
+                "SELECT pg_try_advisory_lock($1)", LOCK_KEY
+            )
+            if not acquired:
+                logger.info("maintenance: another run is active, skipping this tick")
+                return {
+                    "status": "skipped",
+                    "reason": "another_run_active",
+                    "ran_at": datetime.now().isoformat(),
+                }
+            try:
+                importance_count = await queries.recompute_importance()
+                decay_count = await queries.decay_stability()
+                retention = await queries.analyze_tables()
+            finally:
+                await conn.execute("SELECT pg_advisory_unlock($1)", LOCK_KEY)
+
         return {
             "importance_recomputed": importance_count,
             "stability_decayed": decay_count,
