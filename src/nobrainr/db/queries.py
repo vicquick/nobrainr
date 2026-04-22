@@ -1,11 +1,14 @@
 """Database query functions for memories, entities, and the knowledge graph."""
 
+import asyncio
 import hashlib
 import json
 import logging
+import random
 from datetime import datetime
 from uuid import UUID
 
+import asyncpg
 import numpy as np
 
 from nobrainr.config import settings as _cfg
@@ -1046,6 +1049,33 @@ async def query_memories(
 # Memory intelligence
 # ──────────────────────────────────────────────
 
+# Batch size for online maintenance UPDATEs. At 2000 rows per batch each
+# transaction holds row locks for tens of milliseconds rather than tens of
+# seconds, so concurrent access_count bumps from memory_get almost never
+# deadlock with us. See recompute_importance() / decay_stability() below.
+_MAINTENANCE_BATCH_SIZE = 2000
+
+
+async def _run_with_deadlock_retry(coro_factory, *, retries: int = 4, label: str = "update"):
+    """Await ``coro_factory()`` and retry on Postgres deadlock.
+
+    asyncpg's DeadlockDetectedError is transient — Postgres picked one
+    transaction to abort so the other could finish. The cheap, correct
+    response is to wait a little and re-run. Jittered backoff keeps
+    parallel batches from re-colliding.
+    """
+    for attempt in range(retries):
+        try:
+            return await coro_factory()
+        except asyncpg.exceptions.DeadlockDetectedError:
+            if attempt == retries - 1:
+                logger.warning("%s: deadlock persisted after %d retries", label, retries)
+                raise
+            delay = 0.1 * (2 ** attempt) + random.uniform(0, 0.1)
+            logger.info("%s: deadlock on attempt %d, retrying in %.2fs", label, attempt + 1, delay)
+            await asyncio.sleep(delay)
+
+
 async def recompute_importance() -> int:
     """Recompute importance using graph-structural signals + quality score.
 
@@ -1078,23 +1108,29 @@ async def recompute_importance() -> int:
       + 20% graph proximity (v6.6, Phase B G1)
       − up to 15% outdated-edge penalty (v6.12, Phase J)
       clamped to [0, 1] via GREATEST(0.0, LEAST(1.0, ...))
+
+    v6.13 (2026-04-22): split into a read-only compute phase and a
+    batched apply phase. The old single table-wide UPDATE held row
+    locks for tens of seconds and deadlocked against the access-count
+    bump that fires on every memory_get. Now we materialise new values
+    first (no locks on memories) and apply them in 2000-row chunks with
+    deadlock-retry per chunk.
     """
     pool = await get_pool()
+
+    # Phase 1: read-only compute. SELECT doesn't take row-exclusive locks
+    # on memories, so it coexists cleanly with live access_count bumps.
     async with pool.acquire() as conn:
-        result = await conn.execute(
+        rows = await conn.fetch(
             """
             WITH hot_entities AS (
                 -- Entities linked to any memory accessed in the last 7 days.
-                -- This is the "recent episodes" anchor set from Graphiti.
                 SELECT DISTINCT em.entity_id
                 FROM entity_memories em
                 JOIN memories m2 ON m2.id = em.memory_id
                 WHERE m2.last_accessed_at > NOW() - INTERVAL '7 days'
             ),
             memory_hot_counts AS (
-                -- For each memory, count how many of its linked entities
-                -- are in the hot set. A memory linked to 5 hot entities
-                -- is graph-closer to recent activity than one with 0.
                 SELECT em.memory_id,
                        count(DISTINCT em.entity_id) AS hot_entity_count
                 FROM entity_memories em
@@ -1102,10 +1138,6 @@ async def recompute_importance() -> int:
                 GROUP BY em.memory_id
             ),
             stale_entities AS (
-                -- Entities in the "stale" position of a supersede/deprecate
-                -- edge (Phase J). Both directions are covered:
-                --   * SOURCE of 'replaced_by'-family (source was replaced)
-                --   * TARGET of 'replaces'-family (target was replaced)
                 SELECT source_entity_id AS entity_id
                 FROM entity_relations
                 WHERE relationship_type IN (
@@ -1121,57 +1153,123 @@ async def recompute_importance() -> int:
                 )
             ),
             memory_stale_counts AS (
-                -- For each memory, count how many of its linked entities
-                -- are in the stale set. Higher count = more outdated.
                 SELECT em.memory_id,
                        count(DISTINCT em.entity_id) AS stale_entity_count
                 FROM entity_memories em
                 WHERE em.entity_id IN (SELECT entity_id FROM stale_entities)
                 GROUP BY em.memory_id
             )
-            UPDATE memories m SET importance = GREATEST(0.0, LEAST(1.0,
-                -- 30% entity connectivity (count of linked entities, normalized)
-                (0.3 * LEAST(1.0, COALESCE((
-                    SELECT count(*)::real / 10.0
-                    FROM entity_memories em WHERE em.memory_id = m.id
-                ), 0.0)))
-                -- 30% quality score (LLM-assessed, default 0.5 if not scored)
-              + (0.3 * COALESCE(quality_score, 0.5))
-                -- 20% confidence (source reliability)
-              + (0.2 * COALESCE(confidence, 0.7))
-                -- 20% graph proximity (Graphiti-inspired, v6.6) — memories
-                -- that share entities with recently-accessed ones rise.
-              + (0.2 * LEAST(1.0, COALESCE((
-                    SELECT hot_entity_count::real / 10.0
-                    FROM memory_hot_counts mhc WHERE mhc.memory_id = m.id
-                ), 0.0)))
-                -- -15% outdated-edge penalty (v6.12, Phase J) — memories
-                -- heavily connected to stale-position entities are
-                -- probably outdated. Subtracted after the positive sum.
-              - (0.15 * LEAST(1.0, COALESCE((
-                    SELECT stale_entity_count::real / 5.0
-                    FROM memory_stale_counts msc WHERE msc.memory_id = m.id
-                ), 0.0)))
-            ))
-            WHERE embedding IS NOT NULL
+            SELECT m.id,
+                   GREATEST(0.0, LEAST(1.0,
+                       (0.3 * LEAST(1.0, COALESCE((
+                           SELECT count(*)::real / 10.0
+                           FROM entity_memories em WHERE em.memory_id = m.id
+                       ), 0.0)))
+                     + (0.3 * COALESCE(m.quality_score, 0.5))
+                     + (0.2 * COALESCE(m.confidence, 0.7))
+                     + (0.2 * LEAST(1.0, COALESCE((
+                           SELECT hot_entity_count::real / 10.0
+                           FROM memory_hot_counts mhc WHERE mhc.memory_id = m.id
+                       ), 0.0)))
+                     - (0.15 * LEAST(1.0, COALESCE((
+                           SELECT stale_entity_count::real / 5.0
+                           FROM memory_stale_counts msc WHERE msc.memory_id = m.id
+                       ), 0.0)))
+                   ))::real AS new_importance,
+                   m.importance AS old_importance
+            FROM memories m
+            WHERE m.embedding IS NOT NULL
             """
         )
-        return int(result.split()[-1]) if result else 0
+
+    # Keep only rows whose value actually changes. No-op UPDATEs still take
+    # row locks in Postgres, so pre-filtering cuts the working set hard.
+    changed = [
+        (r["id"], float(r["new_importance"]))
+        for r in rows
+        if r["old_importance"] is None
+        or abs(float(r["old_importance"]) - float(r["new_importance"])) > 1e-6
+    ]
+    if not changed:
+        return 0
+
+    # Phase 2: apply in batches, each its own tiny transaction with retry.
+    total = 0
+    for i in range(0, len(changed), _MAINTENANCE_BATCH_SIZE):
+        batch = changed[i : i + _MAINTENANCE_BATCH_SIZE]
+        ids = [row[0] for row in batch]
+        imps = [row[1] for row in batch]
+
+        async def _apply_batch():
+            pool_ = await get_pool()
+            async with pool_.acquire() as conn:
+                async with conn.transaction():
+                    return await conn.execute(
+                        """
+                        UPDATE memories m
+                        SET importance = data.new_importance
+                        FROM unnest($1::uuid[], $2::real[]) AS data(id, new_importance)
+                        WHERE m.id = data.id
+                          AND m.importance IS DISTINCT FROM data.new_importance
+                        """,
+                        ids,
+                        imps,
+                    )
+
+        result = await _run_with_deadlock_retry(
+            _apply_batch, label=f"recompute_importance batch {i // _MAINTENANCE_BATCH_SIZE}"
+        )
+        total += int(result.split()[-1]) if result else 0
+
+    return total
 
 
 async def decay_stability() -> int:
-    """Decay stability for memories not accessed in 7+ days. Returns count updated."""
+    """Decay stability for memories not accessed in 7+ days.
+
+    v6.13 (2026-04-22): same treatment as recompute_importance — pick
+    target ids in a lock-free SELECT, then apply in 2000-row batches so
+    concurrent access-count bumps don't deadlock us.
+    """
     pool = await get_pool()
+
     async with pool.acquire() as conn:
-        result = await conn.execute(
+        rows = await conn.fetch(
             """
-            UPDATE memories
-            SET stability = GREATEST(0.1, stability * 0.95)
+            SELECT id
+            FROM memories
             WHERE (last_accessed_at IS NULL AND created_at < now() - interval '7 days')
                OR (last_accessed_at < now() - interval '7 days')
             """
         )
-        return int(result.split()[-1]) if result else 0
+
+    ids_all = [r["id"] for r in rows]
+    if not ids_all:
+        return 0
+
+    total = 0
+    for i in range(0, len(ids_all), _MAINTENANCE_BATCH_SIZE):
+        chunk = ids_all[i : i + _MAINTENANCE_BATCH_SIZE]
+
+        async def _apply_batch():
+            pool_ = await get_pool()
+            async with pool_.acquire() as conn:
+                async with conn.transaction():
+                    return await conn.execute(
+                        """
+                        UPDATE memories
+                        SET stability = GREATEST(0.1, stability * 0.95)
+                        WHERE id = ANY($1::uuid[])
+                        """,
+                        chunk,
+                    )
+
+        result = await _run_with_deadlock_retry(
+            _apply_batch, label=f"decay_stability batch {i // _MAINTENANCE_BATCH_SIZE}"
+        )
+        total += int(result.split()[-1]) if result else 0
+
+    return total
 
 
 async def normalize_categories(category_map: dict[str, str]) -> int:
