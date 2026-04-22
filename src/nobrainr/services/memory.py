@@ -144,6 +144,41 @@ def _augment_tags_with_lesson(
     return tag_list
 
 
+def _default_situating_prefix(
+    *,
+    event_ts: "datetime | None",
+    source_type: str,
+    source_machine: str | None,
+    source_ref: str | None,
+    category: str | None,
+) -> str:
+    """Build a cheap, LLM-free situating prefix from write-time metadata.
+
+    Anthropic's Contextual Retrieval recipe uses a 1-2 sentence situating
+    context to anchor embeddings of short/vague content. Their own example
+    uses an LLM to generate it, but for single-memory writes the same
+    benefit comes from a deterministic template over the metadata we already
+    have (timestamp, host, source, category). No extra LLM call per write.
+
+    Empty return means the callers' existing contextual_prefix logic kicks
+    back in (e.g. the LLM-generated per-chunk prefix for multi-chunk docs).
+    """
+    parts: list[str] = []
+    if event_ts:
+        parts.append(event_ts.strftime("%Y-%m-%d"))
+    if source_type and source_type != "manual":
+        parts.append(f"via {source_type}")
+    if source_machine:
+        parts.append(f"on {source_machine}")
+    if category:
+        parts.append(f"[{category}]")
+    if source_ref and len(source_ref) <= 80:
+        parts.append(f"ref={source_ref}")
+    if not parts:
+        return ""
+    return " ".join(parts)
+
+
 async def store_memory_with_extraction(
     content: str,
     *,
@@ -188,10 +223,24 @@ async def store_memory_with_extraction(
     # by "coding journey" queries regardless of who wrote it.
     tags = _augment_tags_with_lesson(tags, category, content, source_type)
 
-    # Context-enriched embedding (with optional contextual prefix)
+    # Context-enriched embedding (with optional contextual prefix).
+    # When the caller didn't supply an LLM-generated prefix (the common
+    # single-memory case), fall back to a metadata-derived template prefix
+    # so short memories still get a situating anchor. See
+    # _default_situating_prefix for rationale.
+    effective_prefix = contextual_prefix
+    if not effective_prefix and settings.contextual_embeddings_enabled:
+        effective_prefix = _default_situating_prefix(
+            event_ts=event_ts,
+            source_type=source_type,
+            source_machine=source_machine,
+            source_ref=source_ref,
+            category=category,
+        )
+
     embed_parts = []
-    if contextual_prefix:
-        embed_parts.append(contextual_prefix)
+    if effective_prefix:
+        embed_parts.append(effective_prefix)
     if category:
         embed_parts.append(category)
     if tags:
@@ -285,7 +334,7 @@ async def store_memory_with_extraction(
         category=category,
         confidence=confidence,
         metadata=metadata,
-        fts_context=contextual_prefix,
+        fts_context=effective_prefix,
         event_ts=event_ts,
     )
 
