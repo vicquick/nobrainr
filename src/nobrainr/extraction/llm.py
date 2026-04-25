@@ -462,8 +462,12 @@ async def ollama_chat(
 
     client = _get_llm_client()
 
+    # Model resolves to whatever llama-swap exposes (canonical name or alias).
+    # Hardcoding "qwen3-35b" silently broke after the Qwen3.6 migration —
+    # llama-swap renamed the slot to qwen3-36b-opencode (alias qwen3.6:35b)
+    # and started returning 400 "could not find real modelID for qwen3-35b".
     payload: dict = {
-        "model": "qwen3-35b",
+        "model": model or settings.extraction_model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -638,7 +642,7 @@ async def ollama_generate(
     messages.append({"role": "user", "content": prompt})
 
     payload = {
-        "model": "qwen3-35b",
+        "model": model or settings.extraction_model,
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
