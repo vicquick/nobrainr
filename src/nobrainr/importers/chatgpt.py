@@ -8,6 +8,7 @@ Phase 2: distill_conversations() — LLM extracts learnings from raw conversatio
 import asyncio
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 
 from nobrainr.db import queries
@@ -36,6 +37,30 @@ def _normalize_machine(name: str | None) -> str | None:
     if not name:
         return name
     return _MACHINE_ALIASES.get(name, name)
+
+
+def _machine_for_source_type(source_type: str | None) -> str:
+    """Map a conversations_raw.source_type to the canonical source_machine.
+
+    Conversations come from a service (chatgpt, claude_web), not a host
+    machine. Tagging them with whichever laptop happened to run the import
+    is drift — it makes "where was this from" unanswerable. Pin it to the
+    service so source_machine actually means something.
+    """
+    return {"chatgpt": "chatgpt", "claude_web": "claude"}.get(source_type or "", source_type or "unknown")
+
+
+def _parse_original_date(metadata: dict | None):
+    """Pull the conversation's true timestamp from raw metadata, if present."""
+    if not metadata:
+        return None
+    raw = metadata.get("original_date")
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")) if isinstance(raw, str) else raw
+    except (TypeError, ValueError):
+        return None
 
 
 # Max chars to send to embedding model
@@ -311,7 +336,7 @@ async def distill_conversations(
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT id, title, messages, metadata
+            SELECT id, title, messages, metadata, source_type
             FROM conversations_raw
             WHERE source_type IN ('chatgpt', 'claude_web')
               AND (metadata->>'distilled') IS NULL
@@ -333,7 +358,11 @@ async def distill_conversations(
         title = row["title"] or "Untitled"
         messages = row["messages"] if isinstance(row["messages"], list) else json.loads(row["messages"])
         metadata = row["metadata"] if isinstance(row["metadata"], dict) else json.loads(row["metadata"] or "{}")
-        machine = _normalize_machine(source_machine or metadata.get("source_machine"))
+        # source_machine pinned to the service (chatgpt/claude), not the
+        # importing host. created_at pulled from the conversation's
+        # original_date so the timeline reflects when the chat happened.
+        machine = _machine_for_source_type(row["source_type"])
+        event_ts = _parse_original_date(metadata)
 
         local_distilled = 0
         local_windows = 0
@@ -423,6 +452,7 @@ async def distill_conversations(
                             "window_index": window_idx,
                             "total_windows": len(windows),
                         },
+                        event_ts=event_ts,
                     )
                     local_distilled += 1
 
@@ -650,7 +680,8 @@ async def store_conversations_as_sessions(
             if isinstance(row["metadata"], dict)
             else json.loads(row["metadata"] or "{}")
         )
-        machine = _normalize_machine(source_machine or metadata.get("source_machine"))
+        machine = _machine_for_source_type(source_type_original)
+        event_ts = _parse_original_date(metadata)
 
         full_text, turn_count = _build_session_text(
             title, messages, max_chars=max_content_chars,
@@ -698,6 +729,7 @@ async def store_conversations_as_sessions(
                         "distill_error",
                     )},
                 },
+                event_ts=event_ts,
             )
             stats["stored"] += 1
             memory_id_from_result = None
