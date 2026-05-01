@@ -78,6 +78,24 @@ _last_live_call_ts: float = 0.0
 _LIVE_COOLDOWN_S: float = 5.0
 _LIVE_COOLDOWN_POLL_S: float = 0.5
 
+# Scheduler-in-flight gauge (2026-05-01).
+# Architectural commitment: live retrieval NEVER queues at llama-server.
+# When a scheduler/write-queue call is currently holding the GPU
+# (n_parallel=1 means the next request waits until the current one
+# finishes), a live LLM call would queue for up to job-timeout seconds.
+# Instead we raise LiveLLMSkipped so the caller's optional LLM enhancement
+# (expand/hyde/decompose/etc.) gracefully degrades to retrieval-only.
+# This is the only way to guarantee retrieval p99 latency on a single-GPU
+# setup short of running a second LLM on a separate device.
+_scheduler_in_flight: int = 0
+
+
+class LiveLLMSkipped(Exception):
+    """Raised when a live LLM call is short-circuited because the GPU is
+    busy with scheduler work. Callers MUST catch this and return their
+    cheap fallback result — the retrieval contract is "never block live
+    paths on the GPU"."""
+
 
 # ── LLM activity ring buffer (2026-04-20) ─────────────────────────────
 # Rolling window of recent llama-server call metadata, exposed via
@@ -99,11 +117,18 @@ def llm_activity_snapshot() -> dict:
     }
 
 
-def _llm_finalize(call_record: dict, start_ts: float, status: str) -> None:
-    """Mark an LLM call record as completed. Patches the deque entry in place."""
-    global _llm_active_calls
+def _llm_finalize(call_record: dict, start_ts: float, status: str, *, track_scheduler: bool = False) -> None:
+    """Mark an LLM call record as completed. Patches the deque entry in place.
+
+    When ``track_scheduler`` is True (i.e. this was not a live call), also
+    decrements the scheduler-in-flight gauge so live callers can resume
+    making LLM-enhanced requests as soon as the GPU frees up.
+    """
+    global _llm_active_calls, _scheduler_in_flight
     call_record["status"] = status
     call_record["duration_ms"] = int((time.monotonic() - start_ts) * 1000)
+    if track_scheduler:
+        _scheduler_in_flight = max(0, _scheduler_in_flight - 1)
     _llm_active_calls = max(0, _llm_active_calls - 1)
 
 
@@ -435,6 +460,22 @@ async def ollama_chat(
     Returns:
         Parsed JSON dict from the LLM response.
     """
+    global _llm_active_calls, _scheduler_in_flight
+
+    # Architectural commitment (2026-05-01): live retrieval NEVER queues
+    # at llama-server behind scheduler work. n_parallel=1 means the second
+    # caller waits until the first completes — which can be minutes for
+    # extraction/distill/etc. So if a scheduler/write-queue call is
+    # currently holding the GPU, raise LiveLLMSkipped immediately and let
+    # the caller fall back to its cheap path (retrieval without LLM
+    # enhancement). Retrieval result quality drops slightly under load,
+    # but latency stays predictable.
+    if caller_kind == "live" and _scheduler_in_flight > 0:
+        raise LiveLLMSkipped(
+            f"GPU busy with {_scheduler_in_flight} scheduler call(s); "
+            "skipping live LLM enhancement"
+        )
+
     # Priority cooldown: scheduler calls yield briefly if a live MCP call
     # fired in the last few seconds. Live callers skip this entirely and
     # bump the timestamp so subsequent scheduler traffic backs off.
@@ -445,7 +486,9 @@ async def ollama_chat(
 
     # Record LLM call for dashboard observability. We push the start
     # marker now and patch it with the outcome + duration below.
-    global _llm_active_calls
+    track_scheduler = caller_kind != "live"
+    if track_scheduler:
+        _scheduler_in_flight += 1
     call_start_ts = time.monotonic()
     # Short, bounded prompt preview (never leaks full prompts — just
     # enough for the user to know *what kind* of work is in flight).
@@ -558,10 +601,10 @@ async def ollama_chat(
                     )
                     await asyncio.sleep(prev_sleep)
                     continue
-                _llm_finalize(call_record, call_start_ts, "error")
+                _llm_finalize(call_record, call_start_ts, "error", track_scheduler=track_scheduler)
                 raise last_exc
 
-            _llm_finalize(call_record, call_start_ts, "ok")
+            _llm_finalize(call_record, call_start_ts, "ok", track_scheduler=track_scheduler)
             return _extract_json(content, schema)
 
         except (httpx.ReadTimeout, httpx.WriteTimeout) as exc:
@@ -578,7 +621,7 @@ async def ollama_chat(
                 "lengthen timeout or accept the failure)",
                 type(exc).__name__, timeout,
             )
-            _llm_finalize(call_record, call_start_ts, "timeout")
+            _llm_finalize(call_record, call_start_ts, "timeout", track_scheduler=track_scheduler)
             raise
 
         except RETRYABLE_EXCEPTIONS as exc:
@@ -591,7 +634,7 @@ async def ollama_chat(
                 )
                 await asyncio.sleep(prev_sleep)
                 continue
-            _llm_finalize(call_record, call_start_ts, "error")
+            _llm_finalize(call_record, call_start_ts, "error", track_scheduler=track_scheduler)
             raise
 
         except json.JSONDecodeError as exc:
@@ -605,12 +648,12 @@ async def ollama_chat(
                 )
                 await asyncio.sleep(prev_sleep)
                 continue
-            _llm_finalize(call_record, call_start_ts, "error")
+            _llm_finalize(call_record, call_start_ts, "error", track_scheduler=track_scheduler)
             raise
 
     # Unreachable — each branch either returns or raises — but keep a guard
     # for type-checker completeness.
-    _llm_finalize(call_record, call_start_ts, "error")
+    _llm_finalize(call_record, call_start_ts, "error", track_scheduler=track_scheduler)
     raise last_exc or RuntimeError("ollama_chat exhausted retries with no error captured")
 
 

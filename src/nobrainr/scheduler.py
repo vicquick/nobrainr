@@ -61,7 +61,11 @@ LLM_JOB_DELAYS = {
     "contradiction_detection": 15 * 60,
     "cross_machine_insights": 16 * 60,
     "insight_extraction": 17 * 60,
-    "chatgpt_distill": 18 * 60,  # runs AFTER knowledge-growth jobs have their first run
+    # Promoted to front of queue 2026-04-30: distill backlog stuck at 1970 for
+    # 4+ days because chatgpt_distill was last in priority and never got the
+    # 2-slot semaphore. With small-first ORDER BY, the trivial-skip path drains
+    # 1300+ short conversations in seconds once the job actually fires.
+    "chatgpt_distill": 60,
     # === Phase 4: External sources ===
     "knowledge_crawl": 24 * 60,
     "entity_web_research": 26 * 60,
@@ -91,7 +95,7 @@ LLM_JOB_TIMEOUT = 30 * 60  # 30 minutes for larger batch sizes
 
 # Per-job timeout overrides for slow jobs (multi-pass distillation etc.)
 LLM_JOB_TIMEOUT_OVERRIDES = {
-    "chatgpt_distill": 60 * 60,   # 60 minutes — reduced batch_size=15, should finish faster
+    "chatgpt_distill": 120 * 60,   # 120 minutes — multi-pass × 2 conversations × shared GPU
     "community_detection": 90 * 60,  # 42k entities + 50 community summaries = slow
 }
 
@@ -126,7 +130,11 @@ class Scheduler:
         # (avoids the 30s tear-down + re-setup ping of full stop/start, and
         # keeps the write queue worker + reaper untouched).
         self._llm_jobs_paused = False
-        self._llm_semaphore = asyncio.Semaphore(1)  # Hardcoded: single GPU, serialize LLM jobs
+        # Semaphore size is env-configurable. Default 1 = strict serialization.
+        # Bumping to 2-4 lets fact_extraction's dedicated loop run alongside
+        # memory_write_worker + a maintenance job — llama-server serializes
+        # internally (n_parallel=1) so the GPU stays safe regardless.
+        self._llm_semaphore = asyncio.Semaphore(settings.scheduler_llm_concurrency)
 
     @property
     def running(self) -> bool:
