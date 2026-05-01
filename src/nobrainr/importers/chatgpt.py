@@ -340,7 +340,7 @@ async def distill_conversations(
             FROM conversations_raw
             WHERE source_type IN ('chatgpt', 'claude_web')
               AND (metadata->>'distilled') IS NULL
-            ORDER BY imported_at ASC
+            ORDER BY COALESCE(message_count, 0) ASC, imported_at ASC
             LIMIT $1
             """,
             batch_size,

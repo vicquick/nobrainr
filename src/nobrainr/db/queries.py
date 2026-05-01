@@ -227,7 +227,7 @@ async def search_memories(
             )
             SELECT id, content, summary, source_type, source_machine, tags, category,
                    confidence, metadata, created_at, updated_at, importance, stability,
-                   access_count, last_accessed_at, quality_score, embedding_model, tier,
+                   access_count, last_accessed_at, quality_score, embedding_model, tier, trust_score, verified_at, superseded_by, claim_kind,
                    1 - (embedding <=> $1::{_VEC}) AS similarity,
                    memory_relevance($1::{_VEC}, embedding, created_at, importance, stability, access_count, now(), quality_score) AS relevance
             FROM candidates
@@ -352,7 +352,7 @@ async def _hybrid_search_rrf(
             )
             SELECT id, content, summary, source_type, source_machine, tags, category,
                    confidence, metadata, created_at, updated_at, importance, stability,
-                   access_count, last_accessed_at, quality_score, embedding_model, tier,
+                   access_count, last_accessed_at, quality_score, embedding_model, tier, trust_score, verified_at, superseded_by, claim_kind,
                    1 - (embedding <=> $1::{_VEC}) AS similarity,
                    memory_relevance($1::{_VEC}, embedding, created_at, importance, stability, access_count, now(), quality_score) AS relevance
             FROM vec_candidates
@@ -375,7 +375,7 @@ async def _hybrid_search_rrf(
             f"""
             SELECT id, content, summary, source_type, source_machine, tags, category,
                    confidence, metadata, created_at, updated_at, importance, stability,
-                   access_count, last_accessed_at, quality_score, embedding_model, tier,
+                   access_count, last_accessed_at, quality_score, embedding_model, tier, trust_score, verified_at, superseded_by, claim_kind,
                    ts_rank(
                        to_tsvector('simple', nb_unaccent(content || ' ' || COALESCE(search_keys, '') || ' ' || COALESCE(fts_context, ''))),
                        plainto_tsquery('simple', nb_unaccent($1))
@@ -414,7 +414,7 @@ async def _hybrid_search_rrf(
             id_sql = f"""
                 SELECT id, content, summary, source_type, source_machine, tags, category,
                        confidence, metadata, created_at, updated_at, importance, stability,
-                       access_count, last_accessed_at, quality_score, embedding_model, tier,
+                       access_count, last_accessed_at, quality_score, embedding_model, tier, trust_score, verified_at, superseded_by, claim_kind,
                        1.0::real AS literal_score
                 FROM memories
                 WHERE ({token_ors})
@@ -461,7 +461,7 @@ async def _hybrid_search_rrf(
                        m.tags, m.category, m.confidence, m.metadata,
                        m.created_at, m.updated_at, m.importance, m.stability,
                        m.access_count, m.last_accessed_at, m.quality_score,
-                       m.embedding_model, m.tier,
+                       m.embedding_model, m.tier, m.trust_score, m.verified_at, m.superseded_by, m.claim_kind,
                        SUM(me.sim * me.idf * COALESCE(em.confidence, 0.5)) AS graph_score
                 FROM memories m
                 JOIN entity_memories em ON em.memory_id = m.id
@@ -520,7 +520,24 @@ async def _hybrid_search_rrf(
             if rid not in rows_by_id:
                 rows_by_id[rid] = row
 
-        all_sorted = sorted(rrf_scores, key=rrf_scores.get, reverse=True)
+        # Trust-aware tie-break: stable sort first by RRF, then bubble higher trust_score
+        # to break ties at equal RRF. Demotes superseded/contradicted memories that slipped
+        # through the tier filter. Per /gpt-researcher 2026-04-28 finding F6.
+        def _trust_of(rid: str) -> float:
+            row = rows_by_id.get(rid)
+            if row is None:
+                return 0.5
+            try:
+                ts = row["trust_score"] if "trust_score" in row.keys() else None
+            except Exception:
+                ts = None
+            return float(ts) if ts is not None else 0.5
+
+        all_sorted = sorted(
+            rrf_scores,
+            key=lambda r: (rrf_scores[r], _trust_of(r)),
+            reverse=True,
+        )
 
         # Source diversity cap: no single source_type > 50% of results.
         # Without this, chatgpt (73.6% of corpus) dominates every query
