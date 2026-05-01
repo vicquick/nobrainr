@@ -332,8 +332,12 @@ async def generate_community_summaries(*, max_communities: int = 50) -> dict:
                     updated_at timestamptz DEFAULT now()
                 )
             """)
-            # Clear stale summaries from previous detection runs (community_ids get reassigned)
-            await conn.execute("DELETE FROM community_summaries")
+            # NOTE: Don't DELETE — relies on UPSERT below. The previous DELETE
+            # wiped every community whose id wasn't in the current top-N batch,
+            # which capped total summaries at max_communities (~50). Removing
+            # the DELETE lets us accumulate summaries across batches and keeps
+            # historical summaries even if community_ids drift. Stale entries
+            # are pruned by maintenance scripts, not by this function.
             for comm_id, s in summaries.items():
                 member_count = member_counts.get(comm_id, 0)
                 await conn.execute("""
