@@ -3448,10 +3448,10 @@ async def expand_chunk_context(
 def _row_to_dict(row) -> dict:
     d = dict(row)
     for key in ("id", "source_id", "target_id", "source_entity_id", "target_entity_id",
-                "memory_id", "entity_id", "relation_id", "connected_id"):
+                "memory_id", "entity_id", "relation_id", "connected_id", "superseded_by"):
         if key in d and d[key] is not None:
             d[key] = str(d[key])
-    for key in ("created_at", "updated_at", "last_accessed_at", "expires_at"):
+    for key in ("created_at", "updated_at", "last_accessed_at", "expires_at", "verified_at"):
         if key in d and d[key] is not None:
             d[key] = d[key].isoformat()
     if "metadata" in d and d["metadata"] is not None:
