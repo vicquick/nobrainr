@@ -1527,29 +1527,70 @@ async def get_unsummarized_memories(limit: int = 10) -> list[dict]:
 async def get_similar_memory_pairs(
     threshold: float = 0.88,
     limit: int = 5,
+    *,
+    seed_sample: int = 200,
+    neighbours_per_seed: int = 5,
 ) -> list[dict]:
-    """Find memory pairs with high cosine similarity that haven't been consolidation-checked."""
+    """Find memory pairs with high cosine similarity that haven't been
+    consolidation-checked.
+
+    Pre-2026-05-02 implementation did a full N×N self-join with two
+    embedding columns (HNSW can't accelerate column-vs-column compares),
+    which collapsed the DB into a 4-worker parallel scan eating 96% CPU
+    each for 18+ minutes once memories crossed ~50k rows. Same operator,
+    quadratically worse with every new memory.
+
+    HNSW-friendly rewrite: pick a small random sample of seed memories,
+    use the index to find each seed's K nearest neighbours (ANN, sub-ms
+    per probe), then filter by threshold and de-dup. Cost is
+    O(seed_sample × log N × K), bounded and fast regardless of table size.
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT a.id AS id_a, a.content AS content_a,
-                   b.id AS id_b, b.content AS content_b,
-                   1 - (a.embedding <=> b.embedding) AS similarity
-            FROM memories a
-            JOIN memories b ON a.id < b.id
-            WHERE a.embedding IS NOT NULL AND b.embedding IS NOT NULL
-              AND 1 - (a.embedding <=> b.embedding) > $1
-              AND NOT EXISTS (
-                  SELECT 1 FROM agent_events
+            WITH seeds AS (
+                SELECT id, embedding, content
+                  FROM memories
+                 WHERE embedding IS NOT NULL AND tier < 3
+              ORDER BY random()
+                 LIMIT $3
+            ),
+            pairs AS (
+                SELECT s.id AS id_a, s.content AS content_a,
+                       n.id AS id_b, n.content AS content_b,
+                       1 - (s.embedding <=> n.embedding) AS similarity
+                  FROM seeds s
+                  CROSS JOIN LATERAL (
+                      SELECT m.id, m.content, m.embedding
+                        FROM memories m
+                       WHERE m.embedding IS NOT NULL
+                         AND m.id <> s.id
+                    ORDER BY m.embedding <=> s.embedding
+                       LIMIT $4
+                  ) n
+                 WHERE 1 - (s.embedding <=> n.embedding) > $1
+            )
+            SELECT id_a, content_a, id_b, content_b, similarity
+              FROM (
+                SELECT DISTINCT ON (LEAST(id_a::text, id_b::text), GREATEST(id_a::text, id_b::text))
+                       CASE WHEN id_a::text < id_b::text THEN id_a ELSE id_b END AS id_a,
+                       CASE WHEN id_a::text < id_b::text THEN content_a ELSE content_b END AS content_a,
+                       CASE WHEN id_a::text < id_b::text THEN id_b ELSE id_a END AS id_b,
+                       CASE WHEN id_a::text < id_b::text THEN content_b ELSE content_a END AS content_b,
+                       similarity
+                  FROM pairs
+              ) ordered
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM agent_events
                   WHERE event_type = 'consolidation_checked'
-                    AND metadata->>'id_a' = a.id::text
-                    AND metadata->>'id_b' = b.id::text
-              )
-            ORDER BY (a.embedding <=> b.embedding) ASC
-            LIMIT $2
+                    AND metadata->>'id_a' = id_a::text
+                    AND metadata->>'id_b' = id_b::text
+             )
+          ORDER BY similarity DESC
+             LIMIT $2
             """,
-            threshold, limit,
+            threshold, limit, seed_sample, neighbours_per_seed,
         )
         return [_row_to_dict(row) for row in rows]
 
