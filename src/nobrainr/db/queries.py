@@ -1548,28 +1548,36 @@ async def get_similar_memory_pairs(
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """
+            f"""
             WITH seeds AS (
-                SELECT id, embedding, content
-                  FROM memories
+                -- TABLESAMPLE samples ~percent of rows at the storage layer
+                -- without a full scan — much faster than ORDER BY random()
+                -- which sorts every eligible row before LIMIT.
+                SELECT id, (embedding)::{_HV} AS hv, content
+                  FROM memories TABLESAMPLE BERNOULLI(2)
                  WHERE embedding IS NOT NULL AND tier < 3
-              ORDER BY random()
                  LIMIT $3
             ),
             pairs AS (
+                -- The HNSW index is built on `(embedding)::halfvec(1024)` —
+                -- the ORDER BY expression must match the indexed expression
+                -- exactly, otherwise the planner falls through to seqscan.
+                -- WHERE clause also matches the partial-index predicate
+                -- (tier<3 AND embedding IS NOT NULL) for the _hot variant.
                 SELECT s.id AS id_a, s.content AS content_a,
                        n.id AS id_b, n.content AS content_b,
-                       1 - (s.embedding <=> n.embedding) AS similarity
+                       1 - (s.hv <=> (n.embedding)::{_HV}) AS similarity
                   FROM seeds s
                   CROSS JOIN LATERAL (
                       SELECT m.id, m.content, m.embedding
                         FROM memories m
                        WHERE m.embedding IS NOT NULL
+                         AND m.tier < 3
                          AND m.id <> s.id
-                    ORDER BY m.embedding <=> s.embedding
+                    ORDER BY (m.embedding)::{_HV} <=> s.hv
                        LIMIT $4
                   ) n
-                 WHERE 1 - (s.embedding <=> n.embedding) > $1
+                 WHERE 1 - (s.hv <=> (n.embedding)::{_HV}) > $1
             )
             SELECT id_a, content_a, id_b, content_b, similarity
               FROM (
