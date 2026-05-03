@@ -81,6 +81,28 @@ async def _warm_graph_cache():
         logger.warning("Graph cache pre-warm failed (will compute on first request)")
 
 
+async def _warm_ppr_cache():
+    """Background task: build the HippoRAG-2 PPR sparse adjacency on startup.
+
+    The first MCP retrieval that triggers the graph branch otherwise pays
+    a ~290ms cache-build cost (50K entities, 290K edges → CSR matrix).
+    Pre-warming it keeps p99 retrieval latency stable from request #1.
+    Cheap (<300ms) and runs in the background after lifespan completes.
+    """
+    try:
+        # Tiny initial delay so we don't compete with the (heavier) reranker
+        # model load that happens immediately on startup.
+        await asyncio.sleep(30)
+        from nobrainr.services.ppr import get_cache
+        cache = await get_cache()
+        logger.info(
+            "PPR cache pre-warmed: %d entities, %d edges",
+            cache.n_entities, cache.n_edges,
+        )
+    except Exception:
+        logger.warning("PPR cache pre-warm failed (will build on first query)")
+
+
 async def _auto_backfill():
     """Background task: extract entities from any unprocessed memories on startup."""
     if not settings.extraction_enabled:
@@ -150,6 +172,11 @@ async def lifespan(app):
 
     # Pre-warm graph layout cache (runs in background, ~60s)
     asyncio.create_task(_warm_graph_cache())
+
+    # Pre-warm HippoRAG-2 PPR sparse adjacency cache (runs in background,
+    # ~300ms after a 30s delay). Keeps the first graph-branch retrieval
+    # from paying the cache-build cost.
+    asyncio.create_task(_warm_ppr_cache())
 
     # Pre-warm UMAP galaxy cache so the first dashboard load is instant.
     # Pushed to +10min on 2026-04-19: Galaxy + graph-layout pre-warm both

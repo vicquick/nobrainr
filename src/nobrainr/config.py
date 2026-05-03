@@ -123,6 +123,22 @@ class Settings(BaseSettings):
     # branch is additive signal for multi-hop, not a prior.
     graph_branch_rrf_weight: float = 0.35
 
+    # ── HippoRAG 2 PPR layer (2026-05-03) ─────────────────────────
+    # When the graph branch fires and finds at least `ppr_min_seeds` seed
+    # entities, run Personalized PageRank from those seeds across the
+    # entity_relations graph. Returns top-K associatively-related entities
+    # which are folded into the same graph_score memory join. HippoRAG 2
+    # paper (arxiv 2502.14802): +7% on associative-memory queries.
+    ppr_enabled: bool = True
+    ppr_min_seeds: int = 1            # need at least 1 seed to walk from
+    ppr_alpha: float = 0.85           # HippoRAG 2 default — restart prob 0.15
+    ppr_iterations: int = 10          # power-iteration count
+    ppr_top_k: int = 200              # max entities to keep after expansion
+    # Weight applied to PPR-walked entity scores relative to direct seeds.
+    # PPR scores are normalised to [0,1]; multiplying by avg-seed-idf scales
+    # them to be commensurate with seed weights without ever exceeding them.
+    ppr_score_weight: float = 0.6
+
     # End-to-end deadline for memory_search. Above this we short-circuit
     # expensive stages (rerank, related_memories, chunk_context) and return
     # whatever we have with a `quality_tier` tag so the caller sees it

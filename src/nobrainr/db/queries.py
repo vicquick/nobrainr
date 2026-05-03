@@ -426,13 +426,17 @@ async def _hybrid_search_rrf(
                 id_sql, *id_tokens, overfetch, *id_fparams,
             )
 
-        # 2c) Graph-aware branch (2026-04-19, HippoRAG-lite). Fuzzy-match the
-        # query against entities.canonical_name via pg_trgm, then lift memories
-        # linked to those entities. Cheap proxy for full Personalized PageRank
-        # that captures most of the associative-memory lift without the graph
-        # algorithm overhead. Only runs for queries of meaningful length
-        # (short queries → too many trigram candidates) and when the graph is
-        # populated. Optional via settings.graph_branch_enabled.
+        # 2c) Graph-aware branch (2026-04-19, HippoRAG-lite + 2026-05-03 PPR).
+        # Two phases:
+        #   Phase A — pg_trgm fuzzy-match the query against entities.canonical
+        #             _name to seed candidate entities (HippoRAG-lite).
+        #   Phase B — PPR walk from those seeds across entity_relations to
+        #             expand to associatively-related entities (HippoRAG 2,
+        #             arxiv 2502.14802). Skipped if the in-process graph
+        #             cache is cold or if `ppr_enabled` is off.
+        # Memories are then scored by SUM(seed_or_ppr_weight * em.confidence),
+        # capturing both direct match (Phase A) and multi-hop association
+        # (Phase B). Only runs when `text_query` length passes the threshold.
         graph_rows: list = []
         if (
             _cfg.graph_branch_enabled
@@ -443,48 +447,99 @@ async def _hybrid_search_rrf(
                 4, tags, category, source_type, source_machine,
                 date_from=date_from, date_to=date_to,
             )
-            # Set trigram threshold low enough to catch variations; hub
-            # dampening (idf specificity) keeps high-fanout entities from
-            # dominating — generic hubs like "Python" shouldn't swamp the
-            # retrieval for every query mentioning Python.
-            graph_sql = f"""
-                WITH matched_entities AS (
-                    SELECT id, similarity(canonical_name, $1) AS sim,
-                           COALESCE(specificity, 1.0) AS idf
-                    FROM entities
-                    WHERE canonical_name % $1
-                      AND similarity(canonical_name, $1) >= $2
-                    ORDER BY sim DESC
-                    LIMIT $3
-                )
-                SELECT m.id, m.content, m.summary, m.source_type, m.source_machine,
-                       m.tags, m.category, m.confidence, m.metadata,
-                       m.created_at, m.updated_at, m.importance, m.stability,
-                       m.access_count, m.last_accessed_at, m.quality_score,
-                       m.embedding_model, m.tier, m.trust_score, m.verified_at, m.superseded_by, m.claim_kind,
-                       SUM(me.sim * me.idf * COALESCE(em.confidence, 0.5)) AS graph_score
-                FROM memories m
-                JOIN entity_memories em ON em.memory_id = m.id
-                JOIN matched_entities me ON me.id = em.entity_id
-                WHERE true {g_extra}{tier_filter}
-                GROUP BY m.id
-                ORDER BY graph_score DESC
-                LIMIT $4
+
+            # Phase A: pg_trgm seed match
+            seed_sql = """
+                SELECT id::text AS id,
+                       similarity(canonical_name, $1) AS sim,
+                       COALESCE(specificity, 1.0) AS idf
+                  FROM entities
+                 WHERE canonical_name % $1
+                   AND similarity(canonical_name, $1) >= $2
+                 ORDER BY sim DESC
+                 LIMIT $3
             """
+            seeds: list = []
             try:
-                graph_rows = await conn.fetch(
-                    graph_sql,
+                seeds = await conn.fetch(
+                    seed_sql,
                     text_query,
                     _cfg.graph_branch_trigram_threshold,
                     _cfg.graph_branch_max_entities,
-                    overfetch,
-                    *g_fparams,
                 )
             except Exception as exc:
-                # If entities schema is missing specificity (older deploys),
-                # swallow — graph branch is additive, not load-bearing.
-                logger.debug("graph branch skipped: %s", exc)
-                graph_rows = []
+                logger.debug("graph branch seed match skipped: %s", exc)
+                seeds = []
+
+            # Phase B: PPR expansion (HippoRAG 2). Build entity_id -> weight
+            # dict combining seeds (sim*idf) with PPR-walked neighbours.
+            entity_weights: dict[str, float] = {}
+            for s in seeds:
+                # Seeds get max weight: seed_sim * seed_idf. PPR scores are
+                # normalised to [0,1] inside the algorithm, so seed weight
+                # of ~0.6-1.0 dominates as it should.
+                entity_weights[s["id"]] = float(s["sim"]) * float(s["idf"])
+
+            if (
+                _cfg.ppr_enabled
+                and seeds
+                and len(seeds) >= _cfg.ppr_min_seeds
+            ):
+                try:
+                    from nobrainr.services.ppr import expand_entities_via_ppr
+                    ppr_top = await expand_entities_via_ppr(
+                        [s["id"] for s in seeds],
+                        top_k=_cfg.ppr_top_k,
+                        alpha=_cfg.ppr_alpha,
+                        n_iter=_cfg.ppr_iterations,
+                    )
+                    # Scale PPR scores by the average seed idf so they're
+                    # commensurate with seed weights but never exceed them.
+                    avg_seed_idf = (
+                        sum(float(s["idf"]) for s in seeds) / len(seeds)
+                        if seeds else 1.0
+                    )
+                    ppr_weight = _cfg.ppr_score_weight * avg_seed_idf
+                    for eid, score in ppr_top.items():
+                        if eid in entity_weights:
+                            continue  # seeds already weighted
+                        entity_weights[eid] = score * ppr_weight
+                except Exception as exc:
+                    logger.debug("PPR expansion skipped: %s", exc)
+
+            # Final memory scoring against the combined entity_weights map.
+            if entity_weights:
+                eid_list = list(entity_weights.keys())
+                weight_list = [entity_weights[e] for e in eid_list]
+                graph_sql = f"""
+                    WITH scored_entities AS (
+                        SELECT (e.id)::uuid AS id, e.weight
+                          FROM unnest($1::uuid[], $2::float8[]) AS e(id, weight)
+                    )
+                    SELECT m.id, m.content, m.summary, m.source_type, m.source_machine,
+                           m.tags, m.category, m.confidence, m.metadata,
+                           m.created_at, m.updated_at, m.importance, m.stability,
+                           m.access_count, m.last_accessed_at, m.quality_score,
+                           m.embedding_model, m.tier, m.trust_score, m.verified_at, m.superseded_by, m.claim_kind,
+                           SUM(se.weight * COALESCE(em.confidence, 0.5)) AS graph_score
+                      FROM memories m
+                      JOIN entity_memories em ON em.memory_id = m.id
+                      JOIN scored_entities se ON se.id = em.entity_id
+                     WHERE true {g_extra}{tier_filter}
+                     GROUP BY m.id
+                     ORDER BY graph_score DESC
+                     LIMIT $3
+                """
+                try:
+                    graph_rows = await conn.fetch(
+                        graph_sql,
+                        eid_list, weight_list,
+                        overfetch,
+                        *g_fparams,
+                    )
+                except Exception as exc:
+                    logger.debug("graph branch memory join skipped: %s", exc)
+                    graph_rows = []
 
         # 3) Reciprocal Rank Fusion
         rrf_scores: dict[str, float] = {}
