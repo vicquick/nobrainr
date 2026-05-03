@@ -1,0 +1,30 @@
+commit 798461a6 fix DeviceManager import path knn.py
+Issue 175 Master LV missing oz_type validation position endpoints
+curses.panel panel stack extension Python 3.14.3 documentation
+commit 0971959a fix MeshLambertMaterial DoubleSide skip LOD materials
+issue 315 GAEB AVA routers test coverage 80%
+IFCopenshell tree grouping labels 2-decimal rounding floating-point fragmentation
+TOE highlight selection render update core.update insufficient needsUpdate
+PR 147 Qwen3-14B GEX44 BIM-49 AI Langtext generation
+BGE reranker CPU benchmark speed
+alias healer systemd timer docker DNS
+reranker BGE configuration cap
+reranker state verify tier A
+final verify tier-A rerank working now
+Vectorworks WFS GML GDAL Xerces fix GIS.vlb installer
+Frankfurt strassen v8 pipeline tier classification MPD oriented envelope
+Tududi telegram bot setup configuration
+Tududi task manager telegram bot API CalDAV
+MCP tool retrieval embedding filter dynamic tools/list small local LLM context reduction
+Stirling-PDF pdf editor
+reranker qwen3 bge bimavo deployment status
+CUX Spielplatz Mangeltabelle xlsx parse script
+Spielplatz Akte PDF parse Mangeltabelle Jahreshauptinspektion Ersterfassung
+Nummer_LL Cuxhaven playground ID numbering district alphabetical
+Nummer_LL numbering logic Ortsteile alphabetical playgrounds Bewertet
+XML schema buggy disable pset keys crash
+what is the current status of quality_scoring backlog
+commit 2f3eff1 decision
+reranker BGE configuration
+all tasks done verify final state
+reranker BGE cap final test tier A
