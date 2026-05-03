@@ -151,14 +151,23 @@ def _default_situating_prefix(
     source_machine: str | None,
     source_ref: str | None,
     category: str | None,
+    summary: str | None = None,
+    tags: list[str] | None = None,
 ) -> str:
     """Build a cheap, LLM-free situating prefix from write-time metadata.
 
     Anthropic's Contextual Retrieval recipe uses a 1-2 sentence situating
-    context to anchor embeddings of short/vague content. Their own example
-    uses an LLM to generate it, but for single-memory writes the same
-    benefit comes from a deterministic template over the metadata we already
-    have (timestamp, host, source, category). No extra LLM call per write.
+    context to anchor embeddings (and FTS, since 2026-04-19) of short/vague
+    content. Their own example uses an LLM to generate it, but for single-
+    memory writes the same benefit comes from a deterministic template over
+    the metadata we already have (timestamp, host, source, category, summary,
+    tags). No extra LLM call per write.
+
+    2026-05-03 — extended to include ``summary`` and ``tags`` after a one-shot
+    backfill of 52,292 standalone memories proved this composition is the
+    high-leverage shape: ``category | summary | tags: a, b, c``. Standalone
+    fts_context coverage went from 0.6% → 100% via SQL-only UPDATE; we want
+    new writes to land in the same shape, not the older sparse one.
 
     Empty return means the callers' existing contextual_prefix logic kicks
     back in (e.g. the LLM-generated per-chunk prefix for multi-chunk docs).
@@ -172,6 +181,11 @@ def _default_situating_prefix(
         parts.append(f"on {source_machine}")
     if category:
         parts.append(f"[{category}]")
+    if summary:
+        # Cap to 200 chars so the prefix doesn't dominate the embedded input.
+        parts.append(summary[:200])
+    if tags:
+        parts.append("tags: " + ", ".join(tags[:8]))
     if source_ref and len(source_ref) <= 80:
         parts.append(f"ref={source_ref}")
     if not parts:
@@ -236,6 +250,8 @@ async def store_memory_with_extraction(
             source_machine=source_machine,
             source_ref=source_ref,
             category=category,
+            summary=summary,
+            tags=tags,
         )
 
     embed_parts = []
