@@ -1786,38 +1786,88 @@ async def update_quality_score(
         )
 
 
-async def get_potential_contradictions(limit: int = 5) -> list[dict]:
-    """Find high-similarity memory pairs from different sources that haven't been checked."""
+async def get_potential_contradictions(
+    limit: int = 5,
+    *,
+    seed_sample: int = 200,
+    neighbours_per_seed: int = 5,
+) -> list[dict]:
+    """Find high-similarity memory pairs from different sources that haven't been checked.
+
+    Pre-2026-05-03 implementation did a full N×N self-join with a
+    column-vs-column cosine compare — same bug as get_similar_memory_pairs
+    (see commit 1b5801a). 54k rows × 54k rows = ~1.5B candidate pairs,
+    Postgres parallel-seq-scanned at 96% CPU per worker for 30+ minutes
+    every 4-hour cycle, then timed out.
+
+    HNSW-friendly rewrite (mirroring get_similar_memory_pairs): sample
+    seed memories via TABLESAMPLE, fan out to K nearest neighbours via
+    LATERAL with the (embedding)::halfvec(1024) cast that matches the
+    indexed expression. Cost is bounded by seed_sample × log N × K.
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch("""
-            WITH candidates AS (
-                SELECT
-                    m1.id as id_a, m2.id as id_b,
-                    m1.content as content_a, m2.content as content_b,
-                    m1.source_machine as machine_a, m2.source_machine as machine_b,
-                    1 - (m1.embedding <=> m2.embedding) as similarity
-                FROM memories m1
-                JOIN memories m2 ON m1.id < m2.id
-                WHERE m1.embedding IS NOT NULL
-                  AND m2.embedding IS NOT NULL
-                  AND m1.category != '_archived'
-                  AND m2.category != '_archived'
-                  AND 1 - (m1.embedding <=> m2.embedding) BETWEEN 0.75 AND 0.92
-                  AND (m1.source_machine != m2.source_machine
-                       OR m1.source_type != m2.source_type
-                       OR m1.created_at < m2.created_at - interval '7 days')
-                  AND NOT EXISTS (
-                      SELECT 1 FROM memories m3
-                      WHERE m3.source_type = 'contradiction'
-                        AND m3.metadata->>'memory_a' = m1.id::text
-                        AND m3.metadata->>'memory_b' = m2.id::text
-                  )
-                ORDER BY similarity DESC
-                LIMIT $1
+        rows = await conn.fetch(
+            f"""
+            WITH seeds AS (
+                SELECT id, (embedding)::{_HV} AS hv, content,
+                       source_machine, source_type, created_at, category
+                  FROM memories TABLESAMPLE BERNOULLI(2)
+                 WHERE embedding IS NOT NULL
+                   AND tier < 3
+                   AND category IS DISTINCT FROM '_archived'
+                 LIMIT $2
+            ),
+            pairs AS (
+                SELECT s.id AS sid_a, s.content AS content_a,
+                       s.source_machine AS machine_a, s.source_type AS stype_a,
+                       s.created_at AS created_a,
+                       n.id AS sid_b, n.content AS content_b,
+                       n.source_machine AS machine_b, n.source_type AS stype_b,
+                       n.created_at AS created_b,
+                       1 - (s.hv <=> (n.embedding)::{_HV}) AS similarity
+                  FROM seeds s
+                  CROSS JOIN LATERAL (
+                      SELECT m.id, m.content, m.embedding, m.source_machine, m.source_type, m.created_at
+                        FROM memories m
+                       WHERE m.embedding IS NOT NULL
+                         AND m.tier < 3
+                         AND m.category IS DISTINCT FROM '_archived'
+                         AND m.id <> s.id
+                    ORDER BY (m.embedding)::{_HV} <=> s.hv
+                       LIMIT $3
+                  ) n
+                 WHERE 1 - (s.hv <=> (n.embedding)::{_HV}) BETWEEN 0.75 AND 0.92
+                   AND (s.source_machine IS DISTINCT FROM n.source_machine
+                        OR s.source_type IS DISTINCT FROM n.source_type
+                        OR ABS(EXTRACT(EPOCH FROM (s.created_at - n.created_at))) > 7 * 24 * 3600)
             )
-            SELECT * FROM candidates
-        """, limit)
+            SELECT
+                CASE WHEN sid_a::text < sid_b::text THEN sid_a ELSE sid_b END AS id_a,
+                CASE WHEN sid_a::text < sid_b::text THEN content_a ELSE content_b END AS content_a,
+                CASE WHEN sid_a::text < sid_b::text THEN machine_a ELSE machine_b END AS machine_a,
+                CASE WHEN sid_a::text < sid_b::text THEN sid_b ELSE sid_a END AS id_b,
+                CASE WHEN sid_a::text < sid_b::text THEN content_b ELSE content_a END AS content_b,
+                CASE WHEN sid_a::text < sid_b::text THEN machine_b ELSE machine_a END AS machine_b,
+                similarity
+              FROM (
+                SELECT DISTINCT ON (LEAST(sid_a::text, sid_b::text), GREATEST(sid_a::text, sid_b::text))
+                       sid_a, content_a, machine_a, stype_a, created_a,
+                       sid_b, content_b, machine_b, stype_b, created_b,
+                       similarity
+                  FROM pairs
+              ) ordered
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM memories m3
+                  WHERE m3.source_type = 'contradiction'
+                    AND ((m3.metadata->>'memory_a' = sid_a::text AND m3.metadata->>'memory_b' = sid_b::text)
+                      OR (m3.metadata->>'memory_a' = sid_b::text AND m3.metadata->>'memory_b' = sid_a::text))
+             )
+          ORDER BY similarity DESC
+             LIMIT $1
+            """,
+            limit, seed_sample, neighbours_per_seed,
+        )
         return [dict(r) for r in rows]
 
 
