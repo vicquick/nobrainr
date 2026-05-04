@@ -1493,9 +1493,15 @@ async def api_commonplace(request: Request) -> JSONResponse:
                 """
                 SELECT cs.community_id, cs.title, cs.summary, cs.key_topics,
                        cs.member_count, cs.updated_at,
-                       1 - (cs.embedding <=> $1::vector) AS score
+                       1 - (cs.embedding <=> $1::vector) AS score,
+                       COUNT(DISTINCT em.memory_id) AS memory_count
                 FROM community_summaries cs
+                JOIN entities e ON e.community_id = cs.community_id
+                JOIN entity_memories em ON em.entity_id = e.id
                 WHERE cs.embedding IS NOT NULL
+                GROUP BY cs.community_id, cs.title, cs.summary,
+                         cs.key_topics, cs.member_count, cs.updated_at, cs.embedding
+                HAVING COUNT(DISTINCT em.memory_id) > 0
                 ORDER BY cs.embedding <=> $1::vector
                 LIMIT $2
                 """,
@@ -1505,30 +1511,21 @@ async def api_commonplace(request: Request) -> JSONResponse:
         else:
             rows = await conn.fetch(
                 """
-                SELECT community_id, title, summary, key_topics,
-                       member_count, updated_at, NULL::float AS score
-                FROM community_summaries
-                ORDER BY member_count DESC
+                SELECT cs.community_id, cs.title, cs.summary, cs.key_topics,
+                       cs.member_count, cs.updated_at,
+                       NULL::float AS score,
+                       COUNT(DISTINCT em.memory_id) AS memory_count
+                FROM community_summaries cs
+                JOIN entities e ON e.community_id = cs.community_id
+                JOIN entity_memories em ON em.entity_id = e.id
+                GROUP BY cs.community_id, cs.title, cs.summary,
+                         cs.key_topics, cs.member_count, cs.updated_at
+                HAVING COUNT(DISTINCT em.memory_id) > 0
+                ORDER BY COUNT(DISTINCT em.memory_id) DESC
                 LIMIT $1
                 """,
                 limit,
             )
-
-        # Batch-fetch memory counts for all returned communities
-        community_ids = [r["community_id"] for r in rows]
-        mem_counts: dict[int, int] = {}
-        if community_ids:
-            count_rows = await conn.fetch(
-                """
-                SELECT e.community_id, COUNT(DISTINCT em.memory_id) AS cnt
-                FROM entities e
-                JOIN entity_memories em ON em.entity_id = e.id
-                WHERE e.community_id = ANY($1::int[])
-                GROUP BY e.community_id
-                """,
-                community_ids,
-            )
-            mem_counts = {r["community_id"]: r["cnt"] for r in count_rows}
 
     return JSONResponse([
         {
@@ -1537,7 +1534,7 @@ async def api_commonplace(request: Request) -> JSONResponse:
             "summary": r["summary"] or "",
             "key_topics": list(r["key_topics"] or []),
             "member_count": r["member_count"] or 0,
-            "memory_count": mem_counts.get(r["community_id"], 0),
+            "memory_count": r["memory_count"],
             "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
             "score": float(r["score"]) if r["score"] is not None else None,
         }
