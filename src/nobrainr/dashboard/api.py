@@ -1470,6 +1470,127 @@ async def api_extraction_eval_run_now(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+async def api_commonplace(request: Request) -> JSONResponse:
+    """GET /api/commonplace — community summaries for the commonplace view.
+
+    Returns all communities sorted by member_count DESC, enriched with
+    the count of distinct memories reachable via entity_memories.
+    Optional semantic search via ?q= (embedding similarity on community summary).
+    """
+    from nobrainr.db.pool import get_pool
+
+    q = request.query_params.get("q", "").strip()
+    try:
+        limit = min(int(request.query_params.get("limit", "200")), 500)
+    except ValueError:
+        limit = 200
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if q:
+            embedding = await embed_text(q)
+            rows = await conn.fetch(
+                """
+                SELECT cs.community_id, cs.title, cs.summary, cs.key_topics,
+                       cs.member_count, cs.updated_at,
+                       1 - (cs.embedding <=> $1::vector) AS score
+                FROM community_summaries cs
+                WHERE cs.embedding IS NOT NULL
+                ORDER BY cs.embedding <=> $1::vector
+                LIMIT $2
+                """,
+                str(embedding),
+                limit,
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT community_id, title, summary, key_topics,
+                       member_count, updated_at, NULL::float AS score
+                FROM community_summaries
+                ORDER BY member_count DESC
+                LIMIT $1
+                """,
+                limit,
+            )
+
+        # Batch-fetch memory counts for all returned communities
+        community_ids = [r["community_id"] for r in rows]
+        mem_counts: dict[int, int] = {}
+        if community_ids:
+            count_rows = await conn.fetch(
+                """
+                SELECT e.community_id, COUNT(DISTINCT em.memory_id) AS cnt
+                FROM entities e
+                JOIN entity_memories em ON em.entity_id = e.id
+                WHERE e.community_id = ANY($1::int[])
+                GROUP BY e.community_id
+                """,
+                community_ids,
+            )
+            mem_counts = {r["community_id"]: r["cnt"] for r in count_rows}
+
+    return JSONResponse([
+        {
+            "community_id": r["community_id"],
+            "title": r["title"] or f"Community {r['community_id']}",
+            "summary": r["summary"] or "",
+            "key_topics": list(r["key_topics"] or []),
+            "member_count": r["member_count"] or 0,
+            "memory_count": mem_counts.get(r["community_id"], 0),
+            "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+            "score": float(r["score"]) if r["score"] is not None else None,
+        }
+        for r in rows
+    ])
+
+
+async def api_commonplace_memories(request: Request) -> JSONResponse:
+    """GET /api/commonplace/{community_id}/memories — memories for a community.
+
+    Returns the top memories linked via entity_memories, ordered by
+    importance DESC then created_at DESC.
+    """
+    from nobrainr.db.pool import get_pool
+
+    try:
+        community_id = int(request.path_params["community_id"])
+    except (ValueError, KeyError):
+        return JSONResponse({"error": "Invalid community_id"}, status_code=400)
+
+    try:
+        limit = min(int(request.query_params.get("limit", "100")), 500)
+        offset = max(int(request.query_params.get("offset", "0")), 0)
+    except ValueError:
+        limit, offset = 100, 0
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT DISTINCT ON (m.id)
+                m.id, m.content, m.summary, m.source_type, m.source_machine,
+                m.tags, m.category, m.importance, m.quality_score,
+                m.created_at, m.updated_at, m.tier, m.metadata
+            FROM memories m
+            JOIN entity_memories em ON em.memory_id = m.id
+            JOIN entities e ON e.id = em.entity_id
+            WHERE e.community_id = $1
+            ORDER BY m.id, COALESCE(m.importance, 0.5) DESC, m.created_at DESC
+            LIMIT $2 OFFSET $3
+            """,
+            community_id,
+            limit,
+            offset,
+        )
+        # Re-sort after DISTINCT ON flattens ordering
+        result = sorted(
+            [queries._row_to_dict(r) for r in rows],
+            key=lambda m: (-(m.get("importance") or 0.5), m.get("created_at") or ""),
+        )
+    return JSONResponse(result)
+
+
 async def api_eval_golden(request: Request) -> JSONResponse:
     """List active golden queries so reviewers can vet/adjust them."""
     from nobrainr.db.pool import get_pool
@@ -1537,4 +1658,6 @@ api_routes = [
     Route("/api/eval/extraction/runs", api_extraction_eval_runs),
     Route("/api/eval/extraction/run", api_extraction_eval_run_now, methods=["POST"]),
     Route("/api/health/detailed", api_health_detailed),
+    Route("/api/commonplace", api_commonplace),
+    Route("/api/commonplace/{community_id}/memories", api_commonplace_memories),
 ]

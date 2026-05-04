@@ -37,6 +37,11 @@ const router = createRouter({
       name: 'pulse',
       component: () => import('@/views/PulseView.vue'),
     },
+    {
+      path: '/commonplace',
+      name: 'commonplace',
+      component: () => import('@/views/CommonplaceView.vue'),
+    },
   ],
 })
 
