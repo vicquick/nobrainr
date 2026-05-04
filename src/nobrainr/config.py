@@ -139,6 +139,18 @@ class Settings(BaseSettings):
     # them to be commensurate with seed weights without ever exceeding them.
     ppr_score_weight: float = 0.6
 
+    # ── Community-summary branch (GraphRAG-style, 2026-05-04) ─────
+    # Match query against LLM-generated summaries of Leiden communities.
+    # Answers "what's our debugging philosophy?" / "summarize my X" type
+    # global queries that don't map cleanly to a single memory but are
+    # well-described by an aggregate community summary. Top-K matched
+    # communities yield their representative memories.
+    community_branch_enabled: bool = True
+    community_branch_top_k_communities: int = 5
+    # RRF weight kept low — community matches are global-context signal,
+    # additive to specific RRF top-1 hits, not a prior.
+    community_branch_rrf_weight: float = 0.25
+
     # End-to-end deadline for memory_search. Above this we short-circuit
     # expensive stages (rerank, related_memories, chunk_context) and return
     # whatever we have with a `quality_tier` tag so the caller sees it

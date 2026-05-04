@@ -541,6 +541,52 @@ async def _hybrid_search_rrf(
                     logger.debug("graph branch memory join skipped: %s", exc)
                     graph_rows = []
 
+        # 2d) Community-summary branch (GraphRAG-style, 2026-05-04). Match
+        # query against community-level LLM summaries — answers "what's our
+        # debugging philosophy?" / "summarize my BIM stack" type questions
+        # that no specific memory directly answers but a community of related
+        # memories collectively does. Returns top-K representative memories
+        # from the matched communities (members ranked by mention count
+        # within the community).
+        community_rows: list = []
+        if _cfg.community_branch_enabled and text_query:
+            try:
+                community_rows = await conn.fetch(
+                    f"""
+                    WITH matched_communities AS (
+                        SELECT cs.community_id,
+                               1 - ((cs.embedding)::{_HV} <=> $1::{_HV}) AS sim
+                          FROM community_summaries cs
+                         WHERE cs.embedding IS NOT NULL
+                         ORDER BY (cs.embedding)::{_HV} <=> $1::{_HV}
+                         LIMIT $2
+                    ),
+                    member_memories AS (
+                        SELECT DISTINCT ON (m.id)
+                               m.id, m.content, m.summary, m.source_type, m.source_machine,
+                               m.tags, m.category, m.confidence, m.metadata,
+                               m.created_at, m.updated_at, m.importance, m.stability,
+                               m.access_count, m.last_accessed_at, m.quality_score,
+                               m.embedding_model, m.tier, m.trust_score, m.verified_at,
+                               m.superseded_by, m.claim_kind,
+                               mc.sim AS community_sim
+                          FROM matched_communities mc
+                          JOIN entities e ON e.community_id = mc.community_id
+                          JOIN entity_memories em ON em.entity_id = e.id
+                          JOIN memories m ON m.id = em.memory_id
+                         WHERE m.tier < 3
+                         ORDER BY m.id, mc.sim DESC
+                    )
+                    SELECT * FROM member_memories
+                     ORDER BY community_sim DESC, importance DESC NULLS LAST
+                     LIMIT $3
+                    """,
+                    vec, _cfg.community_branch_top_k_communities, overfetch,
+                )
+            except Exception as exc:
+                logger.debug("community-summary branch skipped: %s", exc)
+                community_rows = []
+
         # 3) Reciprocal Rank Fusion
         rrf_scores: dict[str, float] = {}
         rows_by_id: dict[str, object] = {}
@@ -571,6 +617,17 @@ async def _hybrid_search_rrf(
             rrf_scores[rid] = (
                 rrf_scores.get(rid, 0.0)
                 + _cfg.graph_branch_rrf_weight / (rrf_k + rank)
+            )
+            if rid not in rows_by_id:
+                rows_by_id[rid] = row
+
+        # Community-summary branch (GraphRAG-style). Dampened — it's
+        # global-query signal, additive to specific matches.
+        for rank, row in enumerate(community_rows, start=1):
+            rid = str(row["id"])
+            rrf_scores[rid] = (
+                rrf_scores.get(rid, 0.0)
+                + _cfg.community_branch_rrf_weight / (rrf_k + rank)
             )
             if rid not in rows_by_id:
                 rows_by_id[rid] = row
