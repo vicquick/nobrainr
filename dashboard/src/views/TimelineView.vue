@@ -825,4 +825,36 @@ onUnmounted(() => {
   border-color: var(--cp-gold);
 }
 .folio-button:disabled { opacity: 0.6; cursor: wait; }
+
+@media (max-width: 720px) {
+  .annals-page { padding: 24px 14px 64px; }
+  .annals-title { font-size: 30px; }
+
+  .annals-controls {
+    flex-direction: column;
+    gap: 10px;
+    align-items: stretch;
+  }
+  .ctl { width: 100%; }
+  .folio-select { flex: 1; }
+
+  .day-header {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+  .day-rule { display: none; }
+
+  .annal-entry {
+    grid-template-columns: 56px 1fr;
+    gap: 10px;
+    padding: 14px 4px;
+  }
+  .annal-entry:hover { padding-left: 8px; }
+  .entry-margin { padding-right: 10px; }
+  .margin-glyph { font-size: 16px; }
+  .margin-time { font-size: 10px; }
+  .entry-title { font-size: 14px; }
+  .entry-preview, .entry-expanded { font-size: 13px; }
+  .page-nav { flex-wrap: wrap; }
+}
 </style>
