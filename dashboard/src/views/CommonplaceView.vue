@@ -5,9 +5,14 @@
       <!-- Chapter list (left) -->
       <div class="chapters-panel d-flex flex-column" style="width: 300px; min-width: 300px;">
         <div class="pa-3 pb-2">
-          <div class="folio-heading mb-3">
-            <v-icon icon="mdi-book-open-page-variant" size="16" class="mr-1" style="color: var(--cp-gold);" />
-            <span style="font-family: Georgia, Palatino, serif; font-size: 13px; color: var(--cp-gold); letter-spacing: 0.08em; text-transform: uppercase;">Commonplace Book</span>
+          <div class="folio-heading mb-3 d-flex align-center justify-space-between">
+            <div class="d-flex align-center">
+              <v-icon icon="mdi-book-open-page-variant" size="16" class="mr-1" style="color: var(--cp-gold);" />
+              <span style="font-family: Georgia, Palatino, serif; font-size: 13px; color: var(--cp-gold); letter-spacing: 0.08em; text-transform: uppercase;">Commonplace Book</span>
+            </div>
+            <span v-if="searchMode" style="font-size: 10px; color: var(--cp-gold); opacity: 0.55; font-family: Georgia, serif; font-style: italic;">
+              {{ searchHits.length }} hits
+            </span>
           </div>
           <v-text-field
             v-model="searchQuery"
@@ -39,10 +44,8 @@
                 <div class="flex-grow-1 min-w-0">
                   <div class="chapter-title text-body-2 font-weight-medium">{{ ch.title }}</div>
                   <div class="d-flex align-center ga-2 mt-1">
-                    <span class="text-caption" style="color: var(--cp-muted);">{{ ch.memory_count.toLocaleString() }} entries</span>
-                    <span v-if="ch.score !== null" class="text-caption" style="color: var(--cp-gold); opacity: 0.7;">
-                      {{ (ch.score * 100).toFixed(0) }}% match
-                    </span>
+                    <span v-if="searchMode" class="cp-hit-badge">{{ ch.hit_count }} hit{{ ch.hit_count === 1 ? '' : 's' }}</span>
+                    <span v-else class="text-caption" style="color: var(--cp-muted);">{{ ch.memory_count.toLocaleString() }} entries</span>
                   </div>
                 </div>
               </div>
@@ -73,7 +76,8 @@
                 class="cp-topic-chip"
               >{{ topic }}</v-chip>
             </div>
-            <p class="text-caption chapter-summary">{{ selectedChapter.summary }}</p>
+            <p v-if="searchMode" class="text-caption chapter-summary" style="color: rgba(200,169,110,0.5); font-style: italic;">{{ entries.length }} result{{ entries.length === 1 ? '' : 's' }} in this chapter</p>
+            <p v-else class="text-caption chapter-summary">{{ selectedChapter.summary }}</p>
           </div>
           <v-divider style="opacity: 0.15; border-color: var(--cp-gold);" />
           <div class="flex-grow-1" style="overflow-y: auto;">
@@ -91,7 +95,8 @@
                 <div class="entry-summary text-body-2">{{ m.summary || m.content?.slice(0, 80) || '—' }}</div>
                 <div class="d-flex align-center ga-2 mt-1">
                   <span class="text-caption" style="color: var(--cp-muted);">{{ m.source_type || 'unknown' }}</span>
-                  <span v-if="m.importance" class="text-caption" style="color: var(--cp-gold); opacity: 0.6;">
+                  <span v-if="searchMode && m.rrf_score" class="cp-rrf-badge">{{ (m.rrf_score * 3000).toFixed(0) }}</span>
+                  <span v-else-if="m.importance" class="text-caption" style="color: var(--cp-gold); opacity: 0.6;">
                     ★ {{ (m.importance * 100).toFixed(0) }}
                   </span>
                   <v-chip
@@ -294,6 +299,7 @@ interface Chapter {
   key_topics: string[]
   member_count: number
   memory_count: number
+  hit_count?: number
   updated_at: string | null
   score: number | null
 }
@@ -309,6 +315,8 @@ interface Entry {
   importance: number
   quality_score: number | null
   created_at: string | null
+  rrf_score?: number
+  community_id?: number
 }
 
 interface ConvMessage { role: string; content: string; timestamp?: number; _globalIdx: number }
@@ -326,6 +334,8 @@ const loadingChapters = ref(false)
 const loadingEntries = ref(false)
 const loadingDetail = ref(false)
 const searchQuery = ref('')
+const searchMode = ref(false)
+const searchHits = ref<Entry[]>([])
 const activeDetailTab = ref('details')
 const origin = ref<Origin | null>(null)
 const originLoading = ref(false)
@@ -371,6 +381,14 @@ async function selectChapter(ch: Chapter) {
   selectedEntry.value = null
   detailMemory.value = null
   detailEntities.value = []
+  origin.value = null
+  activeDetailTab.value = 'details'
+
+  if (searchMode.value) {
+    entries.value = searchHits.value.filter(h => h.community_id === ch.community_id)
+    return
+  }
+
   loadingEntries.value = true
   try {
     const res = await fetch(`/api/commonplace/${ch.community_id}/memories?limit=150`)
@@ -438,7 +456,41 @@ function onDetailTabChange(tab: string) {
 
 function onSearch() {
   clearTimeout(searchTimer)
-  searchTimer = setTimeout(() => fetchChapters(searchQuery.value), 350)
+  const q = (searchQuery.value || '').trim()
+  if (!q) {
+    if (searchMode.value) {
+      searchMode.value = false
+      searchHits.value = []
+      selectedChapter.value = null
+      selectedEntry.value = null
+      entries.value = []
+      detailMemory.value = null
+      fetchChapters()
+    }
+    return
+  }
+  searchTimer = setTimeout(() => runSearch(q), 400)
+}
+
+async function runSearch(q: string) {
+  loadingChapters.value = true
+  try {
+    const res = await fetch(`/api/commonplace/search?q=${encodeURIComponent(q)}&limit=80`)
+    const data = await res.json()
+    searchMode.value = true
+    searchHits.value = data.hits || []
+    chapters.value = data.chapters || []
+    // Auto-select the best chapter
+    if (chapters.value.length > 0) {
+      await selectChapter(chapters.value[0])
+    } else {
+      selectedChapter.value = null
+      selectedEntry.value = null
+      entries.value = []
+    }
+  } finally {
+    loadingChapters.value = false
+  }
 }
 
 onMounted(() => fetchChapters())
@@ -618,6 +670,24 @@ onMounted(() => fetchChapters())
 
 .cp-search :deep(.v-field) {
   border-color: rgba(200, 169, 110, 0.2) !important;
+}
+
+.cp-hit-badge {
+  font-size: 10px;
+  font-family: Georgia, serif;
+  color: rgba(200, 169, 110, 0.8);
+  background: rgba(200, 169, 110, 0.1);
+  border: 1px solid rgba(200, 169, 110, 0.2);
+  border-radius: 3px;
+  padding: 1px 5px;
+  letter-spacing: 0.04em;
+}
+
+.cp-rrf-badge {
+  font-size: 10px;
+  font-family: Georgia, serif;
+  color: rgba(200, 169, 110, 0.65);
+  opacity: 0.8;
 }
 
 @keyframes shimmer {

@@ -1759,6 +1759,145 @@ async def api_commonplace_memories(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+async def api_commonplace_search(request: Request) -> JSONResponse:
+    """GET /api/commonplace/search?q= — full hybrid search across memories, grouped by chapter.
+
+    Uses the same vector + FTS + graph RRF pipeline as MCP memory_search.
+    Returns:
+      { query, total_hits, chapters: [...sorted by top RRF score...], hits: [...flat list...] }
+    In search mode the frontend uses `hits` filtered by community_id to populate
+    the entry panel without a second API round-trip.
+    """
+    from nobrainr.db.pool import get_pool
+    from collections import defaultdict
+
+    q = request.query_params.get("q", "").strip()
+    if not q:
+        return JSONResponse({"query": "", "total_hits": 0, "chapters": [], "hits": []})
+
+    try:
+        limit = min(int(request.query_params.get("limit", "80")), 200)
+    except ValueError:
+        limit = 80
+
+    embedding = await embed_text(q)
+    raw_hits = await queries.search_memories(
+        embedding,
+        text_query=q,
+        limit=limit,
+        threshold=0.15,
+        include_cold=True,
+    )
+
+    if not raw_hits:
+        return JSONResponse({"query": q, "total_hits": 0, "chapters": [], "hits": []})
+
+    pool = await get_pool()
+    memory_ids = [UUID(h["id"]) for h in raw_hits]
+
+    async with pool.acquire() as conn:
+        # Batch-fetch the primary community_id for each hit memory
+        comm_rows = await conn.fetch(
+            """
+            SELECT DISTINCT ON (em.memory_id)
+                em.memory_id::text,
+                e.community_id
+            FROM entity_memories em
+            JOIN entities e ON e.id = em.entity_id
+            WHERE em.memory_id = ANY($1::uuid[])
+              AND e.community_id IS NOT NULL
+            ORDER BY em.memory_id, e.community_id
+            """,
+            memory_ids,
+        )
+        mid_to_comm: dict = {r["memory_id"]: r["community_id"] for r in comm_rows}
+
+        # Fetch chapter metadata for relevant communities
+        comm_ids = list(set(mid_to_comm.values()))
+        chapter_meta: dict = {}
+        if comm_ids:
+            ch_rows = await conn.fetch(
+                """
+                SELECT e.community_id,
+                       COALESCE(cs.title,
+                           (SELECT string_agg(sub.n, ' · ' ORDER BY sub.mc DESC)
+                            FROM (SELECT DISTINCT e2.canonical_name AS n,
+                                         MAX(e2.mention_count) AS mc
+                                  FROM entities e2
+                                  WHERE e2.community_id = e.community_id
+                                    AND e2.canonical_name IS NOT NULL
+                                  GROUP BY e2.canonical_name
+                                  ORDER BY mc DESC LIMIT 3) sub)
+                       ) AS title,
+                       COALESCE(cs.summary, '') AS summary,
+                       COALESCE(cs.key_topics, ARRAY[]::text[]) AS key_topics
+                FROM (SELECT DISTINCT community_id FROM entities WHERE community_id = ANY($1)) e
+                LEFT JOIN community_summaries cs ON cs.community_id = e.community_id
+                """,
+                comm_ids,
+            )
+            for r in ch_rows:
+                chapter_meta[r["community_id"]] = {
+                    "title": r["title"] or f"Community {r['community_id']}",
+                    "summary": r["summary"] or "",
+                    "key_topics": list(r["key_topics"] or []),
+                }
+
+    # Build flat hits list — use -1 as sentinel for uncategorised
+    NO_COMMUNITY = -1
+    hits = []
+    for h in raw_hits:
+        comm_id = mid_to_comm.get(h["id"], NO_COMMUNITY)
+        hits.append({
+            "id": h["id"],
+            "summary": h.get("summary") or "",
+            "content": h.get("content") or "",
+            "source_type": h.get("source_type") or "",
+            "source_machine": h.get("source_machine") or "",
+            "tags": h.get("tags") or [],
+            "category": h.get("category") or "",
+            "importance": h.get("importance"),
+            "quality_score": h.get("quality_score"),
+            "created_at": h.get("created_at"),
+            "rrf_score": round(float(h.get("rrf_score") or 0), 5),
+            "community_id": comm_id,
+        })
+
+    # Group by chapter, ordered by best RRF score
+    chapter_hits: dict = defaultdict(list)
+    for h in hits:
+        chapter_hits[h["community_id"]].append(h)
+
+    chapters = []
+    for comm_id, ch_hits in chapter_hits.items():
+        top_score = max(h["rrf_score"] for h in ch_hits)
+        if comm_id == NO_COMMUNITY:
+            meta = {"title": "Uncategorised", "summary": "", "key_topics": []}
+        else:
+            meta = chapter_meta.get(comm_id, {"title": f"Community {comm_id}", "summary": "", "key_topics": []})
+        chapters.append({
+            "community_id": comm_id,
+            "title": meta["title"],
+            "summary": meta["summary"],
+            "key_topics": meta["key_topics"],
+            "hit_count": len(ch_hits),
+            "top_score": top_score,
+            "memory_count": len(ch_hits),
+            "member_count": 0,
+            "updated_at": None,
+            "score": top_score,
+        })
+
+    chapters.sort(key=lambda c: c["top_score"], reverse=True)
+
+    return JSONResponse({
+        "query": q,
+        "total_hits": len(hits),
+        "chapters": chapters,
+        "hits": hits,
+    })
+
+
 async def api_eval_golden(request: Request) -> JSONResponse:
     """List active golden queries so reviewers can vet/adjust them."""
     from nobrainr.db.pool import get_pool
@@ -1828,5 +1967,6 @@ api_routes = [
     Route("/api/eval/extraction/run", api_extraction_eval_run_now, methods=["POST"]),
     Route("/api/health/detailed", api_health_detailed),
     Route("/api/commonplace", api_commonplace),
+    Route("/api/commonplace/search", api_commonplace_search),
     Route("/api/commonplace/{community_id}/memories", api_commonplace_memories),
 ]
