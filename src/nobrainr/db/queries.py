@@ -172,6 +172,13 @@ async def search_memories(
     conditions = [
         "embedding IS NOT NULL",
         f"(embedding_model IS NULL OR embedding_model = ANY(${4}::text[]))",
+        # Temporal correctness: never surface superseded or expired memories
+        # in default search. supersede_memory() sets superseded_by + valid_to
+        # so the old version stops showing the moment a corrected version
+        # exists (commit 2570). Without this filter the old form ranked
+        # alongside the new one, producing two competing answers.
+        "superseded_by IS NULL",
+        "(valid_to IS NULL OR valid_to > now())",
     ]
     if not include_cold:
         conditions.append("tier < 3")
@@ -336,6 +343,10 @@ async def _hybrid_search_rrf(
     # for 13-20s search times on the 56K corpus).
     inner_overfetch = max(int(overfetch * 2), 60)
     tier_filter = "" if include_cold else " AND tier < 3"
+    # Temporal correctness: never surface superseded or expired memories
+    # in any of the 5 hybrid branches (vec/fts/id-token/graph/community).
+    # See search_memories scalar path for full rationale.
+    temporal_filter = " AND superseded_by IS NULL AND (valid_to IS NULL OR valid_to > now())"
 
     async with pool.acquire() as conn:
         # 1) Vector search: halfvec HNSW scan → full-precision re-rank
@@ -351,7 +362,7 @@ async def _hybrid_search_rrf(
                 WHERE embedding IS NOT NULL
                   AND (embedding_model IS NULL OR embedding_model = ANY($4::text[]))
                   AND 1 - (embedding::{_HV} <=> $1::{_HV}) >= $2
-                  {vec_extra}{tier_filter}
+                  {vec_extra}{tier_filter}{temporal_filter}
                 ORDER BY embedding::{_HV} <=> $1::{_HV}
                 LIMIT {inner_overfetch}
             )
@@ -388,7 +399,7 @@ async def _hybrid_search_rrf(
             FROM memories
             WHERE to_tsvector('simple', nb_unaccent(content || ' ' || COALESCE(search_keys, '') || ' ' || COALESCE(fts_context, '')))
                   @@ plainto_tsquery('simple', nb_unaccent($1))
-              {fts_extra}{tier_filter}
+              {fts_extra}{tier_filter}{temporal_filter}
             ORDER BY fts_rank DESC
             LIMIT $2
             """,
@@ -423,7 +434,7 @@ async def _hybrid_search_rrf(
                        1.0::real AS literal_score
                 FROM memories
                 WHERE ({token_ors})
-                  {id_extra}{tier_filter}
+                  {id_extra}{tier_filter}{temporal_filter}
                 ORDER BY importance DESC NULLS LAST, updated_at DESC
                 LIMIT ${n + 1}
             """
@@ -531,6 +542,7 @@ async def _hybrid_search_rrf(
                       JOIN entity_memories em ON em.memory_id = m.id
                       JOIN scored_entities se ON se.id = em.entity_id
                      WHERE true {g_extra}{tier_filter}
+                       AND m.superseded_by IS NULL AND (m.valid_to IS NULL OR m.valid_to > now())
                      GROUP BY m.id
                      ORDER BY graph_score DESC
                      LIMIT $3
@@ -580,6 +592,8 @@ async def _hybrid_search_rrf(
                           JOIN entity_memories em ON em.entity_id = e.id
                           JOIN memories m ON m.id = em.memory_id
                          WHERE m.tier < 3
+                           AND m.superseded_by IS NULL
+                           AND (m.valid_to IS NULL OR m.valid_to > now())
                          ORDER BY m.id, mc.sim DESC
                     )
                     SELECT * FROM member_memories
@@ -595,17 +609,24 @@ async def _hybrid_search_rrf(
         # 3) Reciprocal Rank Fusion
         rrf_scores: dict[str, float] = {}
         rows_by_id: dict[str, object] = {}
+        # Approach tracking: which branch(es) surfaced each result, with rank.
+        # Plumbed through to the result row as `matched_branches: list[dict]`
+        # so the caller can persist the answer "which retrieval strategy paid
+        # off?" alongside memory_outcomes feedback.
+        matched_branches: dict[str, list[dict]] = {}
 
         for rank, row in enumerate(vec_rows, start=1):
             rid = str(row["id"])
             rrf_scores[rid] = rrf_scores.get(rid, 0.0) + 1.0 / (rrf_k + rank)
             rows_by_id[rid] = row
+            matched_branches.setdefault(rid, []).append({"branch": "vec", "rank": rank})
 
         for rank, row in enumerate(fts_rows, start=1):
             rid = str(row["id"])
             rrf_scores[rid] = rrf_scores.get(rid, 0.0) + 1.0 / (rrf_k + rank)
             if rid not in rows_by_id:
                 rows_by_id[rid] = row
+            matched_branches.setdefault(rid, []).append({"branch": "fts", "rank": rank})
 
         # Literal branch gets full RRF weight — an exact hash match is
         # AS strong a signal as a high-ranked vector or FTS hit.
@@ -614,6 +635,7 @@ async def _hybrid_search_rrf(
             rrf_scores[rid] = rrf_scores.get(rid, 0.0) + 1.0 / (rrf_k + rank)
             if rid not in rows_by_id:
                 rows_by_id[rid] = row
+            matched_branches.setdefault(rid, []).append({"branch": "id", "rank": rank})
 
         # Graph-aware branch. Dampened weight so it lifts associative
         # matches without drowning the strictly-semantic top hits.
@@ -625,6 +647,7 @@ async def _hybrid_search_rrf(
             )
             if rid not in rows_by_id:
                 rows_by_id[rid] = row
+            matched_branches.setdefault(rid, []).append({"branch": "graph", "rank": rank})
 
         # Community-summary branch (GraphRAG-style). Dampened — it's
         # global-query signal, additive to specific matches.
@@ -636,6 +659,7 @@ async def _hybrid_search_rrf(
             )
             if rid not in rows_by_id:
                 rows_by_id[rid] = row
+            matched_branches.setdefault(rid, []).append({"branch": "community", "rank": rank})
 
         # Trust-aware tie-break: stable sort first by RRF, then bubble higher trust_score
         # to break ties at equal RRF. Demotes superseded/contradicted memories that slipped
@@ -687,6 +711,7 @@ async def _hybrid_search_rrf(
             row = rows_by_id[rid]
             d = _row_to_dict(row)
             d["rrf_score"] = rrf_scores[rid]
+            d["matched_branches"] = matched_branches.get(rid, [])
             results.append(d)
 
         # Dynamic recall thresholding: drop results below 50% of top score
