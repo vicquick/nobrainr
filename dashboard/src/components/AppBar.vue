@@ -11,10 +11,9 @@
         aria-label="Toggle navigation"
       >
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
-             stroke="currentColor" stroke-width="1.7"
-             stroke-linecap="round" stroke-linejoin="round">
-          <rect x="3" y="4" width="18" height="16" rx="2.5" />
-          <line x1="9" y1="4" x2="9" y2="20" />
+             stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="3" width="20" height="18" rx="2" stroke-width="2" />
+          <path d="M9 3V21" stroke-width="2" />
         </svg>
       </button>
     </template>
