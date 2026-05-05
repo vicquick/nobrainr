@@ -235,12 +235,14 @@
           <!-- Currently processing (from write queue) -->
           <div v-if="health.write_queue?.currently_processing?.length" class="mb-4">
             <div class="text-caption text-medium-emphasis mb-2">Write queue processing</div>
-            <div v-for="row in health.write_queue.currently_processing" :key="row.id" class="llm-row">
+            <div v-for="row in health.write_queue.currently_processing" :key="row.id"
+              class="llm-row clickable-row" @click="openQueueRow(row)">
               <v-chip size="x-small" :color="categoryColor(row.category)" variant="tonal" class="mr-2">
                 {{ row.category || '(none)' }}
               </v-chip>
               <span class="text-body-2 text-truncate flex-grow-1">{{ row.summary || row.content_preview }}</span>
               <span class="text-caption text-medium-emphasis ml-2 font-mono">{{ formatAge(row.age_s) }}</span>
+              <v-icon icon="mdi-chevron-right" size="14" class="ml-1 text-medium-emphasis" style="opacity: 0.4;" />
             </div>
           </div>
           <div v-else class="text-caption text-medium-emphasis mb-3">No writes currently processing</div>
@@ -263,10 +265,11 @@
               <span class="ml-1">· avg {{ avgDuration }}s · {{ liveRatio }}% live</span>
             </div>
             <TransitionGroup name="llm-list" tag="div" class="llm-call-list">
-              <div v-for="call in recentCallsReversed" :key="call.started_at" class="llm-call-row"
-                :class="`llm-call--${call.status}`">
+              <div v-for="call in recentCallsReversed" :key="call.started_at"
+                class="llm-call-row clickable-row" :class="`llm-call--${call.status}`"
+                @click="openLlmCall(call)">
                 <span class="caller-dot" :class="`caller-dot--${call.caller_kind}`" :title="call.caller_kind" />
-                <span class="llm-prompt" :title="call.prompt_preview">{{ call.prompt_preview || '(no prompt)' }}</span>
+                <span class="llm-prompt">{{ call.prompt_preview || '(no prompt)' }}</span>
                 <span class="llm-duration font-mono">{{ displayDuration(call, now) }}</span>
                 <v-icon v-if="call.status === 'in_flight'" icon="mdi-loading" size="14" class="ml-2 rotate text-info" />
                 <v-icon v-else-if="call.status === 'ok'" icon="mdi-check-circle" size="14" class="ml-2 text-success" />
@@ -276,6 +279,50 @@
             </TransitionGroup>
           </div>
           <div v-else class="text-caption text-medium-emphasis">No recent LLM calls</div>
+
+          <!-- Detail dialog -->
+          <v-dialog v-model="showDetail" max-width="640" scrollable>
+            <v-card rounded="xl">
+              <v-card-title class="d-flex align-center pa-4 pb-2">
+                <template v-if="detailKind === 'queue'">
+                  <v-chip size="x-small" :color="categoryColor(detailQueue?.category)" variant="tonal" class="mr-2">
+                    {{ detailQueue?.category || '(none)' }}
+                  </v-chip>
+                  <span class="text-body-1 font-weight-medium">Write queue item</span>
+                </template>
+                <template v-else>
+                  <span class="caller-dot mr-2" :class="`caller-dot--${detailCall?.caller_kind}`" style="flex-shrink:0;" />
+                  <span class="text-body-1 font-weight-medium">{{ detailCall?.caller_kind || 'LLM call' }}</span>
+                  <v-chip size="x-small" :color="detailCall?.status === 'ok' ? 'success' : detailCall?.status === 'in_flight' ? 'info' : 'warning'"
+                    variant="tonal" class="ml-2">{{ detailCall?.status }}</v-chip>
+                  <span class="text-caption text-medium-emphasis ml-2 font-mono">{{ detailCall ? displayDuration(detailCall, now) : '' }}</span>
+                </template>
+                <v-spacer />
+                <v-btn icon="mdi-close" variant="text" size="small" @click="showDetail = false" />
+              </v-card-title>
+              <v-card-text class="pa-4 pt-2">
+                <template v-if="detailKind === 'queue' && detailQueue">
+                  <div v-if="detailQueue.summary" class="mb-3">
+                    <div class="text-caption text-medium-emphasis mb-1">Summary</div>
+                    <div class="text-body-2" style="line-height: 1.6;">{{ detailQueue.summary }}</div>
+                  </div>
+                  <div>
+                    <div class="text-caption text-medium-emphasis mb-1">Content</div>
+                    <div v-if="queueFullContent" class="text-body-2 content-pre">{{ queueFullContent }}</div>
+                    <div v-else-if="loadingQueueContent" class="text-caption text-medium-emphasis">Loading…</div>
+                    <div v-else class="text-body-2 content-pre">{{ detailQueue.content_preview }}</div>
+                  </div>
+                  <div class="text-caption text-medium-emphasis mt-3">
+                    Processing for {{ formatAge(detailQueue.age_s) }} · id {{ detailQueue.id.slice(0, 8) }}
+                  </div>
+                </template>
+                <template v-else-if="detailKind === 'llm' && detailCall">
+                  <div class="text-caption text-medium-emphasis mb-1">Prompt</div>
+                  <div class="content-pre text-body-2">{{ detailCall.prompt_preview || '(no prompt recorded)' }}</div>
+                </template>
+              </v-card-text>
+            </v-card>
+          </v-dialog>
         </v-card-text>
       </v-card>
     </template>
@@ -316,6 +363,36 @@ interface HealthPayload {
   }
 }
 const health = ref<HealthPayload | null>(null)
+
+// Detail dialog
+interface QueueRow { id: string; category: string | null; age_s: number; summary: string; content_preview: string; skip_dedup: boolean }
+const showDetail = ref(false)
+const detailKind = ref<'queue' | 'llm' | ''>('')
+const detailQueue = ref<QueueRow | null>(null)
+const detailCall = ref<LlmCall | null>(null)
+const queueFullContent = ref('')
+const loadingQueueContent = ref(false)
+
+async function openQueueRow(row: QueueRow) {
+  detailKind.value = 'queue'
+  detailQueue.value = row
+  queueFullContent.value = ''
+  showDetail.value = true
+  if (row.id) {
+    loadingQueueContent.value = true
+    try {
+      const { data } = await api.get<{ content?: string }>(`/api/memories/${row.id}`)
+      queueFullContent.value = data.content ?? ''
+    } catch { /* show preview fallback */ }
+    finally { loadingQueueContent.value = false }
+  }
+}
+
+function openLlmCall(call: LlmCall) {
+  detailKind.value = 'llm'
+  detailCall.value = call
+  showDetail.value = true
+}
 
 const POLL_INTERVAL = 10_000
 
@@ -613,4 +690,24 @@ onUnmounted(() => {
 .llm-list-leave-to     { opacity: 0; transform: translateY(6px); }
 .llm-list-leave-active { position: absolute; width: calc(100% - 32px); }
 .llm-list-move         { transition: transform 320ms cubic-bezier(.2, .9, .3, 1); }
+
+.clickable-row {
+  cursor: pointer;
+  transition: background 150ms ease;
+  border-radius: 6px;
+}
+.clickable-row:hover { background: rgba(255,255,255,0.05); }
+
+.content-pre {
+  white-space: pre-wrap;
+  font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  background: rgba(255,255,255,0.03);
+  border-radius: 8px;
+  padding: 12px 14px;
+  max-height: 380px;
+  overflow-y: auto;
+  border: 1px solid rgba(255,255,255,0.06);
+}
 </style>
