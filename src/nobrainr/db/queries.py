@@ -208,10 +208,13 @@ async def search_memories(
         idx += 1
 
     where = " AND ".join(conditions)
-    # Overfetch budget matches Anthropic Contextual Retrieval (top-150 → top-20
-    # reranked): 15× with reranker, 5× without (there's no cross-encoder to
-    # recover the tail so we don't want to pay for unused candidates).
-    overfetch_mult = 15 if _cfg.reranker_enabled else 5
+    # Overfetch: configurable via NOBRAINR_OVERFETCH_MULT (default 6).
+    # Anthropic's 15× recipe assumed GPU-speed reranking of 150 candidates.
+    # We cap reranker input at reranker_max_candidates=8, so 15× is pure waste —
+    # RRF quality at 300 candidates vs 750 is indistinguishable when only top-8
+    # get the cross-encoder. 6× gives a good diversity pool without burning 3s
+    # of HNSW traversal per query.
+    overfetch_mult = getattr(_cfg, "overfetch_mult", 6) if _cfg.reranker_enabled else 3
     overfetch = max(limit * overfetch_mult, 30)
 
     async with pool.acquire() as conn:
@@ -324,12 +327,14 @@ async def _hybrid_search_rrf(
     date_to: datetime | None = None,
 ) -> list[dict]:
     """Hybrid search using Reciprocal Rank Fusion of vector + full-text results."""
-    # Anthropic's Contextual Retrieval recipe: retrieve top-150 → rerank to top-20.
-    # We mirror that when the reranker is enabled.
-    overfetch_mult = 15 if _cfg.reranker_enabled else 5
+    # Overfetch: see scalar search_memories above for rationale.
+    overfetch_mult = getattr(_cfg, "overfetch_mult", 6) if _cfg.reranker_enabled else 3
     overfetch = max(limit * overfetch_mult, 30)
-    # Inner overfetch for halfvec candidate retrieval before full-precision re-rank
-    inner_overfetch = overfetch * 3
+    # Inner overfetch for halfvec HNSW candidate retrieval before full-precision
+    # re-rank. 2× gives enough buffer for approximation error without forcing
+    # pgvector iterative_scan through thousands of nodes (3× was the culprit
+    # for 13-20s search times on the 56K corpus).
+    inner_overfetch = max(int(overfetch * 2), 60)
     tier_filter = "" if include_cold else " AND tier < 3"
 
     async with pool.acquire() as conn:
