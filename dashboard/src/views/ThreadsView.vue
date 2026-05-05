@@ -328,4 +328,26 @@ onMounted(search)
 }
 .dotty { letter-spacing: 0.5em; color: var(--cp-gold-soft); }
 .loading-text { font-size: 13px; margin: 8px 0 0; letter-spacing: 0.05em; }
+
+/* MOBILE: stack the controls, no overflow on the list */
+@media (max-width: 720px) {
+  .threads-page { padding: 24px 14px 64px; }
+  .threads-title { font-size: 30px; }
+
+  /* Stack search + filter + button on their own rows */
+  .threads-controls {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    margin-bottom: 24px;
+  }
+  .folio-button { width: 100%; padding: 8px 16px; }
+
+  .thread-line {
+    grid-template-columns: 36px 1fr 16px;
+    gap: 8px;
+    padding: 12px 4px;
+  }
+  .thread-title { font-size: 14px; }
+  .thread-meta { font-size: 11px; flex-wrap: wrap; }
+}
 </style>

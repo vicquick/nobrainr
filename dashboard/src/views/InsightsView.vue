@@ -748,4 +748,39 @@ onMounted(() => {
   color: var(--cp-gold);
   transform: translateX(2px);
 }
+
+@media (max-width: 720px) {
+  .ins-page { padding: 24px 14px 64px; }
+  .ins-title { font-size: 30px; }
+
+  /* Frontispiece: drop the marginalia column on phones */
+  .frontispiece {
+    grid-template-columns: 1fr 18px;
+    padding: 20px 14px;
+  }
+  .frontispiece-marginalia { display: none; }
+  .frontispiece-text { font-size: 15px; }
+
+  .folio-entry {
+    grid-template-columns: 36px 1fr;
+    gap: 10px;
+    padding: 16px 4px;
+  }
+
+  .ins-controls {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+  .ins-controls .ctl-group {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  /* Folio dialog: full-bleed on mobile */
+  .folio-overlay { padding: 0; }
+  .folio-page { border-top-width: 2px; min-height: 100vh; }
+  .page-content { padding: 20px 18px 32px; }
+  .page-body { font-size: 15px; }
+}
 </style>

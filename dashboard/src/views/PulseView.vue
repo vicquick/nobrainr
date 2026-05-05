@@ -1017,4 +1017,62 @@ onUnmounted(() => {
 .cat-default { color: var(--cp-ink-mute); }
 
 .clickable { cursor: pointer; }
+
+/* MOBILE: shrink fixed-padding ledger blocks, stack multi-column grids */
+@media (max-width: 720px) {
+  .pulse-page { padding: 24px 14px 64px; }
+  .pulse-title { font-size: 30px; }
+
+  .quire { margin-bottom: 40px; }
+  .quire-head {
+    grid-template-columns: 36px 1fr auto;
+    gap: 8px;
+  }
+  .quire-numeral { font-size: 22px; }
+  .quire-title { font-size: 16px; }
+
+  .ledger-line { padding: 10px 4px 10px 24px; }
+  .ledger-fig { font-size: 18px; }
+  .progress-block, .sparkline-frame { margin: 12px 0 18px; }
+  .progress-meta { margin: 0 0 16px; }
+  .labour-section { padding-left: 0; }
+
+  .quire-trio { gap: 24px; }
+
+  /* Bar lists: shrink the label column */
+  .bar-list li {
+    grid-template-columns: 80px 1fr auto;
+    gap: 8px;
+  }
+
+  /* Labour rows: stack the category onto its own row above the prose */
+  .labour-row {
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      "cat   age"
+      "text  text";
+    row-gap: 4px;
+    column-gap: 8px;
+  }
+  .labour-cat { grid-area: cat; }
+  .labour-age { grid-area: age; }
+  .labour-text {
+    grid-area: text;
+    white-space: normal;
+    word-break: break-word;
+  }
+
+  /* Ticker rows: narrower duration column, wrap prose */
+  .ticker-line {
+    grid-template-columns: 14px 1fr 44px 14px;
+    gap: 6px;
+  }
+  .ticker-text {
+    white-space: normal;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+}
 </style>

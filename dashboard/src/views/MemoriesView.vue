@@ -413,4 +413,33 @@ onMounted(async () => {
   margin: 0;
   font-size: 14px;
 }
+
+/* MOBILE — single column. Index visible by default; opening a memory
+   slides the page over to cover the index. Tap '← back to gathering'
+   to return. (We mirror the AppBar's drawer behaviour.) */
+@media (max-width: 900px) {
+  .florilegium-shell {
+    grid-template-columns: 1fr;
+    height: auto;
+    min-height: calc(100vh - 64px);
+  }
+  .florilegium-index {
+    border-right: none;
+    border-bottom: 1px solid var(--cp-gold-faint);
+    height: auto;
+    max-height: 50vh;
+  }
+  .index-head { padding: 16px 14px 12px; }
+  .index-title { font-size: 22px; }
+  .filter-row { flex-direction: column; gap: 8px; }
+  .florilegium-page-right {
+    min-height: 50vh;
+  }
+  .page-empty { padding: 32px 16px; }
+  .empty-title { font-size: 18px; }
+}
+
+@media (max-width: 480px) {
+  .florilegium-index { max-height: 60vh; }
+}
 </style>

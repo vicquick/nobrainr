@@ -21,6 +21,14 @@ import ChatPanel from '@/components/ChatPanel.vue'
 /* GLOBAL: parchment-dark page with subtle vellum grain. Applied at the
    v-app level so every view inherits the texture without each view
    having to reproduce it. */
+/* Page-wide safety: nothing should ever push the page wider than the
+   viewport. box-sizing keeps padding inside the declared widths. */
+html, body, #app {
+  max-width: 100vw;
+  overflow-x: hidden;
+}
+*, *::before, *::after { box-sizing: border-box; }
+
 .folio-app {
   background:
     radial-gradient(1200px 800px at 20% 10%, rgba(200, 169, 110, 0.04), transparent 60%),
@@ -28,6 +36,8 @@ import ChatPanel from '@/components/ChatPanel.vue'
     linear-gradient(180deg, #0e0b06 0%, #14110a 100%) !important;
   color: rgba(238, 224, 196, 0.94);
   font-family: Georgia, 'Palatino Linotype', Palatino, 'Hoefler Text', serif;
+  max-width: 100vw;
+  overflow-x: hidden;
 }
 
 /* Vuetify v-main background override */
