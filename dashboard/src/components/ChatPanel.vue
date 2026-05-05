@@ -484,35 +484,41 @@ watch(
 
 <style scoped>
 .chat-panel {
-  background: #12121a !important;
-  border-left: 1px solid rgba(255, 255, 255, 0.08) !important;
+  background: linear-gradient(180deg, #14110a 0%, #0e0b06 100%) !important;
+  border-left: 1px solid rgba(200, 169, 110, 0.18) !important;
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
+  color: rgba(238, 224, 196, 0.94);
 }
 .chat-panel-mobile {
   width: 100% !important;
   max-width: 100% !important;
   min-width: 100% !important;
 }
-/* Ensure mobile drawer fully hides when closed (no residual transform) */
 .chat-panel-mobile:not(.v-navigation-drawer--active) {
   transform: translateX(100%) !important;
   visibility: hidden !important;
 }
-/* Tablet: slightly narrower than desktop */
 @media (min-width: 600px) and (max-width: 960px) {
-  .chat-panel:not(.chat-panel-mobile) {
-    width: 380px !important;
-  }
+  .chat-panel:not(.chat-panel-mobile) { width: 380px !important; }
 }
 .chat-header {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.02);
-  min-height: 48px;
+  border-bottom: 1px solid rgba(200, 169, 110, 0.18);
+  background: rgba(200, 169, 110, 0.03);
+  min-height: 52px;
+  font-family: Georgia, serif;
+}
+.chat-header :deep(.text-subtitle-2) {
+  font-family: Georgia, serif !important;
+  font-style: italic;
+  letter-spacing: 0.08em;
+  color: #c8a96e !important;
+  font-size: 13px !important;
 }
 .messages-area {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 .empty-state {
   display: flex;
@@ -520,30 +526,40 @@ watch(
   align-items: center;
   justify-content: center;
   flex: 1;
-  opacity: 0.7;
+  font-family: Georgia, serif;
+  font-style: italic;
+  color: rgba(238, 224, 196, 0.55);
+  opacity: 1;
+}
+.empty-state :deep(.v-icon) {
+  color: #c8a96e !important;
+  opacity: 0.4;
 }
 .message-bubble {
   max-width: 92%;
-  padding: 8px 12px;
-  border-radius: 10px;
-  font-size: 0.84rem;
-  line-height: 1.55;
+  padding: 12px 16px;
+  font-family: Georgia, serif;
+  font-size: 14px;
+  line-height: 1.65;
   word-break: break-word;
+  border: 1px solid transparent;
 }
 .message-bubble.user {
   align-self: flex-end;
-  background: rgba(123, 142, 200, 0.15);
-  border: 1px solid rgba(123, 142, 200, 0.2);
-  color: rgba(255, 255, 255, 0.9);
+  background: rgba(200, 169, 110, 0.08);
+  border-color: rgba(200, 169, 110, 0.25);
+  border-left: 2px solid #c8a96e;
+  color: rgba(238, 224, 196, 0.96);
 }
 .message-bubble.assistant {
   align-self: flex-start;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.85);
+  background: rgba(200, 169, 110, 0.03);
+  border-color: rgba(200, 169, 110, 0.15);
+  color: rgba(238, 224, 196, 0.92);
 }
 .message-content {
   white-space: pre-wrap;
+  font-family: Georgia, serif;
 }
 .speak-btn {
   opacity: 0.3;
@@ -566,53 +582,61 @@ watch(
   50% { opacity: 1; }
 }
 .sources-section {
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-  padding-top: 6px;
+  border-top: 1px dotted rgba(200, 169, 110, 0.25);
+  padding-top: 8px;
+  margin-top: 6px;
 }
 .sources-toggle {
-  font-size: 0.7rem;
-  color: rgba(255, 255, 255, 0.45);
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  color: rgba(238, 224, 196, 0.55);
   cursor: pointer;
   user-select: none;
 }
-.sources-toggle:hover {
-  color: rgba(255, 255, 255, 0.65);
-}
+.sources-toggle:hover { color: #c8a96e; }
 .sources-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
+  margin-top: 6px;
 }
 .source-entity {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 0.72rem;
-  color: rgba(255, 255, 255, 0.6);
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 12px;
+  color: rgba(238, 224, 196, 0.7);
   cursor: pointer;
-  padding: 2px 4px;
-  border-radius: 4px;
+  padding: 3px 6px;
 }
 .source-entity:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(200, 169, 110, 0.08);
+  color: rgba(238, 224, 196, 0.95);
 }
 .entity-type-dot {
   width: 6px;
   height: 6px;
-  border-radius: 2px;
   flex-shrink: 0;
 }
 .source-memory {
-  font-size: 0.7rem;
-  color: rgba(255, 255, 255, 0.55);
-  padding: 2px 4px;
+  font-family: Georgia, serif;
+  font-size: 11px;
+  color: rgba(238, 224, 196, 0.55);
+  padding: 3px 6px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  border-left: 1px dotted rgba(200, 169, 110, 0.18);
+  padding-left: 8px;
+  font-style: italic;
 }
 .chat-input {
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.02);
+  border-top: 1px solid rgba(200, 169, 110, 0.18);
+  background: rgba(200, 169, 110, 0.03);
 }
 .mic-recording {
   animation: pulse-recording 1.2s ease-in-out infinite;

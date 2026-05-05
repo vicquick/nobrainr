@@ -2,6 +2,10 @@ import 'vuetify/styles'
 import { createVuetify } from 'vuetify'
 import { aliases, mdi } from 'vuetify/iconsets/mdi'
 
+// Commonplace book palette — gold on parchment-dark.
+// Replaces the earlier Void Space/GitHub-blue scheme. Every Vuetify
+// component inherits these so even un-redesigned surfaces (Galaxy /
+// Graph canvas chrome, dialogs, system menus) feel like one book.
 export default createVuetify({
   theme: {
     defaultTheme: 'dark',
@@ -9,31 +13,30 @@ export default createVuetify({
       dark: {
         dark: true,
         colors: {
-          // Void Space palette (Uncodixfy-approved)
-          background: '#0d1117',
-          surface: '#161b22',
-          'surface-bright': '#1c2129',
-          'surface-variant': '#21262d',
-          'on-surface': '#c9d1d9',
-          'on-background': '#c9d1d9',
-          primary: '#58a6ff',
-          'primary-darken-1': '#388bfd',
-          secondary: '#79c0ff',
-          'secondary-darken-1': '#58a6ff',
-          success: '#3fb950',
-          error: '#f85149',
-          warning: '#d29922',
-          info: '#58a6ff',
-          accent: '#f78166',
+          background: '#0e0b06',
+          surface: '#14110a',
+          'surface-bright': '#1c1810',
+          'surface-variant': '#22180e',
+          'on-surface': '#eee0c4',
+          'on-background': '#eee0c4',
+          primary: '#c8a96e',          // gold
+          'primary-darken-1': '#a88a52',
+          secondary: '#9d6c4a',         // burnt sienna
+          'secondary-darken-1': '#7a5239',
+          success: '#8aa96e',           // sage gold
+          error: '#c47a6a',             // muted vermillion
+          warning: '#c89e6e',           // amber-gold
+          info: '#6e8fa9',              // dusk blue
+          accent: '#c8a96e',
         },
         variables: {
-          'border-color': '#ffffff',
-          'border-opacity': 0.06,
-          'high-emphasis-opacity': 0.95,
+          'border-color': '#c8a96e',
+          'border-opacity': 0.18,
+          'high-emphasis-opacity': 0.94,
           'medium-emphasis-opacity': 0.55,
           'disabled-opacity': 0.3,
-          'hover-opacity': 0.06,
-          'focus-opacity': 0.1,
+          'hover-opacity': 0.05,
+          'focus-opacity': 0.08,
           'activated-opacity': 0.1,
           'pressed-opacity': 0.14,
         },
@@ -41,45 +44,40 @@ export default createVuetify({
     },
   },
   defaults: {
-    // Uncodixfy: no oversized rounded corners, no pill shapes
     VCard: {
-      rounded: 'md',
+      rounded: 0,           // no rounded corners — flat folio pages
       variant: 'flat',
       color: 'surface',
     },
     VBtn: {
-      rounded: 'md',
+      rounded: 0,
       variant: 'flat',
     },
     VChip: {
-      rounded: 'md',
+      rounded: 0,
     },
     VTextField: {
-      variant: 'solo-filled',
+      variant: 'underlined', // bottom rule only — folio input style
       density: 'compact',
-      rounded: 'md',
-      flat: true,
-      bgColor: 'surface-bright',
       hideDetails: true,
     },
     VTextarea: {
-      variant: 'solo-filled',
+      variant: 'outlined',
       density: 'compact',
-      rounded: 'md',
-      flat: true,
-      bgColor: 'surface-bright',
+      rounded: 0,
       hideDetails: true,
     },
     VSelect: {
-      variant: 'solo-filled',
+      variant: 'underlined',
       density: 'compact',
-      rounded: 'md',
-      flat: true,
-      bgColor: 'surface-bright',
       hideDetails: true,
     },
     VTable: {
       density: 'comfortable',
+    },
+    VDialog: {
+      // dialogs render as folio pages
+      transition: 'fade-transition',
     },
   },
   icons: {
