@@ -1,6 +1,8 @@
 <template>
   <v-app-bar color="transparent" density="comfortable" elevation="0" class="app-bar-folio">
-    <!-- LEFT: side-panel toggle (replaces hamburger). Always present. -->
+    <!-- LEFT: side-panel toggle. Custom SVG (Lucide-style panel-left).
+         Stroke-only, rounded rect with one vertical line — the icon
+         Claude / MetaMCP / most modern apps use. -->
     <template #prepend>
       <button
         class="panel-toggle"
@@ -8,11 +10,16 @@
         @click="drawer = !drawer"
         aria-label="Toggle navigation"
       >
-        <v-icon icon="mdi-page-layout-sidebar-left" size="18" />
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
+             stroke="currentColor" stroke-width="1.7"
+             stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="4" width="18" height="16" rx="2.5" />
+          <line x1="9" y1="4" x2="9" y2="20" />
+        </svg>
       </button>
     </template>
 
-    <!-- CENTER: brand mark + (desktop) inline nav. Mobile shows brand only. -->
+    <!-- CENTER: brand mark + (desktop only via CSS) inline nav. -->
     <div class="bar-center">
       <RouterLink to="/commonplace" class="brand-mark" aria-label="Home">
         <span class="brand-ornament">❦</span>
@@ -21,7 +28,7 @@
         </span>
       </RouterLink>
 
-      <nav v-if="!mobile" class="nav-links">
+      <nav class="nav-links">
         <RouterLink
           v-for="link in navLinks"
           :key="link.to"
@@ -29,16 +36,15 @@
           class="folio-link"
           :class="{ active: route.path === link.to }"
         >
-          <v-icon v-if="smAndDown" :icon="link.icon" size="14" />
-          <span v-else>{{ link.label }}</span>
+          {{ link.label }}
         </RouterLink>
       </nav>
     </div>
 
-    <!-- RIGHT: stats (desktop only) + chat toggle -->
+    <!-- RIGHT: stats (desktop-only via CSS) + chat toggle -->
     <template #append>
       <div class="bar-end">
-        <div class="folio-stats" v-if="statsStore.stats && !smAndDown">
+        <div class="folio-stats" v-if="statsStore.stats">
           <span class="stat-line">
             <span class="stat-num">{{ statsStore.stats.total_memories.toLocaleString() }}</span>
             <span class="stat-label">mem.</span>
@@ -61,7 +67,11 @@
           @click="chatStore.toggle()"
           aria-label="Toggle chat"
         >
-          <v-icon icon="mdi-chat-outline" size="16" />
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none"
+               stroke="currentColor" stroke-width="1.7"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+          </svg>
         </button>
       </div>
     </template>
@@ -135,19 +145,31 @@ const navLinks = [
 </script>
 
 <style scoped>
+/* Lock the bar to viewport width and prevent any post-hydration shift.
+   Pure CSS media queries handle the breakpoint hiding so there's no
+   "desktop nav flashes then disappears" flicker. */
 .app-bar-folio {
   background: linear-gradient(180deg, rgba(14, 11, 6, 0.92), rgba(18, 14, 8, 0.88)) !important;
   border-bottom: 1px solid rgba(200, 169, 110, 0.18) !important;
   backdrop-filter: blur(8px);
   font-family: Georgia, 'Palatino Linotype', Palatino, serif;
+  width: 100% !important;
+  max-width: 100vw !important;
+  left: 0 !important;
+  right: 0 !important;
 }
 
-/* Vuetify slots — strip default padding so center can expand */
-.app-bar-folio :deep(.v-toolbar__content) { padding: 0 8px; }
+/* Vuetify slots — strip default padding so center expands fully and
+   the bar doesn't widen past the viewport. */
+.app-bar-folio :deep(.v-toolbar__content) {
+  padding: 0 6px !important;
+  max-width: 100vw;
+  overflow: hidden;
+}
 .app-bar-folio :deep(.v-toolbar__prepend),
 .app-bar-folio :deep(.v-toolbar__append) {
-  margin: 0;
-  padding: 0;
+  margin: 0 !important;
+  padding: 0 !important;
 }
 
 /* Side-panel + chat toggles share size for visual balance */
@@ -155,15 +177,17 @@ const navLinks = [
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  width: 34px;
+  height: 34px;
   margin: 0 4px;
   background: transparent;
   border: 1px solid rgba(200, 169, 110, 0.25);
-  color: rgba(238, 224, 196, 0.7);
+  border-radius: 8px;
+  color: rgba(238, 224, 196, 0.78);
   cursor: pointer;
   transition: all 150ms;
   flex-shrink: 0;
+  padding: 0;
 }
 .panel-toggle:hover, .chat-toggle:hover {
   border-color: #c8a96e;
@@ -174,20 +198,23 @@ const navLinks = [
   border-color: #c8a96e;
   color: #c8a96e;
 }
+.panel-toggle svg, .chat-toggle svg {
+  display: block;
+}
 
-/* CENTER block — brand + (desktop) nav. flex:1 absorbs free space so
-   the brand truly sits in the visual center on mobile. */
+/* CENTER block — brand + (desktop) nav. Use min-width:0 so flexbox can
+   shrink it below content size and prevent overflow on narrow viewports. */
 .bar-center {
-  flex: 1;
+  flex: 1 1 0;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 28px;
   min-width: 0;
-  padding: 0 8px;
+  padding: 0 6px;
+  overflow: hidden;
 }
 
-/* Brand mark — Routerlink, click → /commonplace */
 .brand-mark {
   display: inline-flex;
   align-items: baseline;
@@ -195,46 +222,47 @@ const navLinks = [
   text-decoration: none;
   white-space: nowrap;
   flex-shrink: 0;
+  min-width: 0;
 }
 .brand-ornament {
   color: #c8a96e;
   font-size: 16px;
   line-height: 1;
   align-self: center;
+  flex-shrink: 0;
 }
 .brand-name {
   font-family: Georgia, serif;
   font-size: 17px;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.05em;
   font-style: italic;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .brand-no { color: #c8a96e; }
 .brand-brainr { color: rgba(238, 224, 196, 0.94); }
 
-/* On mobile, drop the ornament for cleaner centering */
-@media (max-width: 600px) {
-  .brand-ornament { display: none; }
-  .bar-center { padding: 0 4px; }
-  .panel-toggle, .chat-toggle { width: 32px; height: 32px; }
-}
-
-/* Nav links (desktop only — hidden on mobile) */
+/* Nav links — visible at ≥768px only (desktop+tablet wide). Below that,
+   the drawer (panel-toggle) handles navigation. */
 .nav-links {
-  display: flex;
+  display: none;
   align-items: center;
   gap: 0;
   flex-shrink: 1;
   min-width: 0;
-  overflow: hidden;
 }
+@media (min-width: 768px) {
+  .nav-links { display: flex; }
+}
+
 .folio-link {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 12px;
+  padding: 4px 11px;
   font-family: Georgia, serif;
   font-size: 13px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
   color: rgba(238, 224, 196, 0.55);
   text-decoration: none;
   font-style: italic;
@@ -255,25 +283,27 @@ const navLinks = [
   left: 10px;
   right: 10px;
   height: 1px;
-  background: linear-gradient(
-    90deg, transparent, #c8a96e 30%, #c8a96e 70%, transparent
-  );
+  background: linear-gradient(90deg, transparent, #c8a96e 30%, #c8a96e 70%, transparent);
 }
 
-/* RIGHT: stats + chat toggle */
+/* RIGHT: stats (≥1100px only — keeps the bar compact otherwise) + chat */
 .bar-end {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   padding-right: 4px;
+  flex-shrink: 0;
 }
 .folio-stats {
+  display: none;
   font-family: Georgia, serif;
   font-size: 12px;
   color: rgba(238, 224, 196, 0.65);
-  display: flex;
   align-items: baseline;
   gap: 8px;
+}
+@media (min-width: 1100px) {
+  .folio-stats { display: flex; }
 }
 .stat-line {
   display: inline-flex;
@@ -289,6 +319,15 @@ const navLinks = [
   letter-spacing: 0.05em;
 }
 .stat-divider { color: rgba(200, 169, 110, 0.4); }
+
+/* Mobile (<480px): tighten everything, drop the ornament */
+@media (max-width: 480px) {
+  .brand-ornament { display: none; }
+  .brand-name { font-size: 16px; }
+  .panel-toggle, .chat-toggle { width: 32px; height: 32px; }
+  .bar-center { gap: 0; padding: 0 4px; }
+  .panel-toggle, .chat-toggle { margin: 0 2px; }
+}
 
 /* Mobile drawer */
 .mobile-nav {
