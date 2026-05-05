@@ -426,24 +426,40 @@ async def api_memories(request: Request) -> JSONResponse:
             pass
 
     if q:
-        embedding = await embed_text(q)
-        # Hybrid search (vector + BM25 RRF) + cross-encoder rerank, matching
-        # the MCP memory_search code path. The dashboard previously did
-        # vector-only with no rerank, so the same query against the API
-        # returned worse results than against MCP — confusing for any agent
-        # comparing the two.
-        memories = await queries.search_memories(
-            embedding=embedding,
-            limit=limit,
-            threshold=0.2,
-            tags=tags,
-            category=category,
-            source_machine=source_machine,
-            text_query=q,
-        )
+        # Use timeout variant: if Ollama is backed up (background embeds queued),
+        # fall back to FTS-only rather than blocking the UI for 50s+.
+        embedding: list[float] | None = None
+        try:
+            embedding = await embed_text_with_timeout(q, timeout_s=15.0)
+        except EmbedTimeout:
+            log.warning("embed_text timed out for dashboard search — using FTS fallback")
+        except Exception:
+            log.exception("embed_text failed for dashboard search — using FTS fallback")
+
+        if embedding is not None:
+            memories = await queries.search_memories(
+                embedding=embedding,
+                limit=limit,
+                threshold=0.2,
+                tags=tags,
+                category=category,
+                source_machine=source_machine,
+                text_query=q,
+            )
+        else:
+            # FTS-only fallback: zero vector disables vector branch, FTS still runs
+            memories = await queries.search_memories(
+                embedding=[0.0] * 1024,
+                limit=limit,
+                threshold=1.1,  # impossibly high threshold skips vector matches
+                tags=tags,
+                category=category,
+                source_machine=source_machine,
+                text_query=q,
+            )
         if min_quality is not None:
             memories = [m for m in memories if (m.get("quality_score") or 0) >= min_quality]
-        if memories and settings.reranker_enabled:
+        if memories and settings.reranker_enabled and embedding is not None:
             try:
                 from nobrainr.services.reranker import rerank
                 memories = await rerank(q, memories, limit=limit)
@@ -1780,12 +1796,17 @@ async def api_commonplace_search(request: Request) -> JSONResponse:
     except ValueError:
         limit = 80
 
-    embedding = await embed_text(q)
+    vec_threshold = 0.15
+    try:
+        embedding: list[float] = await embed_text_with_timeout(q, timeout_s=15.0)
+    except (EmbedTimeout, Exception):
+        embedding = [0.0] * 1024  # FTS-only fallback
+        vec_threshold = 1.1       # disable vector branch
     raw_hits = await queries.search_memories(
         embedding,
         text_query=q,
         limit=limit,
-        threshold=0.15,
+        threshold=vec_threshold,
         include_cold=True,
     )
 

@@ -1,10 +1,15 @@
 """Ollama embedding client for Qwen3-Embedding (qwen3-embedding-cpu).
 
-Uses /api/embed. A single httpx AsyncClient is reused across calls with a
-generous timeout (60s) so that warm embeddings on CPU don't flap on slow
-startup runs. The batch helper splits large inputs into 64-item chunks
-because qwen3-embedding-cpu on 20-core EPYC comfortably handles that size
-without hitting the Ollama HTTP timeout.
+Uses /api/embed. Ollama serialises embedding requests internally but does NOT
+limit concurrent HTTP connections — if 5 callers hit /api/embed simultaneously,
+Ollama queues them and each waits for all previous to finish. On the i5-13500
+(CPU-only, ~7s per embed) that means caller 5 waits ~35s.
+
+The global _EMBED_SEM semaphore caps in-flight embed requests to 1 so that
+background jobs (write_queue, scheduler backfills) cannot starve interactive
+search. Search callers should use embed_text_with_timeout() which raises
+EmbedTimeout on budget exhaustion — the search layer then falls back to
+FTS+graph-only ranking rather than blocking for 50s+.
 """
 
 import asyncio
@@ -18,21 +23,35 @@ logger = logging.getLogger("nobrainr")
 
 _client: httpx.AsyncClient | None = None
 
-MAX_RETRIES = 5
+MAX_RETRIES = 3
 RETRYABLE_STATUS = {404, 503, 502, 429}
 
-# Larger default than the previous 32 — measured on qwen3-embedding-cpu
-# (20-core EPYC Genoa, no GPU): batches of 64 still finish in <1s each and
-# halve the per-batch HTTP overhead for large document imports and the
-# contextual-prefix backfill. 96+ starts hitting Ollama's default 60s
-# timeout on cold model loads, so we cap here.
-DEFAULT_BATCH_SIZE = 64
+# Reduce batch size: tuned for 20-core EPYC but we have i5-13500.
+# i5-13500 needs ~7s per single embed; batch=8 stays within 60s Ollama timeout.
+DEFAULT_BATCH_SIZE = 8
+
+# Global semaphore: only 1 concurrent embed to Ollama.
+# i5-13500 is single-threaded for GGML inference; concurrent requests queue
+# inside Ollama and each waits for all previous. SEM(1) makes the queue visible
+# on the Python side where we can apply timeouts and priorities.
+_EMBED_SEM: asyncio.Semaphore | None = None
+
+
+def _get_sem() -> asyncio.Semaphore:
+    global _EMBED_SEM
+    if _EMBED_SEM is None:
+        _EMBED_SEM = asyncio.Semaphore(1)
+    return _EMBED_SEM
+
+
+class EmbedTimeout(Exception):
+    """Embed could not complete within the requested budget."""
 
 
 def _get_client() -> httpx.AsyncClient:
     global _client
     if _client is None or _client.is_closed:
-        _client = httpx.AsyncClient(base_url=settings.ollama_url, timeout=60.0)
+        _client = httpx.AsyncClient(base_url=settings.ollama_url, timeout=90.0)
     return _client
 
 
@@ -70,24 +89,49 @@ async def _embed_with_retry(payload: dict) -> dict:
 
 
 async def embed_text(text: str) -> list[float]:
-    """Generate embedding for a single text string."""
-    data = await _embed_with_retry(
-        {"model": settings.embedding_model, "input": text, "keep_alive": "24h"},
-    )
+    """Generate embedding for a single text string (background-safe, no timeout)."""
+    sem = _get_sem()
+    async with sem:
+        data = await _embed_with_retry(
+            {"model": settings.embedding_model, "input": text, "keep_alive": "24h"},
+        )
     return data["embeddings"][0]
+
+
+async def embed_text_with_timeout(text: str, timeout_s: float = 15.0) -> list[float]:
+    """Embed with a budget. Raises EmbedTimeout if semaphore wait + inference > timeout_s.
+
+    Use this in the interactive search path so a flooded Ollama queue causes
+    graceful FTS fallback rather than a 50s hang.
+    """
+    sem = _get_sem()
+    try:
+        # Wait for semaphore + run inference, all within timeout_s.
+        async def _do():
+            async with sem:
+                data = await _embed_with_retry(
+                    {"model": settings.embedding_model, "input": text, "keep_alive": "24h"},
+                )
+            return data["embeddings"][0]
+
+        return await asyncio.wait_for(_do(), timeout=timeout_s)
+    except asyncio.TimeoutError as e:
+        raise EmbedTimeout(f"embed exceeded {timeout_s}s budget") from e
 
 
 async def embed_batch(
     texts: list[str],
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> list[list[float]]:
-    """Generate embeddings for multiple texts."""
+    """Generate embeddings for multiple texts (background-safe, serialised)."""
+    sem = _get_sem()
     all_embeddings = []
     for i in range(0, len(texts), batch_size):
         batch = texts[i : i + batch_size]
-        data = await _embed_with_retry(
-            {"model": settings.embedding_model, "input": batch, "keep_alive": "24h"},
-        )
+        async with sem:
+            data = await _embed_with_retry(
+                {"model": settings.embedding_model, "input": batch, "keep_alive": "24h"},
+            )
         all_embeddings.extend(data["embeddings"])
     return all_embeddings
 
