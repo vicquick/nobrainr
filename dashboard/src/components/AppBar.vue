@@ -1,32 +1,26 @@
 <template>
-  <v-app-bar color="rgba(10, 14, 20, 0.85)" density="comfortable" elevation="0" class="app-bar-glass">
+  <v-app-bar color="transparent" density="comfortable" elevation="0" class="app-bar-folio">
     <template #prepend>
-      <div class="d-flex align-center ml-3">
-        <v-icon icon="mdi-brain" color="primary" size="24" class="mr-2" />
-        <span class="text-h6 font-weight-bold" style="letter-spacing: -0.5px;">
-          <span class="text-primary">no</span><span class="text-high-emphasis">brainr</span>
+      <div class="d-flex align-center ml-3 brand-mark">
+        <span class="brand-ornament">❦</span>
+        <span class="brand-name">
+          <span class="brand-no">no</span><span class="brand-brainr">brainr</span>
         </span>
       </div>
     </template>
 
     <!-- Desktop/Tablet: inline nav links -->
     <div v-if="!mobile" class="d-flex align-center ml-1 ml-sm-6 nav-links">
-      <v-btn
+      <RouterLink
         v-for="link in navLinks"
         :key="link.to"
         :to="link.to"
-        :prepend-icon="smAndDown ? undefined : link.icon"
-        :icon="smAndDown ? link.icon : undefined"
-        :variant="route.path === link.to ? 'tonal' : 'text'"
-        :color="route.path === link.to ? 'primary' : undefined"
-        rounded="lg"
-        :size="smAndDown ? 'x-small' : 'small'"
-        class="mx-0 mx-sm-1 text-none nav-btn"
-        :class="{ 'active-nav': route.path === link.to }"
-        style="letter-spacing: 0;"
+        class="folio-link"
+        :class="{ active: route.path === link.to }"
       >
-        <template v-if="!smAndDown">{{ link.label }}</template>
-      </v-btn>
+        <v-icon v-if="smAndDown" :icon="link.icon" size="14" />
+        <span v-else>{{ link.label }}</span>
+      </RouterLink>
     </div>
 
     <!-- Mobile: hamburger menu -->
@@ -41,29 +35,31 @@
 
     <v-spacer />
 
-    <div class="d-flex align-center ga-2 mr-2" v-if="statsStore.stats && !smAndDown">
-      <v-chip size="small" variant="tonal" color="primary" class="stat-chip">
-        <v-icon icon="mdi-brain" size="12" class="mr-1" />
-        {{ statsStore.stats.total_memories.toLocaleString() }}
-      </v-chip>
-      <v-chip size="small" variant="tonal" color="secondary" class="stat-chip">
-        <v-icon icon="mdi-shape-outline" size="12" class="mr-1" />
-        {{ statsStore.stats.total_entities.toLocaleString() }}
-      </v-chip>
-      <v-chip size="small" variant="tonal" color="success" class="stat-chip">
-        <v-icon icon="mdi-link-variant" size="12" class="mr-1" />
-        {{ statsStore.stats.total_relations.toLocaleString() }}
-      </v-chip>
+    <div class="d-flex align-center ga-3 mr-3 folio-stats" v-if="statsStore.stats && !smAndDown">
+      <span class="stat-line">
+        <span class="stat-num">{{ statsStore.stats.total_memories.toLocaleString() }}</span>
+        <span class="stat-label">mem.</span>
+      </span>
+      <span class="stat-divider">·</span>
+      <span class="stat-line">
+        <span class="stat-num">{{ statsStore.stats.total_entities.toLocaleString() }}</span>
+        <span class="stat-label">ent.</span>
+      </span>
+      <span class="stat-divider">·</span>
+      <span class="stat-line">
+        <span class="stat-num">{{ statsStore.stats.total_relations.toLocaleString() }}</span>
+        <span class="stat-label">rel.</span>
+      </span>
     </div>
 
-    <v-btn
-      icon="mdi-chat-outline"
-      variant="text"
-      size="small"
-      class="mr-2"
-      :color="chatStore.isOpen ? 'primary' : undefined"
+    <button
+      class="chat-toggle"
+      :class="{ active: chatStore.isOpen }"
       @click="chatStore.toggle()"
-    />
+      aria-label="Toggle chat"
+    >
+      <v-icon icon="mdi-chat-outline" size="16" />
+    </button>
   </v-app-bar>
 
   <!-- Mobile navigation drawer -->
@@ -110,7 +106,7 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, RouterLink } from 'vue-router'
 import { useDisplay } from 'vuetify'
 import { useStatsStore } from '@/stores/stats'
 import { useChatStore } from '@/stores/chat'
@@ -122,28 +118,139 @@ const chatStore = useChatStore()
 const drawer = ref(false)
 
 const navLinks = [
+  { to: '/commonplace', label: 'Commonplace', icon: 'mdi-book-open-page-variant' },
+  { to: '/insights', label: 'Insights', icon: 'mdi-lightbulb-on-outline' },
+  { to: '/memories', label: 'Memories', icon: 'mdi-brain' },
   { to: '/galaxy', label: 'Galaxy', icon: 'mdi-creation' },
   { to: '/graph', label: 'Graph', icon: 'mdi-graph-outline' },
-  { to: '/memories', label: 'Memories', icon: 'mdi-brain' },
-  { to: '/insights', label: 'Insights', icon: 'mdi-lightbulb-on-outline' },
-  { to: '/threads', label: 'Threads', icon: 'mdi-forum-outline' },
   { to: '/timeline', label: 'Timeline', icon: 'mdi-timeline-clock-outline' },
   { to: '/scheduler', label: 'Scheduler', icon: 'mdi-calendar-clock' },
   { to: '/pulse', label: 'Pulse', icon: 'mdi-pulse' },
-  { to: '/commonplace', label: 'Commonplace', icon: 'mdi-book-open-page-variant' },
 ]
 </script>
 
 <style scoped>
-.app-bar-glass {
-  background: rgb(var(--v-theme-surface));
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04) !important;
+.app-bar-folio {
+  background: linear-gradient(180deg, rgba(14, 11, 6, 0.92), rgba(18, 14, 8, 0.88)) !important;
+  border-bottom: 1px solid rgba(200, 169, 110, 0.18) !important;
+  backdrop-filter: blur(8px);
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
 }
-.stat-chip {
+
+/* Brand */
+.brand-mark { gap: 10px; }
+.brand-ornament {
+  color: #c8a96e;
+  font-size: 18px;
+  line-height: 1;
+}
+.brand-name {
+  font-family: Georgia, serif;
+  font-size: 18px;
+  letter-spacing: 0.06em;
+  font-style: italic;
+}
+.brand-no { color: #c8a96e; }
+.brand-brainr { color: rgba(238, 224, 196, 0.94); }
+
+/* Nav links */
+.nav-links { gap: 0; }
+.folio-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 14px;
+  font-family: Georgia, serif;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  color: rgba(238, 224, 196, 0.55);
+  text-decoration: none;
+  font-style: italic;
+  border-bottom: 1px solid transparent;
+  transition: all 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  position: relative;
+}
+.folio-link:hover {
+  color: rgba(238, 224, 196, 0.92);
+}
+.folio-link.active {
+  color: #c8a96e;
+  font-style: normal;
+}
+.folio-link.active::after {
+  content: '';
+  position: absolute;
+  bottom: -2px;
+  left: 12px;
+  right: 12px;
+  height: 1px;
+  background: linear-gradient(
+    90deg, transparent, #c8a96e 30%, #c8a96e 70%, transparent
+  );
+}
+
+/* Stats */
+.folio-stats {
+  font-family: Georgia, serif;
+  font-size: 12px;
+  color: rgba(238, 224, 196, 0.65);
+}
+.stat-line {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
   font-variant-numeric: tabular-nums;
-  font-weight: 500;
 }
+.stat-num {
+  color: #c8a96e;
+  font-weight: 400;
+}
+.stat-label {
+  font-style: italic;
+  color: rgba(238, 224, 196, 0.45);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+}
+.stat-divider {
+  color: rgba(200, 169, 110, 0.4);
+}
+
+/* Chat toggle */
+.chat-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  background: transparent;
+  border: 1px solid rgba(200, 169, 110, 0.25);
+  color: rgba(238, 224, 196, 0.65);
+  cursor: pointer;
+  transition: all 150ms;
+}
+.chat-toggle:hover {
+  border-color: #c8a96e;
+  color: #c8a96e;
+}
+.chat-toggle.active {
+  background: rgba(200, 169, 110, 0.15);
+  border-color: #c8a96e;
+  color: #c8a96e;
+}
+
+/* Mobile drawer */
 .mobile-nav {
-  background: rgb(var(--v-theme-surface)) !important;
+  background: linear-gradient(180deg, #14110a, #0e0b06) !important;
+  border-right: 1px solid rgba(200, 169, 110, 0.18) !important;
+  font-family: Georgia, serif;
+}
+:deep(.mobile-nav .v-list-item) {
+  font-family: Georgia, serif;
+  font-style: italic;
+  letter-spacing: 0.05em;
+  color: rgba(238, 224, 196, 0.7);
+}
+:deep(.mobile-nav .v-list-item--active) {
+  color: #c8a96e !important;
 }
 </style>
