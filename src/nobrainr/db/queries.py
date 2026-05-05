@@ -1999,13 +1999,7 @@ async def archive_stale_memories(limit: int = 50) -> int:
 
 
 async def get_unscored_memories(limit: int = 20) -> list[dict]:
-    """Get memories that haven't been quality-scored yet.
-
-    Source priority: user values affine_memos / docx / sticky_notes / keep /
-    manual (personal, hand-curated) over chatgpt (43K bulk import). Score
-    these first so they reach the dashboard quality filter sooner. Within
-    each priority bucket, newest-first.
-    """
+    """Get memories that haven't been quality-scored yet."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
@@ -2016,23 +2010,7 @@ async def get_unscored_memories(limit: int = 20) -> list[dict]:
               AND category != '_archived'
               AND content IS NOT NULL
               AND length(content) > 20
-            ORDER BY
-              CASE source_type
-                WHEN 'manual' THEN 0
-                WHEN 'affine_memos' THEN 1
-                WHEN 'docx' THEN 1
-                WHEN 'sticky_notes' THEN 1
-                WHEN 'keep' THEN 1
-                WHEN 'session' THEN 2
-                WHEN 'agent_learning' THEN 2
-                WHEN 'synthesis' THEN 2
-                WHEN 'claude' THEN 3
-                WHEN 'github' THEN 4
-                WHEN 'crawl' THEN 4
-                WHEN 'chatgpt' THEN 5
-                ELSE 6
-              END,
-              created_at DESC
+            ORDER BY created_at DESC
             LIMIT $1
             """,
             limit,

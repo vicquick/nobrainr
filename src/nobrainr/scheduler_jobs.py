@@ -1288,8 +1288,25 @@ MEMORY_QUALITY_SCHEMA = {
 }
 
 
+PERSONAL_SOURCES = {"manual", "affine_memos", "docx", "sticky_notes", "keep"}
+
+
 async def quality_scoring() -> dict:
-    """LLM-assess quality of unscored memories (specificity, actionability, self-containment)."""
+    """LLM-assess quality of unscored memories on dimensions appropriate to source.
+
+    Two rubrics:
+      - Technical (chatgpt/github/crawl/session/agent_learning/synthesis):
+        specificity / actionability / self_containment — what an AI coding
+        agent needs.
+      - Personal (manual/affine_memos/docx/sticky_notes/keep): clarity /
+        completeness / connection_density — what makes a personal note
+        valuable for reflection. The technical rubric used to score these
+        as 1s because it asked for commands and file paths — wrong frame
+        for a journaling note.
+
+    Both rubrics return three 1-5 scores stored in the same columns; the
+    averaged 0-1 score now means the right thing per source.
+    """
     model = settings.scheduler_llm_model
     batch = await queries.get_unscored_memories(settings.quality_scoring_batch_size)
     if not batch:
@@ -1301,9 +1318,28 @@ async def quality_scoring() -> dict:
             content = mem.get("summary") or mem["content"][:800]
             source = mem.get("source_type", "unknown")
             category = mem.get("category", "uncategorized")
+            is_personal = source in PERSONAL_SOURCES
 
-            result = await ollama_chat(
-                system=(
+            if is_personal:
+                system = (
+                    "You assess personal notes / journal entries / hand-written memos. "
+                    "Rate three dimensions 1-5. The output schema names are "
+                    "specificity / actionability / self_containment but for personal "
+                    "notes treat them as:\n"
+                    "- specificity → CLARITY: 1=fragmentary unintelligible, "
+                    "5=clear and well-formed thought\n"
+                    "- actionability → COMPLETENESS: 1=cut off mid-thought / single "
+                    "keyword, 5=fully developed idea\n"
+                    "- self_containment → CONNECTION_DENSITY: 1=isolated thought with "
+                    "no anchor, 5=rich in named people / projects / dates / ideas\n"
+                    "Personal notes are valuable EVEN IF they aren't technical. A short "
+                    "personal reflection like 'realized I work better in mornings' is "
+                    "4-5 on clarity, 5 on completeness if that's the whole thought. Only "
+                    "score 1-2 when content is genuinely fragmentary or unclear (e.g. "
+                    "'todo: ?', 'see also'). Do NOT penalize for non-technical content."
+                )
+            else:
+                system = (
                     "You assess the quality of knowledge base entries for AI coding agents. "
                     "Rate each dimension 1-5:\n"
                     "- specificity: 1=vague/generic ('Python is useful'), 5=concrete details "
@@ -1313,8 +1349,11 @@ async def quality_scoring() -> dict:
                     "- self_containment: 1=needs original conversation context to understand, "
                     "5=fully self-contained and clear\n"
                     "Be strict. Generic programming tips are 1-2. Specific bug fixes with "
-                    "root cause are 4-5. Personal/non-technical content is 1."
-                ),
+                    "root cause are 4-5."
+                )
+
+            result = await ollama_chat(
+                system=system,
                 user=f"Source: {source} | Category: {category}\n\n{content}",
                 schema=MEMORY_QUALITY_SCHEMA,
                 model=model,
@@ -1464,6 +1503,99 @@ async def send_knowledge_digest() -> dict:
     from nobrainr.monitoring import send_knowledge_digest
 
     return await send_knowledge_digest()
+
+
+async def reranker_eval() -> dict:
+    """Run offline reranker eval against historical feedback — regression gate.
+
+    Replays known (query, useful_memory_id) pairs through search + rerank
+    and measures recall@1/3/10 + MRR. Persists run to extraction_eval_runs
+    so we can spot regressions when changing reranker model or candidates.
+    """
+    import json
+    from nobrainr.db.pool import get_pool
+    from nobrainr.db import queries
+    from nobrainr.embeddings.ollama import embed_text
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT memory_id, query_text, result_rank, created_at
+            FROM memory_outcomes
+            WHERE was_useful = true
+              AND query_text IS NOT NULL
+              AND length(query_text) > 3
+              AND (context IS NULL OR context NOT LIKE 'auto:%')
+            ORDER BY created_at DESC
+            LIMIT 200
+            """
+        )
+    if not rows:
+        return {"status": "no_data", "ran_at": datetime.now().isoformat()}
+
+    rank_hits = {1: 0, 3: 0, 10: 0}
+    not_found = 0
+    rr_sum = 0.0
+    evaluated = 0
+    for r in rows:
+        target = str(r["memory_id"])
+        q = r["query_text"]
+        try:
+            emb = await embed_text(q)
+            results = await queries.search_memories(
+                embedding=emb, limit=20, threshold=0.2, text_query=q,
+            )
+            if settings.reranker_enabled and results:
+                from nobrainr.services.reranker import rerank
+                results = await rerank(q, results, limit=20)
+        except Exception:
+            continue
+        rank = None
+        for i, m in enumerate(results, start=1):
+            if str(m.get("id")) == target:
+                rank = i
+                break
+        if rank is None:
+            not_found += 1
+        else:
+            rr_sum += 1.0 / rank
+            for k in rank_hits:
+                if rank <= k:
+                    rank_hits[k] += 1
+        evaluated += 1
+        await _yield_to_live_requests()
+
+    metrics = {
+        "queries": evaluated,
+        "recall@1": rank_hits[1] / evaluated if evaluated else 0,
+        "recall@3": rank_hits[3] / evaluated if evaluated else 0,
+        "recall@10": rank_hits[10] / evaluated if evaluated else 0,
+        "mrr": rr_sum / evaluated if evaluated else 0,
+        "not_found_count": not_found,
+        "reranker_model": settings.reranker_model,
+        "reranker_max_candidates": settings.reranker_max_candidates,
+        "reranker_device": settings.reranker_device,
+        "ran_at": datetime.now().isoformat(),
+    }
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS extraction_eval_runs (
+                    id        uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+                    run_at    timestamptz DEFAULT now(),
+                    kind      text NOT NULL,
+                    metrics   jsonb NOT NULL
+                );
+                INSERT INTO extraction_eval_runs (run_at, kind, metrics)
+                VALUES (now(), 'reranker_offline', $1::jsonb);
+                """,
+                json.dumps(metrics),
+            )
+    except Exception:
+        logger.exception("Failed to persist reranker_eval run")
+    return metrics
 
 
 # ---------------------------------------------------------------------------

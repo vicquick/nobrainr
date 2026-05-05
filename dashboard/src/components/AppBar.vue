@@ -125,6 +125,8 @@ const navLinks = [
   { to: '/galaxy', label: 'Galaxy', icon: 'mdi-creation' },
   { to: '/graph', label: 'Graph', icon: 'mdi-graph-outline' },
   { to: '/memories', label: 'Memories', icon: 'mdi-brain' },
+  { to: '/insights', label: 'Insights', icon: 'mdi-lightbulb-on-outline' },
+  { to: '/threads', label: 'Threads', icon: 'mdi-forum-outline' },
   { to: '/timeline', label: 'Timeline', icon: 'mdi-timeline-clock-outline' },
   { to: '/scheduler', label: 'Scheduler', icon: 'mdi-calendar-clock' },
   { to: '/pulse', label: 'Pulse', icon: 'mdi-pulse' },
