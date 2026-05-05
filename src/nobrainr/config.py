@@ -88,6 +88,13 @@ class Settings(BaseSettings):
     # delta vs 150 is modest on this hybrid pipeline. Raise to 30+ if TEI
     # gets a GPU slot (requires reducing Qwen --ctx-size to free VRAM).
     reranker_max_candidates: int = 8
+    # RRF candidate pool: how many DB results to retrieve per branch before
+    # fusion. 6× gives 300 candidates for limit=50 — ample diversity for RRF
+    # without forcing the HNSW index to traverse thousands of nodes.
+    # Old value was 15× (Anthropic GPU recipe), which caused 13-20s searches
+    # on the 56K corpus because inner_overfetch = 15*limit*3 = 2250 HNSW nodes.
+    # Raise to 10-15 only if TEI reranker gets a GPU slot and max_candidates > 50.
+    overfetch_mult: int = 6
 
     # Reranker skip-when-dominant (2026-04-19). If top-1 RRF score is
     # ≥ rerank_skip_dominance_ratio × top-2 score, skip the reranker —
