@@ -100,6 +100,10 @@ onMounted(load)
   word-break: break-word;
   font-family: ui-monospace, monospace;
   font-size: 13px;
-  line-height: 1.55;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.96);
+}
+:deep(.v-theme--light) .message-content {
+  color: rgba(0, 0, 0, 0.92);
 }
 </style>
