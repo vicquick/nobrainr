@@ -97,6 +97,12 @@ LLM_JOB_TIMEOUT = 30 * 60  # 30 minutes for larger batch sizes
 LLM_JOB_TIMEOUT_OVERRIDES = {
     "chatgpt_distill": 120 * 60,   # 120 minutes — multi-pass × 2 conversations × shared GPU
     "community_detection": 90 * 60,  # 42k entities + 50 community summaries = slow
+    # quality_scoring: batch=60 × ~90s queue-wait per call when entity extraction
+    # is competing for llama-server = 5400s >> 30min default. 60min survives the
+    # worst-case extraction-heavy startup window.
+    "quality_scoring": 60 * 60,
+    # cooccurrence_linking: graph walk over 55k entities is slow under contention
+    "cooccurrence_linking": 60 * 60,
 }
 
 # Per-row timeout for memory_write_queue worker. If the dedup/extraction hangs
