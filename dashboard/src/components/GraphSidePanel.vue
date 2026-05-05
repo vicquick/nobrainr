@@ -106,99 +106,119 @@ defineEmits<{
 </script>
 
 <style scoped>
+/* Graph side-panel rendered as folio marginalia — gold rules, italic
+   serif throughout, no card chrome. */
 .panel-header {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.02);
+  border-bottom: 1px solid rgba(200, 169, 110, 0.25);
+  background: rgba(200, 169, 110, 0.04);
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
 }
 .entity-name {
-  font-size: 1.2rem;
-  font-weight: 700;
-  color: rgba(255, 255, 255, 0.95);
+  font-family: Georgia, serif;
+  font-size: 22px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  color: rgba(238, 224, 196, 0.96);
   line-height: 1.3;
 }
 .entity-description {
-  font-size: 0.875rem;
-  color: rgba(255, 255, 255, 0.7);
-  line-height: 1.5;
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 13px;
+  color: rgba(238, 224, 196, 0.72);
+  line-height: 1.6;
 }
 .stat-item {
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 0.75rem;
-  color: rgba(255, 255, 255, 0.45);
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 11px;
+  color: rgba(238, 224, 196, 0.55);
+  font-variant-numeric: tabular-nums;
 }
 .section-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.7);
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 11px;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  color: #c8a96e;
+  font-weight: 400;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(200, 169, 110, 0.18);
 }
 .connections-list {
   max-height: 320px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 2px;
 }
 .connection-item {
-  border: 1px solid transparent;
-  transition: background 100ms ease, border-color 100ms ease;
+  border-bottom: 1px dotted rgba(200, 169, 110, 0.18);
+  padding: 8px 6px;
+  transition: all 150ms;
+  display: flex;
+  align-items: baseline;
+  font-family: Georgia, serif;
 }
 .connection-item:hover {
-  background: rgba(255, 255, 255, 0.04);
-  border-color: rgba(255, 255, 255, 0.06);
+  padding-left: 10px;
+  background: rgba(200, 169, 110, 0.04);
 }
-.clickable {
-  cursor: pointer;
-}
+.clickable { cursor: pointer; }
 .conn-relation {
   display: inline-block;
-  font-size: 0.7rem;
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.6);
-  background: rgba(255, 255, 255, 0.05);
-  padding: 1px 6px;
-  border-radius: 4px;
-  margin-right: 6px;
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(238, 224, 196, 0.55);
+  margin-right: 8px;
 }
 .conn-target {
-  font-size: 0.82rem;
-  font-weight: 500;
-  color: rgba(255, 255, 255, 0.9);
+  font-family: Georgia, serif;
+  font-size: 13px;
+  color: rgba(238, 224, 196, 0.92);
 }
 .conn-confidence {
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.7);
-  background: rgba(255, 255, 255, 0.06);
-  padding: 2px 8px;
-  border-radius: 6px;
+  font-family: Georgia, serif;
+  font-variant-numeric: tabular-nums;
+  font-style: italic;
+  font-size: 11px;
+  color: #c8a96e;
   white-space: nowrap;
-  margin-left: 8px;
+  margin-left: auto;
+  padding-left: 8px;
   flex-shrink: 0;
 }
 .memory-item {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  transition: background 100ms ease, border-color 100ms ease;
+  background: rgba(200, 169, 110, 0.03);
+  border-left: 2px solid rgba(200, 169, 110, 0.25);
+  border-bottom: 1px dotted rgba(200, 169, 110, 0.18);
+  padding: 10px 14px;
+  transition: all 150ms;
 }
 .memory-item:hover {
-  background: rgba(255, 255, 255, 0.05);
-  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(200, 169, 110, 0.06);
+  border-left-color: #c8a96e;
 }
 .memory-text {
-  font-size: 0.82rem;
-  color: rgba(255, 255, 255, 0.85);
-  line-height: 1.5;
+  font-family: Georgia, serif;
+  font-size: 13px;
+  color: rgba(238, 224, 196, 0.88);
+  line-height: 1.6;
 }
 .memory-date {
-  font-size: 0.7rem;
-  color: rgba(255, 255, 255, 0.4);
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 11px;
+  color: rgba(238, 224, 196, 0.5);
   font-variant-numeric: tabular-nums;
 }
 </style>

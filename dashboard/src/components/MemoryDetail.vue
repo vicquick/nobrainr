@@ -521,43 +521,71 @@ function handleDelete() {
 </script>
 
 <style scoped>
+/* All MemoryDetail surfaces dressed in commonplace book aesthetic — gold
+   on parchment, Georgia serif throughout, rules instead of cards. */
 .detail-card {
-  border: 1px solid rgba(255, 255, 255, 0.04);
+  background: transparent !important;
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
+  color: rgba(238, 224, 196, 0.94);
 }
+.detail-card :deep(.v-card-title),
+.detail-card :deep(.v-tab) {
+  font-family: Georgia, serif !important;
+  letter-spacing: 0.04em;
+}
+.detail-card :deep(.v-tab--selected) { color: #c8a96e !important; }
+.detail-card :deep(.v-card) { background: transparent !important; }
 
 /* ── Details tab ── */
 .content-block {
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.04);
-  border-radius: 12px;
-  padding: 16px;
+  background: rgba(200, 169, 110, 0.04);
+  border: 1px solid rgba(200, 169, 110, 0.18);
+  border-left: 2px solid #c8a96e;
+  padding: 18px 22px;
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
-  font-size: 0.82rem;
-  line-height: 1.6;
-  max-height: 400px;
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
+  font-size: 14px;
+  line-height: 1.75;
+  max-height: 500px;
   overflow-y: auto;
-  color: rgba(var(--v-theme-on-surface), var(--v-high-emphasis-opacity));
+  color: rgba(238, 224, 196, 0.94);
 }
-.stat-block { min-width: 100px; }
+.stat-block {
+  min-width: 100px;
+  font-family: Georgia, serif;
+}
+.stat-block :deep(.text-caption),
+.stat-block :deep(.text-medium-emphasis) {
+  font-style: italic;
+  color: rgba(238, 224, 196, 0.55) !important;
+  letter-spacing: 0.05em;
+}
 .fact-item {
-  background: rgba(255, 191, 0, 0.04);
-  border: 1px solid rgba(255, 191, 0, 0.1);
-  line-height: 1.5;
+  background: rgba(200, 169, 110, 0.04);
+  border: 1px solid rgba(200, 169, 110, 0.18);
+  border-left: 2px solid rgba(200, 169, 110, 0.55);
+  font-family: Georgia, serif;
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 10px 14px;
 }
 
 /* ── Origin tab ── */
 .origin-header {
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  padding: 12px 16px;
+  background: rgba(200, 169, 110, 0.05);
+  border: 1px solid rgba(200, 169, 110, 0.18);
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 12px;
+  color: rgba(238, 224, 196, 0.7);
 }
-
 .origin-prefix {
-  background: rgba(var(--v-theme-primary), 0.04);
-  border: 1px solid rgba(var(--v-theme-primary), 0.1);
+  background: rgba(200, 169, 110, 0.06);
+  border: 1px solid rgba(200, 169, 110, 0.25);
+  font-family: Georgia, serif;
+  font-style: italic;
 }
 
 /* Conversation thread */
@@ -568,69 +596,76 @@ function handleDelete() {
 }
 
 .msg-bubble {
-  border-radius: 8px;
-  padding: 8px 12px;
+  padding: 10px 14px;
   border: 1px solid transparent;
+  font-family: Georgia, serif;
 }
 
 .role-user {
-  background: rgba(var(--v-theme-primary), 0.06);
-  border-color: rgba(var(--v-theme-primary), 0.1);
+  background: rgba(200, 169, 110, 0.05);
+  border-color: rgba(200, 169, 110, 0.18);
+  border-left: 2px solid rgba(200, 169, 110, 0.55);
 }
 
 .role-assistant {
-  background: rgba(255, 255, 255, 0.025);
-  border-color: rgba(255, 255, 255, 0.05);
+  background: rgba(200, 169, 110, 0.02);
+  border-color: rgba(200, 169, 110, 0.1);
 }
 
 .window-highlight.msg-bubble {
-  border-color: rgba(255, 160, 0, 0.35) !important;
-  background: rgba(255, 160, 0, 0.06) !important;
-  box-shadow: 0 0 0 1px rgba(255, 160, 0, 0.15);
+  border-color: #c8a96e !important;
+  background: rgba(200, 169, 110, 0.1) !important;
+  border-left: 2px solid #c8a96e !important;
 }
 
 .msg-role-label {
-  opacity: 0.55;
   display: flex;
   align-items: center;
+  font-family: Georgia, serif;
+  font-style: italic;
   font-size: 10px;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
+  color: rgba(238, 224, 196, 0.55);
   margin-bottom: 4px;
 }
 
 .window-highlight .msg-role-label {
-  opacity: 0.8;
-  color: rgb(var(--v-theme-warning));
+  color: #c8a96e;
 }
 
 .msg-content {
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: 0.82rem;
-  line-height: 1.65;
-  font-family: inherit;
+  font-family: Georgia, serif;
+  font-size: 13px;
+  line-height: 1.7;
+  color: rgba(238, 224, 196, 0.92);
   margin: 0;
 }
 
 .tool-msg-details {
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  padding: 4px 8px;
-  background: rgba(255, 255, 255, 0.01);
+  border: 1px dotted rgba(200, 169, 110, 0.18);
+  padding: 6px 10px;
+  background: rgba(200, 169, 110, 0.02);
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 11px;
+  color: rgba(238, 224, 196, 0.55);
 }
 
 .tool-content {
   max-height: 200px;
   overflow-y: auto;
-  font-size: 0.75rem;
-  opacity: 0.6;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: Georgia, serif;
+  font-size: 12px;
+  color: rgba(238, 224, 196, 0.65);
+  font-style: italic;
 }
 
 .window-highlight.tool-msg-details {
-  border-color: rgba(255, 160, 0, 0.3);
-  background: rgba(255, 160, 0, 0.04);
+  border-color: rgba(200, 169, 110, 0.45);
+  background: rgba(200, 169, 110, 0.05);
 }
 
 /* Chunk reading pane */
@@ -641,43 +676,44 @@ function handleDelete() {
 }
 
 .chunk-block {
-  padding: 12px 14px;
-  border-left: 2px solid rgba(255, 255, 255, 0.06);
+  padding: 14px 18px;
+  border-left: 2px solid rgba(200, 169, 110, 0.18);
   margin-bottom: 0;
-  transition: border-color 0.15s;
+  transition: all 200ms;
 }
 
 .chunk-current {
-  border-left-color: rgba(255, 160, 0, 0.5) !important;
-  background: rgba(255, 160, 0, 0.04);
-  border-radius: 0 6px 6px 0;
+  border-left-color: #c8a96e !important;
+  background: rgba(200, 169, 110, 0.05);
 }
 
 .chunk-index-label {
   display: flex;
   align-items: center;
-  opacity: 0.4;
-  font-size: 10px;
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 11px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: rgba(238, 224, 196, 0.45);
   margin-bottom: 6px;
-  letter-spacing: 0.05em;
 }
 
 .chunk-current .chunk-index-label {
-  opacity: 0.8;
-  color: rgb(var(--v-theme-warning));
+  color: #c8a96e;
 }
 
 .chunk-content {
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: 0.82rem;
-  line-height: 1.7;
-  font-family: Georgia, Palatino, serif;
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
+  font-size: 14px;
+  line-height: 1.75;
+  color: rgba(238, 224, 196, 0.85);
   margin: 0;
-  color: rgba(var(--v-theme-on-surface), 0.85);
 }
 
 .chunk-current .chunk-content {
-  color: rgba(var(--v-theme-on-surface), 0.95);
+  color: rgba(238, 224, 196, 0.96);
 }
 </style>
