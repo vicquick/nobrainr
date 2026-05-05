@@ -23,6 +23,7 @@ SQL_JOB_DELAYS: dict[str, float] = {
     "monitor_health": 30,
     "email_digest": 300,
     "knowledge_digest": 600,
+    "reranker_eval": 1200,
     # Medium — one per 5-10 min through first half hour
     "memory_decay": 300,
     "auto_tier": 600,
@@ -166,6 +167,7 @@ class Scheduler:
             {"name": "monitor_health", "interval_hours": settings.monitoring_interval_hours, "type": "system"},
             {"name": "email_digest", "interval_hours": 24.0, "type": "system"},
             {"name": "knowledge_digest", "interval_hours": 24.0, "type": "system"},
+            {"name": "reranker_eval", "interval_hours": 168.0, "type": "system"},
         ]
         llm_jobs = [
             {"name": "chatgpt_distill", "interval_hours": settings.chatgpt_distill_interval_hours, "type": "llm"},
@@ -301,6 +303,15 @@ class Scheduler:
                         "knowledge_digest",
                         sj.send_knowledge_digest,
                         24.0 * 3600,  # once per day — the wonderful one
+                    )
+                )
+            )
+            self._tasks.append(
+                asyncio.create_task(
+                    self._run_periodic(
+                        "reranker_eval",
+                        sj.reranker_eval,
+                        7 * 24.0 * 3600,  # weekly: regression gate on rerank quality
                     )
                 )
             )

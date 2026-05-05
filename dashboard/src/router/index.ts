@@ -42,6 +42,21 @@ const router = createRouter({
       name: 'commonplace',
       component: () => import('@/views/CommonplaceView.vue'),
     },
+    {
+      path: '/insights',
+      name: 'insights',
+      component: () => import('@/views/InsightsView.vue'),
+    },
+    {
+      path: '/threads',
+      name: 'threads',
+      component: () => import('@/views/ThreadsView.vue'),
+    },
+    {
+      path: '/threads/:id',
+      name: 'thread-detail',
+      component: () => import('@/views/ThreadDetailView.vue'),
+    },
   ],
 })
 

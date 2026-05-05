@@ -198,17 +198,66 @@ async def lifespan(app):
 
     # Pre-warm the cross-encoder reranker so the first user search doesn't
     # pay the 2-5s cold-start of loading BAAI/bge-reranker-v2-m3 from HF.
+    # 2026-05-05: now also runs a sample inference so CUDA kernels are
+    # compiled/warm before the first real query. Without the inference
+    # warmup the reranker model loads but the first GPU forward pass still
+    # takes ~5-10s.
     async def _warm_reranker():
         try:
             from nobrainr.services import reranker
-            # Trigger lazy load in a worker thread — model init is CPU-bound
-            # and blocks ~2-5s.
             if settings.reranker_enabled:
-                await asyncio.to_thread(reranker._get_st_reranker)
-                logger.info("Reranker pre-warmed: %s", settings.reranker_model)
+                model = await asyncio.to_thread(reranker._get_st_reranker)
+                # Sample inference to warm CUDA kernels
+                await asyncio.to_thread(
+                    model.predict,
+                    [("warmup query", "warmup document text")],
+                )
+                logger.info(
+                    "Reranker pre-warmed (model + GPU kernels): %s on %s",
+                    settings.reranker_model, settings.reranker_device,
+                )
         except Exception:
             logger.warning("Reranker pre-warm failed — will load on first search")
     asyncio.create_task(_warm_reranker())
+
+    # Pre-populate the query embedding LRU cache with the top-50 most-
+    # frequent recent queries from memory_outcomes. After a deploy the cache
+    # is empty; without this the first user query of a recurring pattern
+    # still pays 7s embed time. Background, non-blocking.
+    async def _warm_query_cache():
+        try:
+            await asyncio.sleep(15)  # let other warmups breathe
+            from nobrainr.db.pool import get_pool as _gp
+            from nobrainr.embeddings.ollama import embed_text, _qcache_put
+            pool2 = await _gp()
+            async with pool2.acquire() as conn2:
+                rows = await conn2.fetch(
+                    """
+                    SELECT query_text, COUNT(*) AS hits
+                    FROM memory_outcomes
+                    WHERE query_text IS NOT NULL
+                      AND length(query_text) > 0
+                      AND created_at > NOW() - INTERVAL '30 days'
+                    GROUP BY query_text
+                    ORDER BY hits DESC
+                    LIMIT 50
+                    """
+                )
+            warmed = 0
+            for r in rows:
+                try:
+                    q = r["query_text"]
+                    if not q:
+                        continue
+                    vec = await embed_text(q)
+                    _qcache_put(q, vec)
+                    warmed += 1
+                except Exception:
+                    pass
+            logger.info("Query embedding cache pre-warmed with %d top queries", warmed)
+        except Exception:
+            logger.warning("Query cache pre-warm failed — cache will fill lazily")
+    asyncio.create_task(_warm_query_cache())
 
     # Start background scheduler for maintenance + feedback integration
     if settings.scheduler_enabled:
