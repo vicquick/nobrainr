@@ -1,6 +1,7 @@
 """API endpoints — pure JSON responses + SSE stream."""
 
 import base64
+import json
 import logging
 import time
 from collections import defaultdict
@@ -1513,8 +1514,10 @@ async def api_memory_origin(request: Request) -> JSONResponse:
                     UUID(conv_id),
                 )
             if row:
-                conv_meta = row["metadata"] or {}
-                messages = row["messages"] or []
+                _cm = row["metadata"] or {}
+                conv_meta = json.loads(_cm) if isinstance(_cm, str) else _cm
+                _msgs = row["messages"] or []
+                messages = json.loads(_msgs) if isinstance(_msgs, str) else _msgs
                 n = len(messages)
                 # Sliding-window params (size=8, overlap=2 → stride=6)
                 WINDOW_SIZE, STRIDE = 8, 6
