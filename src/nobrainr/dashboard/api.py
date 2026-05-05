@@ -1,12 +1,13 @@
 """API endpoints — pure JSON responses + SSE stream."""
 
+import asyncio
 import base64
 import json
 import logging
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 from starlette.requests import Request
@@ -37,6 +38,62 @@ def _valid_uuid(value: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+async def _log_auto_negative_outcomes(
+    results: list[dict], trace_id: str, query: str,
+) -> None:
+    """Mirror of mcp/server.py:_log_auto_negative_outcomes for dashboard search.
+
+    Two triggers:
+      1. low_recall: fewer than auto_negative_low_recall_threshold results
+         came back. Every surfaced hit gets one negative.
+      2. low_rerank: top-1 rerank score below threshold. Targeted negative.
+
+    Fire-and-forget. Never raises. Includes matched_branches in metadata so
+    the feedback loop can later answer "which branch's hits are weakest?".
+    """
+    try:
+        negatives: list[tuple[str, int, str, list]] = []
+        low_recall = len(results) < settings.auto_negative_low_recall_threshold
+        if low_recall:
+            for r in results:
+                negatives.append(
+                    (r["id"], r.get("search_rank") or 1, "low_recall",
+                     r.get("matched_branches") or []),
+                )
+        if results:
+            top = results[0]
+            top_rerank = top.get("rerank_score")
+            if (
+                top_rerank is not None
+                and top_rerank < settings.auto_negative_low_rerank_threshold
+            ):
+                negatives.append((
+                    top["id"], 1, "low_rerank",
+                    top.get("matched_branches") or [],
+                ))
+        if not negatives:
+            return
+        merged: dict[tuple[str, int], tuple[list[str], list]] = {}
+        for mid, rank, ctx, branches in negatives:
+            cur = merged.setdefault((mid, rank), ([], branches))
+            cur[0].append(ctx)
+        for (mid, rank), (reasons, branches) in merged.items():
+            context_str = (
+                settings.auto_negative_context_prefix + ",".join(reasons)
+            )
+            await queries.store_memory_outcome(
+                mid,
+                False,
+                context=context_str,
+                agent_id="auto-negative-dashboard",
+                query_trace_id=trace_id,
+                query_text=query,
+                result_rank=rank,
+            )
+    except Exception:
+        log.exception("auto-negative outcome logging failed")
 
 
 _GRAPH_CACHE_PATH = "/app/graph_cache/graph.json"
@@ -465,6 +522,24 @@ async def api_memories(request: Request) -> JSONResponse:
                 memories = await rerank(q, memories, limit=limit)
             except Exception:
                 log.exception("Reranker failed in dashboard search; returning unranked")
+
+        # Attach trace fields so feedback can close the loop. Caller posts
+        # back search_trace_id + search_rank when marking a result useful or
+        # not — see /api/memories/{id}/feedback handler.
+        trace_id = str(uuid4())
+        for rank, row in enumerate(memories, start=1):
+            row["search_trace_id"] = trace_id
+            row["search_rank"] = rank
+            row["search_query"] = q
+
+        # Auto-negative outcome capture (parity with MCP search). Fire-and-
+        # forget so the response stays fast. Without this the dashboard's
+        # 100K+ daily searches contribute zero training signal — the same
+        # bug fixed in MCP on 2026-04-18.
+        if settings.auto_negative_outcomes_enabled and memories:
+            asyncio.create_task(
+                _log_auto_negative_outcomes(memories, trace_id, q)
+            )
     else:
         memories = await queries.query_memories(
             tags=tags,
