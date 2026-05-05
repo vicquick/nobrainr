@@ -353,9 +353,11 @@ onMounted(() => fetchChapters())
   color: rgba(230, 210, 180, 0.9);
   font-size: 13px;
   line-height: 1.35;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
+  word-break: break-word;
 }
 
 .chapter-skeleton {
