@@ -492,7 +492,7 @@ async def ollama_chat(
     call_start_ts = time.monotonic()
     # Short, bounded prompt preview (never leaks full prompts — just
     # enough for the user to know *what kind* of work is in flight).
-    _prompt_preview = (user or system or "")[:80].replace("\n", " ").strip()
+    _prompt_preview = (user or system or "")[:600].strip()
     call_record = {
         "started_at": time.time(),
         "caller_kind": caller_kind,
