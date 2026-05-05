@@ -17,13 +17,12 @@
           <v-text-field
             v-model="searchQuery"
             prepend-inner-icon="mdi-magnify"
-            placeholder="Search themes…"
+            placeholder="Search memories…"
             clearable
             density="compact"
             variant="outlined"
             hide-details
             class="cp-search"
-            @update:model-value="onSearch"
           />
         </div>
         <v-divider style="opacity: 0.15; border-color: var(--cp-gold);" />
@@ -50,8 +49,9 @@
                 </div>
               </div>
             </div>
-            <div v-if="!chapters.length" class="text-center pa-6 text-medium-emphasis text-caption">
-              No themes found
+            <div v-if="searchError" class="text-center pa-6 text-caption" style="color: rgba(200,80,80,0.7);">{{ searchError }}</div>
+            <div v-else-if="!chapters.length" class="text-center pa-6 text-medium-emphasis text-caption">
+              {{ searchMode ? 'No results found' : 'No chapters' }}
             </div>
           </template>
         </div>
@@ -290,7 +290,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted, watch } from 'vue'
 
 interface Chapter {
   community_id: number
@@ -336,6 +336,7 @@ const loadingDetail = ref(false)
 const searchQuery = ref('')
 const searchMode = ref(false)
 const searchHits = ref<Entry[]>([])
+const searchError = ref('')
 const activeDetailTab = ref('details')
 const origin = ref<Origin | null>(null)
 const originLoading = ref(false)
@@ -454,13 +455,39 @@ function onDetailTabChange(tab: string) {
   if (tab === 'origin') loadOrigin()
 }
 
-function onSearch() {
+async function runSearch(q: string) {
+  searchError.value = ''
+  loadingChapters.value = true
+  try {
+    const res = await fetch(`/api/commonplace/search?q=${encodeURIComponent(q)}&limit=80`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    searchMode.value = true
+    searchHits.value = data.hits || []
+    chapters.value = data.chapters || []
+    if (chapters.value.length > 0) {
+      await selectChapter(chapters.value[0])
+    } else {
+      selectedChapter.value = null
+      selectedEntry.value = null
+      entries.value = []
+    }
+  } catch (e: unknown) {
+    searchError.value = e instanceof Error ? e.message : 'Search failed'
+    loadingChapters.value = false
+  } finally {
+    loadingChapters.value = false
+  }
+}
+
+watch(searchQuery, (q) => {
   clearTimeout(searchTimer)
-  const q = (searchQuery.value || '').trim()
-  if (!q) {
+  const trimmed = (q || '').trim()
+  if (!trimmed) {
     if (searchMode.value) {
       searchMode.value = false
       searchHits.value = []
+      searchError.value = ''
       selectedChapter.value = null
       selectedEntry.value = null
       entries.value = []
@@ -469,29 +496,8 @@ function onSearch() {
     }
     return
   }
-  searchTimer = setTimeout(() => runSearch(q), 400)
-}
-
-async function runSearch(q: string) {
-  loadingChapters.value = true
-  try {
-    const res = await fetch(`/api/commonplace/search?q=${encodeURIComponent(q)}&limit=80`)
-    const data = await res.json()
-    searchMode.value = true
-    searchHits.value = data.hits || []
-    chapters.value = data.chapters || []
-    // Auto-select the best chapter
-    if (chapters.value.length > 0) {
-      await selectChapter(chapters.value[0])
-    } else {
-      selectedChapter.value = null
-      selectedEntry.value = null
-      entries.value = []
-    }
-  } finally {
-    loadingChapters.value = false
-  }
-}
+  searchTimer = setTimeout(() => runSearch(trimmed), 400)
+})
 
 onMounted(() => fetchChapters())
 </script>
