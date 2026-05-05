@@ -1,80 +1,81 @@
 <template>
-  <v-container fluid class="fill-height pa-0">
-    <div class="d-flex fill-height" style="width: 100%;">
-      <!-- Left sidebar -->
-      <div class="sidebar d-flex flex-column" style="width: 400px; min-width: 400px; border-right: 1px solid rgba(255,255,255,0.04);">
-        <div class="pa-3">
-          <v-text-field
-            v-model="searchQuery"
-            prepend-inner-icon="mdi-magnify"
-            placeholder="Search memories..."
-            clearable
-            class="mb-2"
-          />
-          <div class="d-flex ga-2">
-            <v-select
-              v-model="categoryFilter"
-              :items="categories"
-              label="Category"
-              clearable
-              class="flex-grow-1"
-            />
-            <v-select
-              v-model="machineFilter"
-              :items="machines"
-              label="Machine"
-              clearable
-              class="flex-grow-1"
+  <div class="florilegium-page">
+    <div class="florilegium-shell">
+
+      <!-- LEFT — INDEX -->
+      <aside class="florilegium-index">
+        <div class="index-head">
+          <div class="masthead-row">
+            <span class="folio-label">Florilegium</span>
+            <span class="index-count">
+              <em>{{ memories.length }}</em> {{ memories.length === 1 ? 'entry' : 'entries' }}
+            </span>
+          </div>
+          <h2 class="index-title">The Gathering</h2>
+
+          <div class="search-row">
+            <span class="search-glyph">⚹</span>
+            <input
+              v-model="searchQuery"
+              class="folio-input"
+              type="text"
+              placeholder="search the gathering…"
             />
           </div>
-          <div class="d-flex align-center ga-2 mt-1">
-            <v-slider
-              v-model="qualityFilter"
-              :min="0"
-              :max="1"
-              :step="0.1"
-              :color="qualityFilter > 0 ? 'amber' : 'grey'"
-              hide-details
-              density="compact"
-              class="flex-grow-1"
-            >
-              <template #prepend>
-                <span class="text-caption text-medium-emphasis" style="white-space: nowrap; min-width: 54px;">
-                  Quality{{ qualityFilter > 0 ? ` ${(qualityFilter * 100).toFixed(0)}%+` : '' }}
-                </span>
-              </template>
-            </v-slider>
+
+          <div class="filter-row">
+            <select v-model="categoryFilter" class="folio-select">
+              <option :value="null">All categories</option>
+              <option v-for="c in categories" :key="c" :value="c">{{ c }}</option>
+            </select>
+            <select v-model="machineFilter" class="folio-select">
+              <option :value="null">All machines</option>
+              <option v-for="m in machines" :key="m" :value="m">{{ m }}</option>
+            </select>
+          </div>
+
+          <div class="quality-row">
+            <span class="quality-label">Min quality</span>
+            <input
+              type="range" min="0" max="1" step="0.05"
+              v-model.number="qualityFilter"
+              class="folio-slider"
+            />
+            <span class="quality-value">
+              {{ qualityFilter > 0 ? Math.round(qualityFilter * 100) + '%' : '—' }}
+            </span>
           </div>
         </div>
 
-        <v-divider style="opacity: 0.3;" />
+        <div class="index-rule" />
 
-        <div class="flex-grow-1 pa-3" style="overflow-y: auto;">
+        <div class="index-list">
           <template v-if="loading">
-            <div v-for="n in 6" :key="n" class="skeleton-card mb-2" />
+            <div v-for="n in 6" :key="n" class="card-skeleton" />
           </template>
           <template v-else-if="memories.length">
-            <div class="d-flex flex-column ga-2">
-              <MemoryCard
-                v-for="m in memories"
-                :key="m.id"
-                :memory="m"
-                :selected="selectedMemory?.id === m.id"
-                @click="selectMemory(m.id)"
-              />
-            </div>
+            <MemoryCard
+              v-for="m in memories"
+              :key="m.id"
+              :memory="m"
+              :selected="selectedMemory?.id === m.id"
+              @click="selectMemory(m.id)"
+            />
           </template>
-          <div v-else class="text-center text-medium-emphasis pa-8">
-            <v-icon icon="mdi-magnify-close" size="32" class="mb-2 d-block mx-auto" style="opacity: 0.3;" />
-            No memories found
+          <div v-else class="index-empty">
+            <span class="empty-mark">❦</span>
+            <p>— nothing answers to this query —</p>
           </div>
         </div>
-      </div>
+      </aside>
 
-      <!-- Right panel -->
-      <div class="flex-grow-1 pa-5" style="overflow-y: auto;">
+      <!-- RIGHT — PAGE -->
+      <main class="florilegium-page-right">
         <template v-if="detailLoading">
-          <div class="skeleton-card" style="height: 200px;" />
+          <div class="page-loading">
+            <span class="dotty">·  ·  ·</span>
+            <p class="loading-text">opening the page</p>
+          </div>
         </template>
         <template v-else-if="selectedMemory">
           <MemoryDetail
@@ -85,15 +86,14 @@
             @delete="handleDelete"
           />
         </template>
-        <div v-else class="d-flex align-center justify-center fill-height">
-          <div class="text-center">
-            <v-icon icon="mdi-brain" size="56" class="mb-3 d-block mx-auto" style="opacity: 0.12;" />
-            <div class="text-body-1 text-medium-emphasis">Select a memory to view details</div>
-          </div>
+        <div v-else class="page-empty">
+          <span class="ornament">❦</span>
+          <h3 class="empty-title">An open page</h3>
+          <p class="empty-tagline">Choose an entry from the gathering to read it in full.</p>
         </div>
-      </div>
+      </main>
     </div>
-  </v-container>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -178,15 +178,239 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.skeleton-card {
-  background: linear-gradient(90deg, rgb(var(--v-theme-surface)) 25%, rgba(255,255,255,0.03) 50%, rgb(var(--v-theme-surface)) 75%);
+.florilegium-page {
+  --cp-gold: #c8a96e;
+  --cp-gold-soft: rgba(200, 169, 110, 0.45);
+  --cp-gold-faint: rgba(200, 169, 110, 0.18);
+  --cp-ink: rgba(238, 224, 196, 0.94);
+  --cp-ink-mute: rgba(238, 224, 196, 0.55);
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
+  color: var(--cp-ink);
+  min-height: calc(100vh - 64px);
+}
+
+.florilegium-shell {
+  display: grid;
+  grid-template-columns: 420px 1fr;
+  height: calc(100vh - 64px);
+}
+
+@media (max-width: 900px) {
+  .florilegium-shell { grid-template-columns: 1fr; }
+}
+
+/* INDEX (left sidebar) */
+.florilegium-index {
+  border-right: 1px solid var(--cp-gold-faint);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.index-head {
+  padding: 24px 24px 16px;
+  flex-shrink: 0;
+}
+
+.masthead-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+}
+.folio-label {
+  font-family: Georgia, serif;
+  font-style: italic;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--cp-gold);
+  font-size: 10px;
+}
+.index-count {
+  font-style: italic;
+  font-size: 11px;
+  color: var(--cp-ink-mute);
+  letter-spacing: 0.05em;
+}
+.index-count em {
+  color: var(--cp-ink);
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.index-title {
+  font-family: Georgia, serif;
+  font-size: 28px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  color: var(--cp-ink);
+  margin: 0 0 18px;
+}
+
+.search-row {
+  position: relative;
+  margin-bottom: 12px;
+}
+.search-glyph {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--cp-gold-soft);
+  font-size: 14px;
+}
+.folio-input {
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--cp-gold-faint);
+  padding: 6px 6px 6px 22px;
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 14px;
+  color: var(--cp-ink);
+  letter-spacing: 0.02em;
+  transition: border-color 200ms;
+}
+.folio-input::placeholder { color: var(--cp-ink-mute); font-style: italic; }
+.folio-input:focus {
+  outline: none;
+  border-bottom-color: var(--cp-gold);
+}
+
+.filter-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.folio-select {
+  flex: 1;
+  background: transparent;
+  border: 1px solid var(--cp-gold-faint);
+  color: var(--cp-ink);
+  font-family: Georgia, serif;
+  font-size: 12px;
+  font-style: italic;
+  padding: 4px 22px 4px 8px;
+  cursor: pointer;
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--cp-gold-soft) 50%);
+  background-position: right 8px center;
+  background-size: 6px 6px;
+  background-repeat: no-repeat;
+  letter-spacing: 0.04em;
+  min-width: 0;
+}
+.folio-select:hover { border-color: var(--cp-gold-soft); }
+.folio-select:focus { outline: none; border-color: var(--cp-gold); }
+.folio-select option {
+  background: #14110a;
+  color: var(--cp-ink);
+}
+
+.quality-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.quality-label {
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 11px;
+  color: var(--cp-ink-mute);
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+.folio-slider {
+  flex-grow: 1;
+  accent-color: var(--cp-gold);
+}
+.quality-value {
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: var(--cp-gold);
+  min-width: 30px;
+  text-align: right;
+}
+
+.index-rule {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--cp-gold-soft), transparent);
+  flex-shrink: 0;
+}
+
+.index-list {
+  flex-grow: 1;
+  overflow-y: auto;
+  padding: 4px 12px 24px;
+}
+
+.card-skeleton {
+  height: 76px;
+  margin: 8px 0;
+  background: linear-gradient(
+    90deg, rgba(200, 169, 110, 0.04) 25%,
+    rgba(200, 169, 110, 0.08) 50%,
+    rgba(200, 169, 110, 0.04) 75%
+  );
   background-size: 200% 100%;
   animation: shimmer 1.5s infinite;
-  border-radius: 12px;
-  height: 96px;
 }
 @keyframes shimmer {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
+}
+
+.index-empty, .page-empty, .page-loading {
+  text-align: center;
+  padding: 48px 16px;
+  color: var(--cp-ink-mute);
+  font-style: italic;
+  font-family: Georgia, serif;
+}
+.empty-mark {
+  display: block;
+  font-size: 22px;
+  color: var(--cp-gold-soft);
+  margin-bottom: 12px;
+}
+.dotty { letter-spacing: 0.5em; color: var(--cp-gold-soft); }
+.loading-text { font-size: 13px; margin: 8px 0 0; letter-spacing: 0.05em; }
+
+/* PAGE (right) */
+.florilegium-page-right {
+  overflow-y: auto;
+  padding: 0;
+}
+
+.page-empty {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+}
+.page-empty .ornament {
+  font-size: 36px;
+  color: var(--cp-gold-soft);
+  margin-bottom: 16px;
+  display: block;
+}
+.empty-title {
+  font-family: Georgia, serif;
+  font-size: 24px;
+  font-weight: 400;
+  font-style: italic;
+  color: var(--cp-ink);
+  margin: 0 0 8px;
+  letter-spacing: 0.02em;
+}
+.empty-tagline {
+  font-style: italic;
+  color: var(--cp-ink-mute);
+  margin: 0;
+  font-size: 14px;
 }
 </style>

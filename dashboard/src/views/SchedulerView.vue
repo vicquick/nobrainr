@@ -1,257 +1,205 @@
 <template>
-  <v-container fluid style="max-width: 1200px;">
-    <template v-if="loading">
-      <div class="skeleton-block mb-4" style="height: 300px;" />
-      <div class="skeleton-block" style="height: 200px;" />
-    </template>
+  <div class="horarium-page">
+    <div class="horarium-shell">
 
-    <template v-else>
-      <!-- System Health -->
-      <v-card v-if="health" class="mb-4 scheduler-card">
-        <div class="d-flex align-center pa-4" style="border-bottom: 1px solid rgba(255,255,255,0.04);">
-          <v-icon icon="mdi-heart-pulse" size="20" class="mr-2 text-medium-emphasis" />
-          <span class="text-subtitle-1 font-weight-bold">System Health</span>
+      <!-- MASTHEAD -->
+      <header class="horarium-masthead">
+        <div class="masthead-rule" />
+        <div class="masthead-inner">
+          <div class="masthead-row">
+            <span class="folio-label">Horarium · Daily Office</span>
+            <span v-if="status" class="office-state" :class="{ atrest: !status.running }">
+              <span class="state-mark">{{ status.running ? '✦' : '○' }}</span>
+              {{ status.running ? 'observed' : 'at rest' }}
+            </span>
+          </div>
+          <h1 class="horarium-title">The Hours</h1>
+          <p class="horarium-tagline">
+            Disciplines kept by the keepers of the book — the offices that maintain the corpus.
+          </p>
         </div>
+        <div class="masthead-rule" />
+      </header>
 
-        <v-card-text class="pa-4">
-          <!-- Top stats row -->
-          <div class="d-flex ga-3 mb-5 flex-wrap">
-            <div class="text-center flex-grow-1 health-stat">
-              <div class="text-h5 font-weight-bold">{{ health.total_memories?.toLocaleString() }}</div>
-              <div class="text-caption text-medium-emphasis mt-1">Memories</div>
-            </div>
-            <div class="text-center flex-grow-1 health-stat">
-              <div class="text-h5 font-weight-bold">{{ health.total_entities?.toLocaleString() }}</div>
-              <div class="text-caption text-medium-emphasis mt-1">Entities</div>
-            </div>
-            <div class="text-center flex-grow-1 health-stat">
-              <div class="text-h5 font-weight-bold">{{ health.total_relations?.toLocaleString() }}</div>
-              <div class="text-caption text-medium-emphasis mt-1">Relations</div>
-            </div>
+      <template v-if="loading">
+        <div class="horarium-loading">
+          <span class="dotty">·  ·  ·</span>
+          <p class="loading-text">consulting the rule</p>
+        </div>
+      </template>
+
+      <template v-else>
+
+        <!-- I — VITAL SIGNS -->
+        <section v-if="health" class="quire">
+          <div class="quire-head">
+            <span class="quire-numeral">I.</span>
+            <span class="quire-title">Vitae · the corpus</span>
           </div>
 
-          <!-- Extraction progress -->
-          <div class="mb-4">
-            <div class="d-flex align-center justify-space-between mb-2">
-              <span class="text-body-2 text-medium-emphasis">Entity Extraction</span>
-              <span class="text-body-2 font-weight-bold" :class="extractionPct >= 90 ? 'text-success' : 'text-warning'">
-                {{ health.extraction_done?.toLocaleString() }} / {{ (health.extraction_done + health.extraction_pending)?.toLocaleString() }}
-                <span class="text-medium-emphasis font-weight-regular ml-1">({{ extractionPct }}%)</span>
+          <div class="ledger-figures">
+            <article class="ledger-line">
+              <span class="ledger-key">Memories scribed</span>
+              <span class="ledger-fig">{{ health.total_memories?.toLocaleString() }}</span>
+            </article>
+            <article class="ledger-line">
+              <span class="ledger-key">Entities catalogued</span>
+              <span class="ledger-fig">{{ health.total_entities?.toLocaleString() }}</span>
+            </article>
+            <article class="ledger-line">
+              <span class="ledger-key">Relations drawn</span>
+              <span class="ledger-fig">{{ health.total_relations?.toLocaleString() }}</span>
+            </article>
+          </div>
+
+          <!-- Extraction -->
+          <div class="progress-block">
+            <div class="progress-head">
+              <span class="progress-label"><em>Entity extraction</em></span>
+              <span class="progress-fig" :class="{ done: extractionPct >= 90 }">
+                {{ health.extraction_done?.toLocaleString() }} <em>of</em>
+                {{ (health.extraction_done + health.extraction_pending)?.toLocaleString() }}
+                · {{ extractionPct }}<span class="pct">%</span>
               </span>
             </div>
-            <v-progress-linear
-              :model-value="extractionPct"
-              :color="extractionPct >= 90 ? 'success' : 'warning'"
-              height="10"
-              rounded
-              bg-color="surface-bright"
-            />
-            <div v-if="health.extraction_pending > 0" class="text-caption text-medium-emphasis mt-1">
-              {{ health.extraction_pending?.toLocaleString() }} pending
+            <div class="folio-progress">
+              <div class="folio-progress-bar" :style="{ width: extractionPct + '%' }" />
             </div>
+            <p v-if="health.extraction_pending > 0" class="progress-tail">
+              <em>{{ health.extraction_pending?.toLocaleString() }}</em> still awaiting the pen
+            </p>
           </div>
 
-          <!-- Quality scoring progress -->
-          <div class="mb-4">
-            <div class="d-flex align-center justify-space-between mb-2">
-              <span class="text-body-2 text-medium-emphasis">Quality Scoring</span>
-              <span class="text-body-2 font-weight-bold" :class="qualityPct >= 90 ? 'text-success' : 'text-info'">
-                {{ health.quality_scored?.toLocaleString() }} / {{ (health.quality_scored + health.quality_unscored)?.toLocaleString() }}
-                <span class="text-medium-emphasis font-weight-regular ml-1">({{ qualityPct }}%)</span>
+          <!-- Quality -->
+          <div class="progress-block">
+            <div class="progress-head">
+              <span class="progress-label"><em>Quality scoring</em></span>
+              <span class="progress-fig" :class="{ done: qualityPct >= 90 }">
+                {{ health.quality_scored?.toLocaleString() }} <em>of</em>
+                {{ (health.quality_scored + health.quality_unscored)?.toLocaleString() }}
+                · {{ qualityPct }}<span class="pct">%</span>
               </span>
             </div>
-            <v-progress-linear
-              :model-value="qualityPct"
-              :color="qualityPct >= 90 ? 'success' : 'info'"
-              height="10"
-              rounded
-              bg-color="surface-bright"
-            />
-            <div v-if="health.quality_unscored > 0" class="text-caption text-medium-emphasis mt-1">
-              {{ health.quality_unscored?.toLocaleString() }} unscored
+            <div class="folio-progress">
+              <div class="folio-progress-bar" :style="{ width: qualityPct + '%' }" />
             </div>
+            <p v-if="health.quality_unscored > 0" class="progress-tail">
+              <em>{{ health.quality_unscored?.toLocaleString() }}</em> awaiting judgment
+            </p>
           </div>
 
-          <!-- Undistilled conversations -->
-          <div v-if="health.undistilled > 0">
-            <div class="d-flex align-center justify-space-between mb-2">
-              <span class="text-body-2 text-medium-emphasis">Undistilled Conversations</span>
-              <v-chip size="small" variant="tonal" color="warning" class="font-weight-bold">
-                {{ health.undistilled }}
-              </v-chip>
-            </div>
-          </div>
-        </v-card-text>
-      </v-card>
+          <p v-if="health.undistilled > 0" class="alert-line">
+            <span class="alert-mark">⚠</span> <em>{{ health.undistilled }}</em>
+            conversations remain undistilled.
+          </p>
+        </section>
 
-      <v-row>
-        <!-- Scheduler Status -->
-        <v-col cols="12" lg="7">
-          <v-card class="mb-4 scheduler-card">
-            <div class="d-flex align-center pa-4" style="border-bottom: 1px solid rgba(255,255,255,0.04);">
-              <v-icon icon="mdi-calendar-clock" size="20" class="mr-2 text-medium-emphasis" />
-              <span class="text-subtitle-1 font-weight-bold">Scheduler</span>
-              <v-spacer />
-              <v-chip
-                :color="status?.running ? 'success' : 'error'"
-                size="small"
-                variant="tonal"
-                class="font-weight-medium mr-2"
-              >
-                <v-icon :icon="status?.running ? 'mdi-circle' : 'mdi-circle-outline'" size="8" class="mr-1" />
-                {{ status?.running ? 'Running' : 'Stopped' }}
-              </v-chip>
-              <v-btn
+        <!-- II — THE HOURS -->
+        <section class="quire">
+          <div class="quire-head">
+            <span class="quire-numeral">II.</span>
+            <span class="quire-title">Officium · the hours</span>
+            <div class="office-controls">
+              <button
                 v-if="status?.running"
-                size="small"
-                variant="tonal"
-                color="warning"
-                :loading="actionLoading"
-                prepend-icon="mdi-pause"
+                class="folio-button"
+                :disabled="actionLoading"
                 @click="pauseScheduler"
-              >Pause</v-btn>
-              <v-btn
+              >suspend</button>
+              <button
                 v-else
-                size="small"
-                variant="tonal"
-                color="success"
-                :loading="actionLoading"
-                prepend-icon="mdi-play"
+                class="folio-button accent"
+                :disabled="actionLoading"
                 @click="resumeScheduler"
-              >Resume</v-btn>
+              >resume</button>
             </div>
+          </div>
 
-            <v-table v-if="status?.tasks.length" class="scheduler-table">
-              <thead>
-                <tr>
-                  <th class="text-left">Task</th>
-                  <th class="text-left">Interval</th>
-                  <th class="text-left">Last Run</th>
-                  <th class="text-center">Runs</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="task in status.tasks" :key="task.name" class="task-row">
-                  <td>
-                    <span class="font-weight-medium">{{ task.name }}</span>
-                    <v-chip
-                      v-if="task.type"
-                      size="x-small"
-                      variant="tonal"
-                      :color="task.type === 'llm' ? 'warning' : 'info'"
-                      class="ml-2 font-weight-bold"
-                      style="font-size: 10px;"
-                    >
-                      {{ task.type }}
-                    </v-chip>
-                  </td>
-                  <td class="text-medium-emphasis">{{ task.interval_hours }}h</td>
-                  <td class="text-caption text-medium-emphasis" style="font-variant-numeric: tabular-nums;">
-                    {{ task.last_run ? formatRelative(task.last_run) : '--' }}
-                  </td>
-                  <td class="text-center">
-                    <v-chip size="x-small" variant="tonal" color="primary" class="font-weight-medium">
-                      {{ task.run_count }}
-                    </v-chip>
-                  </td>
-                </tr>
-              </tbody>
-            </v-table>
-
-            <div v-else class="pa-6 text-center text-medium-emphasis">
-              No scheduled tasks
-            </div>
-          </v-card>
-        </v-col>
-
-        <!-- Feedback Stats -->
-        <v-col cols="12" lg="5">
-          <v-card class="mb-4 scheduler-card">
-            <div class="d-flex align-center pa-4" style="border-bottom: 1px solid rgba(255,255,255,0.04);">
-              <v-icon icon="mdi-thumb-up-outline" size="20" class="mr-2 text-medium-emphasis" />
-              <span class="text-subtitle-1 font-weight-bold">Feedback</span>
-            </div>
-
-            <v-card-text v-if="feedbackStats" class="pa-4">
-              <div class="d-flex ga-4 mb-4">
-                <div class="text-center flex-grow-1 feedback-stat">
-                  <div class="text-h4 font-weight-bold">{{ feedbackStats.total }}</div>
-                  <div class="text-caption text-medium-emphasis mt-1">Total</div>
-                </div>
-                <div class="text-center flex-grow-1 feedback-stat">
-                  <div class="text-h4 font-weight-bold text-success">{{ feedbackStats.positive }}</div>
-                  <div class="text-caption text-medium-emphasis mt-1">Positive</div>
-                </div>
-                <div class="text-center flex-grow-1 feedback-stat">
-                  <div class="text-h4 font-weight-bold text-error">{{ feedbackStats.negative }}</div>
-                  <div class="text-caption text-medium-emphasis mt-1">Negative</div>
-                </div>
-              </div>
-              <div>
-                <div class="d-flex align-center justify-space-between mb-2">
-                  <span class="text-caption text-medium-emphasis">Positive Rate</span>
-                  <span class="text-body-2 font-weight-bold text-success">
-                    {{ (feedbackStats.positive_rate * 100).toFixed(0) }}%
+          <table v-if="status?.tasks.length" class="office-table">
+            <thead>
+              <tr>
+                <th>Discipline</th>
+                <th>Cadence</th>
+                <th>Last observed</th>
+                <th>Times</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="task in status.tasks" :key="task.name" class="office-row">
+                <td>
+                  <span class="task-name">{{ task.name }}</span>
+                  <span v-if="task.type" class="task-type" :class="`type-${task.type}`">
+                    {{ task.type }}
                   </span>
-                </div>
-                <v-progress-linear
-                  :model-value="feedbackStats.positive_rate * 100"
-                  color="success"
-                  height="8"
-                  rounded
-                  bg-color="surface-bright"
-                />
-              </div>
-            </v-card-text>
+                </td>
+                <td class="task-cadence">every {{ formatCadence(task.interval_hours) }}</td>
+                <td class="task-last">{{ task.last_run ? formatRelative(task.last_run) : '—' }}</td>
+                <td class="task-runs">{{ task.run_count.toLocaleString() }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-else class="empty-line">— no offices scheduled —</p>
+        </section>
 
-            <div v-else class="pa-6 text-center text-medium-emphasis">
-              No feedback data
+        <!-- III — FEEDBACK -->
+        <section v-if="feedbackStats" class="quire">
+          <div class="quire-head">
+            <span class="quire-numeral">III.</span>
+            <span class="quire-title">Of feedback received</span>
+          </div>
+
+          <div class="feedback-figures">
+            <article class="ledger-line">
+              <span class="ledger-key">Total responses</span>
+              <span class="ledger-fig">{{ feedbackStats.total.toLocaleString() }}</span>
+            </article>
+            <article class="ledger-line">
+              <span class="ledger-key">Helpful · positive</span>
+              <span class="ledger-fig accent-good">{{ feedbackStats.positive.toLocaleString() }}</span>
+            </article>
+            <article class="ledger-line">
+              <span class="ledger-key">Unhelpful · negative</span>
+              <span class="ledger-fig accent-bad">{{ feedbackStats.negative.toLocaleString() }}</span>
+            </article>
+          </div>
+
+          <div class="progress-block">
+            <div class="progress-head">
+              <span class="progress-label"><em>Positive ratio</em></span>
+              <span class="progress-fig done">
+                {{ (feedbackStats.positive_rate * 100).toFixed(0) }}<span class="pct">%</span>
+              </span>
             </div>
-          </v-card>
-        </v-col>
-      </v-row>
+            <div class="folio-progress">
+              <div
+                class="folio-progress-bar good"
+                :style="{ width: (feedbackStats.positive_rate * 100) + '%' }"
+              />
+            </div>
+          </div>
+        </section>
 
-      <!-- Events Log -->
-      <v-card class="scheduler-card">
-        <div class="d-flex align-center pa-4" style="border-bottom: 1px solid rgba(255,255,255,0.04);">
-          <v-icon icon="mdi-history" size="20" class="mr-2 text-medium-emphasis" />
-          <span class="text-subtitle-1 font-weight-bold">Recent Events</span>
-          <v-chip v-if="events.length" size="x-small" variant="tonal" class="ml-2">{{ events.length }}</v-chip>
-        </div>
+        <!-- IV — RECENT EVENTS -->
+        <section v-if="events.length" class="quire">
+          <div class="quire-head">
+            <span class="quire-numeral">IV.</span>
+            <span class="quire-title">Annotationes · recent events</span>
+            <span class="quire-flag">{{ events.length }} entries</span>
+          </div>
 
-        <v-table v-if="events.length" class="scheduler-table">
-          <thead>
-            <tr>
-              <th class="text-left">Type</th>
-              <th class="text-left">Source</th>
-              <th class="text-left">Data</th>
-              <th class="text-left">Time</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="evt in events" :key="evt.id" class="task-row">
-              <td>
-                <v-chip size="x-small" variant="tonal" color="info" class="font-weight-medium">
-                  {{ evt.event_type }}
-                </v-chip>
-              </td>
-              <td class="text-caption text-medium-emphasis">{{ evt.source || '--' }}</td>
-              <td class="text-caption text-medium-emphasis" style="max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                {{ JSON.stringify(evt.event_data).slice(0, 100) }}
-              </td>
-              <td class="text-caption text-medium-emphasis" style="white-space: nowrap; font-variant-numeric: tabular-nums;">
-                {{ formatRelative(evt.created_at) }}
-              </td>
-            </tr>
-          </tbody>
-        </v-table>
+          <ul class="events-list">
+            <li v-for="evt in events" :key="evt.id" class="event-line">
+              <span class="event-type">{{ evt.event_type }}</span>
+              <span class="event-source">{{ evt.source || '—' }}</span>
+              <span class="event-data">{{ JSON.stringify(evt.event_data).slice(0, 90) }}</span>
+              <span class="event-time">{{ formatRelative(evt.created_at) }}</span>
+            </li>
+          </ul>
+        </section>
 
-        <div v-else class="pa-6 text-center text-medium-emphasis">
-          No recent events
-        </div>
-      </v-card>
-    </template>
-  </v-container>
+      </template>
+    </div>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -259,7 +207,8 @@ import { computed, onMounted } from 'vue'
 import { useScheduler } from '@/composables/useScheduler'
 import { useSSE } from '@/composables/useSSE'
 
-const { status, events, feedbackStats, health, loading, actionLoading, fetchScheduler, pauseScheduler, resumeScheduler } = useScheduler()
+const { status, events, feedbackStats, health, loading, actionLoading,
+        fetchScheduler, pauseScheduler, resumeScheduler } = useScheduler()
 
 const extractionPct = computed(() => {
   if (!health.value) return 0
@@ -284,6 +233,14 @@ function formatRelative(iso: string) {
   return `${days}d ago`
 }
 
+function formatCadence(hours: number): string {
+  if (hours < 1) return `${Math.round(hours * 60)} minutes`
+  if (hours === 1) return '1 hour'
+  if (hours < 24) return `${hours} hours`
+  if (hours === 24) return 'day'
+  return `${Math.round(hours / 24)} days`
+}
+
 useSSE((evt) => {
   if (['agent_event', 'feedback_added'].includes(evt.type)) {
     fetchScheduler()
@@ -296,47 +253,302 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.scheduler-card {
-  border: 1px solid rgba(255, 255, 255, 0.04);
+.horarium-page {
+  --cp-gold: #c8a96e;
+  --cp-gold-soft: rgba(200, 169, 110, 0.45);
+  --cp-gold-faint: rgba(200, 169, 110, 0.18);
+  --cp-ink: rgba(238, 224, 196, 0.94);
+  --cp-ink-mute: rgba(238, 224, 196, 0.55);
+  --cp-good: #8aa96e;
+  --cp-bad: #c47a6a;
+  --cp-warn: #c89e6e;
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
+  color: var(--cp-ink);
+  padding: 32px 24px 80px;
+  min-height: 100vh;
 }
-.scheduler-table {
-  background: transparent !important;
+
+.horarium-shell {
+  max-width: 920px;
+  margin: 0 auto;
 }
-.scheduler-table th {
-  font-size: 0.75rem !important;
+
+/* MASTHEAD */
+.horarium-masthead { margin-bottom: 36px; }
+.masthead-rule {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--cp-gold-soft) 30%, var(--cp-gold) 50%, var(--cp-gold-soft) 70%, transparent);
+}
+.masthead-inner { padding: 16px 0 12px; text-align: center; }
+.masthead-row {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 11px; letter-spacing: 0.18em;
+  text-transform: uppercase; color: var(--cp-ink-mute);
+  margin-bottom: 12px;
+}
+.folio-label {
+  font-style: italic; letter-spacing: 0.22em;
+  color: var(--cp-gold); font-size: 10px;
+}
+.office-state {
+  font-style: italic; font-size: 11px;
+  letter-spacing: 0.05em; color: var(--cp-good);
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.office-state.atrest { color: var(--cp-ink-mute); }
+.state-mark { font-size: 14px; }
+.office-state.atrest .state-mark { color: var(--cp-gold-soft); }
+
+.horarium-title {
+  font-family: Georgia, serif;
+  font-size: clamp(34px, 4.5vw, 48px);
+  font-weight: 400; letter-spacing: 0.02em;
+  margin: 0 0 4px; color: var(--cp-ink);
+}
+.horarium-tagline {
+  font-style: italic; color: var(--cp-ink-mute);
+  font-size: 14px; margin: 0 0 16px;
+}
+
+/* QUIRE */
+.quire { margin-bottom: 56px; }
+.quire-head {
+  display: grid;
+  grid-template-columns: 50px 1fr auto;
+  gap: 12px; align-items: baseline;
+  padding-bottom: 10px; margin-bottom: 18px;
+  border-bottom: 1px solid var(--cp-gold-faint);
+}
+.quire-numeral {
+  font-family: Georgia, serif; font-size: 28px;
+  color: var(--cp-gold); font-weight: 300;
+  text-align: right; font-style: italic;
+}
+.quire-title {
+  font-family: Georgia, serif; font-size: 18px;
+  font-style: italic; color: var(--cp-ink);
+  letter-spacing: 0.03em;
+}
+.quire-flag {
+  font-family: Georgia, serif; font-style: italic;
+  color: var(--cp-ink-mute); font-size: 13px;
+}
+
+/* OFFICE CONTROLS */
+.office-controls { display: flex; gap: 8px; }
+.folio-button {
+  background: transparent;
+  border: 1px solid var(--cp-gold-soft);
+  color: var(--cp-gold);
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  padding: 4px 16px;
+  cursor: pointer;
+  transition: all 200ms;
+}
+.folio-button:hover:not(:disabled) {
+  background: rgba(200, 169, 110, 0.08);
+  border-color: var(--cp-gold);
+}
+.folio-button:disabled { opacity: 0.5; cursor: wait; }
+.folio-button.accent {
+  background: rgba(138, 169, 110, 0.1);
+  border-color: var(--cp-good);
+  color: var(--cp-good);
+}
+.folio-button.accent:hover:not(:disabled) {
+  background: rgba(138, 169, 110, 0.18);
+}
+
+/* LEDGER FIGURES */
+.ledger-figures, .feedback-figures {
+  display: grid; gap: 0;
+  margin-bottom: 24px;
+}
+.ledger-line {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  padding: 10px 8px 10px 64px;
+  border-bottom: 1px dotted var(--cp-gold-faint);
+}
+.ledger-key {
+  font-style: italic;
+  font-size: 14px;
+  color: var(--cp-ink-mute);
+}
+.ledger-fig {
+  font-size: 22px;
+  color: var(--cp-ink);
+  font-variant-numeric: tabular-nums;
+}
+.ledger-fig.accent-good { color: var(--cp-good); }
+.ledger-fig.accent-bad { color: var(--cp-bad); }
+
+/* PROGRESS */
+.progress-block { margin: 0 64px 24px; }
+.progress-head {
+  display: flex; justify-content: space-between;
+  align-items: baseline; margin-bottom: 8px;
+  font-family: Georgia, serif;
+}
+.progress-label {
+  font-size: 13px; color: var(--cp-ink-mute);
+  font-style: italic;
+}
+.progress-label em { color: var(--cp-ink); font-style: normal; }
+.progress-fig {
+  font-size: 13px; color: var(--cp-ink);
+  font-variant-numeric: tabular-nums; font-style: italic;
+}
+.progress-fig em { color: var(--cp-ink-mute); font-style: italic; margin: 0 4px; }
+.progress-fig.done { color: var(--cp-good); }
+.pct { font-size: 11px; color: var(--cp-ink-mute); margin-left: 1px; }
+
+.folio-progress {
+  height: 5px;
+  background: rgba(200, 169, 110, 0.08);
+  border-top: 1px solid var(--cp-gold-faint);
+  border-bottom: 1px solid var(--cp-gold-faint);
+  overflow: hidden;
+}
+.folio-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--cp-gold-soft), var(--cp-gold));
+  transition: width 600ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.folio-progress-bar.good {
+  background: linear-gradient(90deg, rgba(138, 169, 110, 0.5), var(--cp-good));
+}
+.progress-tail {
+  font-family: Georgia, serif; font-style: italic;
+  font-size: 12px; color: var(--cp-ink-mute);
+  margin: 6px 0 0;
+}
+.progress-tail em { color: var(--cp-ink); font-style: normal; font-variant-numeric: tabular-nums; }
+
+.alert-line {
+  margin: 0 64px;
+  font-family: Georgia, serif; font-style: italic;
+  font-size: 13px; color: var(--cp-warn);
+  padding: 8px 0;
+}
+.alert-mark { font-size: 14px; margin-right: 4px; }
+.alert-line em { color: var(--cp-ink); font-style: normal; }
+
+/* OFFICE TABLE — disciplines list */
+.office-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: Georgia, serif;
+  margin-top: 4px;
+}
+.office-table thead th {
+  text-align: left;
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 10px;
+  letter-spacing: 0.2em;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity)) !important;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04) !important;
+  color: var(--cp-gold);
+  font-weight: 400;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--cp-gold-soft);
 }
-.task-row {
-  transition: background 100ms ease;
+.office-table thead th:last-child { text-align: right; }
+.office-row {
+  transition: background 150ms;
 }
-.task-row:hover {
-  background: rgba(255, 255, 255, 0.02);
-}
-.task-row td {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.02) !important;
-}
-.feedback-stat {
+.office-row:hover { background: rgba(200, 169, 110, 0.03); }
+.office-row td {
   padding: 12px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.02);
+  border-bottom: 1px dotted var(--cp-gold-faint);
+  font-size: 13px;
+  color: var(--cp-ink);
 }
-.health-stat {
-  padding: 12px 16px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.02);
-  min-width: 100px;
+.office-row td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+
+.task-name {
+  font-family: Georgia, serif;
+  letter-spacing: 0.02em;
+  margin-right: 12px;
 }
-.skeleton-block {
-  background: linear-gradient(90deg, rgb(var(--v-theme-surface)) 25%, rgba(255,255,255,0.03) 50%, rgb(var(--v-theme-surface)) 75%);
-  background-size: 200% 100%;
-  animation: shimmer 1.5s infinite;
-  border-radius: 12px;
+.task-type {
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-style: italic;
+  padding: 2px 6px;
+  background: rgba(200, 169, 110, 0.08);
+  color: var(--cp-ink-mute);
 }
-@keyframes shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+.task-type.type-llm { color: var(--cp-warn); background: rgba(200, 158, 110, 0.1); }
+.task-type.type-sql { color: var(--cp-good); background: rgba(138, 169, 110, 0.1); }
+.task-type.type-system { color: var(--cp-gold); background: rgba(200, 169, 110, 0.1); }
+
+.task-cadence, .task-last {
+  font-style: italic;
+  color: var(--cp-ink-mute);
+  font-size: 13px;
 }
+.task-runs {
+  color: var(--cp-gold);
+  font-size: 13px;
+}
+
+/* EVENTS */
+.events-list {
+  list-style: none; padding: 0; margin: 0;
+}
+.event-line {
+  display: grid;
+  grid-template-columns: 100px 110px 1fr 80px;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px dotted var(--cp-gold-faint);
+  align-items: baseline;
+  font-family: Georgia, serif;
+}
+.event-type {
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--cp-gold);
+  font-style: italic;
+}
+.event-source {
+  font-size: 12px;
+  color: var(--cp-ink-mute);
+  font-style: italic;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.event-data {
+  font-size: 12px;
+  color: var(--cp-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.event-time {
+  font-size: 11px;
+  font-style: italic;
+  color: var(--cp-ink-mute);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* STATES */
+.horarium-loading, .empty-line {
+  text-align: center;
+  padding: 48px 0;
+  color: var(--cp-ink-mute);
+  font-style: italic;
+}
+.loading-text { font-size: 13px; margin: 8px 0 0; letter-spacing: 0.05em; }
+.dotty { letter-spacing: 0.5em; color: var(--cp-gold-soft); }
 </style>
