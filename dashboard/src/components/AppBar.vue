@@ -1,65 +1,70 @@
 <template>
   <v-app-bar color="transparent" density="comfortable" elevation="0" class="app-bar-folio">
+    <!-- LEFT: side-panel toggle (replaces hamburger). Always present. -->
     <template #prepend>
-      <div class="d-flex align-center ml-3 brand-mark">
+      <button
+        class="panel-toggle"
+        :class="{ active: drawer }"
+        @click="drawer = !drawer"
+        aria-label="Toggle navigation"
+      >
+        <v-icon icon="mdi-page-layout-sidebar-left" size="18" />
+      </button>
+    </template>
+
+    <!-- CENTER: brand mark + (desktop) inline nav. Mobile shows brand only. -->
+    <div class="bar-center">
+      <RouterLink to="/commonplace" class="brand-mark" aria-label="Home">
         <span class="brand-ornament">❦</span>
         <span class="brand-name">
           <span class="brand-no">no</span><span class="brand-brainr">brainr</span>
         </span>
+      </RouterLink>
+
+      <nav v-if="!mobile" class="nav-links">
+        <RouterLink
+          v-for="link in navLinks"
+          :key="link.to"
+          :to="link.to"
+          class="folio-link"
+          :class="{ active: route.path === link.to }"
+        >
+          <v-icon v-if="smAndDown" :icon="link.icon" size="14" />
+          <span v-else>{{ link.label }}</span>
+        </RouterLink>
+      </nav>
+    </div>
+
+    <!-- RIGHT: stats (desktop only) + chat toggle -->
+    <template #append>
+      <div class="bar-end">
+        <div class="folio-stats" v-if="statsStore.stats && !smAndDown">
+          <span class="stat-line">
+            <span class="stat-num">{{ statsStore.stats.total_memories.toLocaleString() }}</span>
+            <span class="stat-label">mem.</span>
+          </span>
+          <span class="stat-divider">·</span>
+          <span class="stat-line">
+            <span class="stat-num">{{ statsStore.stats.total_entities.toLocaleString() }}</span>
+            <span class="stat-label">ent.</span>
+          </span>
+          <span class="stat-divider">·</span>
+          <span class="stat-line">
+            <span class="stat-num">{{ statsStore.stats.total_relations.toLocaleString() }}</span>
+            <span class="stat-label">rel.</span>
+          </span>
+        </div>
+
+        <button
+          class="chat-toggle"
+          :class="{ active: chatStore.isOpen }"
+          @click="chatStore.toggle()"
+          aria-label="Toggle chat"
+        >
+          <v-icon icon="mdi-chat-outline" size="16" />
+        </button>
       </div>
     </template>
-
-    <!-- Desktop/Tablet: inline nav links -->
-    <div v-if="!mobile" class="d-flex align-center ml-1 ml-sm-6 nav-links">
-      <RouterLink
-        v-for="link in navLinks"
-        :key="link.to"
-        :to="link.to"
-        class="folio-link"
-        :class="{ active: route.path === link.to }"
-      >
-        <v-icon v-if="smAndDown" :icon="link.icon" size="14" />
-        <span v-else>{{ link.label }}</span>
-      </RouterLink>
-    </div>
-
-    <!-- Mobile: hamburger menu -->
-    <v-btn
-      v-if="mobile"
-      icon="mdi-menu"
-      variant="text"
-      size="small"
-      class="ml-2"
-      @click="drawer = !drawer"
-    />
-
-    <v-spacer />
-
-    <div class="d-flex align-center ga-3 mr-3 folio-stats" v-if="statsStore.stats && !smAndDown">
-      <span class="stat-line">
-        <span class="stat-num">{{ statsStore.stats.total_memories.toLocaleString() }}</span>
-        <span class="stat-label">mem.</span>
-      </span>
-      <span class="stat-divider">·</span>
-      <span class="stat-line">
-        <span class="stat-num">{{ statsStore.stats.total_entities.toLocaleString() }}</span>
-        <span class="stat-label">ent.</span>
-      </span>
-      <span class="stat-divider">·</span>
-      <span class="stat-line">
-        <span class="stat-num">{{ statsStore.stats.total_relations.toLocaleString() }}</span>
-        <span class="stat-label">rel.</span>
-      </span>
-    </div>
-
-    <button
-      class="chat-toggle"
-      :class="{ active: chatStore.isOpen }"
-      @click="chatStore.toggle()"
-      aria-label="Toggle chat"
-    >
-      <v-icon icon="mdi-chat-outline" size="16" />
-    </button>
   </v-app-bar>
 
   <!-- Mobile navigation drawer -->
@@ -137,29 +142,96 @@ const navLinks = [
   font-family: Georgia, 'Palatino Linotype', Palatino, serif;
 }
 
-/* Brand */
-.brand-mark { gap: 10px; }
+/* Vuetify slots — strip default padding so center can expand */
+.app-bar-folio :deep(.v-toolbar__content) { padding: 0 8px; }
+.app-bar-folio :deep(.v-toolbar__prepend),
+.app-bar-folio :deep(.v-toolbar__append) {
+  margin: 0;
+  padding: 0;
+}
+
+/* Side-panel + chat toggles share size for visual balance */
+.panel-toggle, .chat-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin: 0 4px;
+  background: transparent;
+  border: 1px solid rgba(200, 169, 110, 0.25);
+  color: rgba(238, 224, 196, 0.7);
+  cursor: pointer;
+  transition: all 150ms;
+  flex-shrink: 0;
+}
+.panel-toggle:hover, .chat-toggle:hover {
+  border-color: #c8a96e;
+  color: #c8a96e;
+}
+.panel-toggle.active, .chat-toggle.active {
+  background: rgba(200, 169, 110, 0.12);
+  border-color: #c8a96e;
+  color: #c8a96e;
+}
+
+/* CENTER block — brand + (desktop) nav. flex:1 absorbs free space so
+   the brand truly sits in the visual center on mobile. */
+.bar-center {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  min-width: 0;
+  padding: 0 8px;
+}
+
+/* Brand mark — Routerlink, click → /commonplace */
+.brand-mark {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  text-decoration: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
 .brand-ornament {
   color: #c8a96e;
-  font-size: 18px;
+  font-size: 16px;
   line-height: 1;
+  align-self: center;
 }
 .brand-name {
   font-family: Georgia, serif;
-  font-size: 18px;
+  font-size: 17px;
   letter-spacing: 0.06em;
   font-style: italic;
 }
 .brand-no { color: #c8a96e; }
 .brand-brainr { color: rgba(238, 224, 196, 0.94); }
 
-/* Nav links */
-.nav-links { gap: 0; }
+/* On mobile, drop the ornament for cleaner centering */
+@media (max-width: 600px) {
+  .brand-ornament { display: none; }
+  .bar-center { padding: 0 4px; }
+  .panel-toggle, .chat-toggle { width: 32px; height: 32px; }
+}
+
+/* Nav links (desktop only — hidden on mobile) */
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+}
 .folio-link {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 14px;
+  padding: 4px 12px;
   font-family: Georgia, serif;
   font-size: 13px;
   letter-spacing: 0.08em;
@@ -169,10 +241,9 @@ const navLinks = [
   border-bottom: 1px solid transparent;
   transition: all 180ms cubic-bezier(0.22, 1, 0.36, 1);
   position: relative;
+  white-space: nowrap;
 }
-.folio-link:hover {
-  color: rgba(238, 224, 196, 0.92);
-}
+.folio-link:hover { color: rgba(238, 224, 196, 0.92); }
 .folio-link.active {
   color: #c8a96e;
   font-style: normal;
@@ -181,19 +252,28 @@ const navLinks = [
   content: '';
   position: absolute;
   bottom: -2px;
-  left: 12px;
-  right: 12px;
+  left: 10px;
+  right: 10px;
   height: 1px;
   background: linear-gradient(
     90deg, transparent, #c8a96e 30%, #c8a96e 70%, transparent
   );
 }
 
-/* Stats */
+/* RIGHT: stats + chat toggle */
+.bar-end {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-right: 4px;
+}
 .folio-stats {
   font-family: Georgia, serif;
   font-size: 12px;
   color: rgba(238, 224, 196, 0.65);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
 }
 .stat-line {
   display: inline-flex;
@@ -201,42 +281,14 @@ const navLinks = [
   gap: 4px;
   font-variant-numeric: tabular-nums;
 }
-.stat-num {
-  color: #c8a96e;
-  font-weight: 400;
-}
+.stat-num { color: #c8a96e; font-weight: 400; }
 .stat-label {
   font-style: italic;
   color: rgba(238, 224, 196, 0.45);
   font-size: 11px;
   letter-spacing: 0.05em;
 }
-.stat-divider {
-  color: rgba(200, 169, 110, 0.4);
-}
-
-/* Chat toggle */
-.chat-toggle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  background: transparent;
-  border: 1px solid rgba(200, 169, 110, 0.25);
-  color: rgba(238, 224, 196, 0.65);
-  cursor: pointer;
-  transition: all 150ms;
-}
-.chat-toggle:hover {
-  border-color: #c8a96e;
-  color: #c8a96e;
-}
-.chat-toggle.active {
-  background: rgba(200, 169, 110, 0.15);
-  border-color: #c8a96e;
-  color: #c8a96e;
-}
+.stat-divider { color: rgba(200, 169, 110, 0.4); }
 
 /* Mobile drawer */
 .mobile-nav {
@@ -250,7 +302,5 @@ const navLinks = [
   letter-spacing: 0.05em;
   color: rgba(238, 224, 196, 0.7);
 }
-:deep(.mobile-nav .v-list-item--active) {
-  color: #c8a96e !important;
-}
+:deep(.mobile-nav .v-list-item--active) { color: #c8a96e !important; }
 </style>
