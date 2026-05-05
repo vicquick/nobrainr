@@ -1,6 +1,6 @@
 <template>
-  <v-container fluid class="fill-height pa-0">
-    <div class="d-flex fill-height" style="width: 100%;">
+  <v-container fluid class="fill-height pa-0 cp-shell" :data-pane="mobilePane">
+    <div class="d-flex fill-height cp-cols" style="width: 100%;">
 
       <!-- Chapter list (left) -->
       <div class="chapters-panel d-flex flex-column" style="width: 300px; min-width: 300px;">
@@ -63,6 +63,9 @@
         style="width: 360px; min-width: 360px; border-left: 1px solid rgba(255,255,255,0.04); border-right: 1px solid rgba(255,255,255,0.04);"
       >
         <template v-if="selectedChapter">
+          <button class="cp-mobile-back" @click="selectedChapter = null">
+            ← chapters
+          </button>
           <div class="pa-3 pb-2">
             <div class="folio-chapter-header mb-1">
               <span class="chapter-title-large">{{ selectedChapter.title }}</span>
@@ -122,7 +125,10 @@
       </div>
 
       <!-- Memory detail (right) -->
-      <div class="flex-grow-1 d-flex flex-column" style="min-width: 0; overflow: hidden;">
+      <div class="detail-panel flex-grow-1 d-flex flex-column" style="min-width: 0; overflow: hidden;">
+        <button v-if="selectedEntry" class="cp-mobile-back" @click="selectedEntry = null">
+          ← entries
+        </button>
         <template v-if="loadingDetail">
           <div class="pa-5">
             <div class="entry-skeleton mb-3" style="height: 120px;" />
@@ -329,6 +335,13 @@ const entries = ref<Entry[]>([])
 const selectedChapter = ref<Chapter | null>(null)
 const selectedEntry = ref<Entry | null>(null)
 const detailMemory = ref<Entry | null>(null)
+// Mobile drill-down: 'chapters' | 'entries' | 'detail'. Reflected on
+// the root via [data-pane] so CSS can show one column at a time.
+const mobilePane = computed(() => {
+  if (selectedEntry.value) return 'detail'
+  if (selectedChapter.value) return 'entries'
+  return 'chapters'
+})
 const detailEntities = ref<any[]>([])
 const loadingChapters = ref(false)
 const loadingEntries = ref(false)
@@ -819,5 +832,86 @@ onMounted(() => fetchChapters())
   white-space: pre-wrap;
   word-break: break-word;
   margin: 0;
+}
+
+/* MOBILE: drill-down navigation. Three-column layout collapses to a
+   single visible column at a time, driven by [data-pane] on the shell.
+   Tap a chapter → entries pane slides in. Tap an entry → detail.
+   The cp-mobile-back buttons (rendered in entries+detail headers)
+   pop the selection state and CSS naturally rolls back. */
+.cp-mobile-back {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 14px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(200, 169, 110, 0.18);
+  color: var(--cp-gold);
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
+  font-style: italic;
+  font-size: 13px;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  flex-shrink: 0;
+}
+.cp-mobile-back:hover { color: rgba(238, 224, 196, 0.95); }
+
+@media (max-width: 900px) {
+  /* Stack to a single column */
+  .cp-cols {
+    flex-direction: column;
+    height: auto !important;
+    min-height: calc(100vh - 64px);
+  }
+  .chapters-panel,
+  .entries-panel,
+  .detail-panel {
+    width: 100% !important;
+    min-width: 0 !important;
+    border-left: none !important;
+    border-right: none !important;
+    height: auto;
+  }
+
+  /* Each pane fills the viewport when active so it reads as a full screen */
+  .cp-shell[data-pane="chapters"] .chapters-panel,
+  .cp-shell[data-pane="entries"] .entries-panel,
+  .cp-shell[data-pane="detail"] .detail-panel {
+    min-height: calc(100vh - 64px);
+  }
+
+  /* Hide the inactive panes */
+  .cp-shell[data-pane="chapters"] .entries-panel,
+  .cp-shell[data-pane="chapters"] .detail-panel,
+  .cp-shell[data-pane="entries"] .chapters-panel,
+  .cp-shell[data-pane="entries"] .detail-panel,
+  .cp-shell[data-pane="detail"] .chapters-panel,
+  .cp-shell[data-pane="detail"] .entries-panel {
+    display: none !important;
+  }
+
+  /* Show the back-button only when not on the chapters pane */
+  .cp-shell[data-pane="entries"] .entries-panel .cp-mobile-back,
+  .cp-shell[data-pane="detail"] .detail-panel .cp-mobile-back {
+    display: flex;
+  }
+
+  /* Body-scroll: drop the panes' internal overflow so all entries
+     are reachable from the page scroll. */
+  .chapters-panel > .flex-grow-1,
+  .entries-panel > .flex-grow-1,
+  .detail-panel > .flex-grow-1 {
+    overflow: visible !important;
+    flex-grow: 0 !important;
+    height: auto !important;
+  }
+  .detail-panel { overflow: visible !important; }
+
+  /* Tighter typography */
+  .chapter-title-large { font-size: 18px !important; }
+  .cp-detail-title { font-size: 22px !important; }
 }
 </style>
