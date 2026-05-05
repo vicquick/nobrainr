@@ -1166,6 +1166,187 @@ async def api_memory_facts(request: Request) -> JSONResponse:
         return JSONResponse({"facts": []})
 
 
+async def api_insights(request: Request) -> JSONResponse:
+    """GET /api/insights — surface synthesis memories (LLM-generated insights).
+
+    The synthesis scheduler job has been producing insight memories at
+    source_type='synthesis' for months but they were invisible. This endpoint
+    returns the most recent / highest-confidence ones so the UI can show:
+    - "Insight of the day" card
+    - Insights tab in commonplace
+    - Top items in daily email
+
+    Filters: ?since=24h|7d|30d (default 7d), ?limit (default 20),
+    ?min_confidence (default 0.5).
+    """
+    try:
+        limit = max(1, min(100, int(request.query_params.get("limit", 20))))
+    except ValueError:
+        limit = 20
+    try:
+        min_conf = float(request.query_params.get("min_confidence", 0.5))
+    except ValueError:
+        min_conf = 0.5
+    since = request.query_params.get("since", "7d")
+    interval = {"24h": "1 day", "7d": "7 days", "30d": "30 days"}.get(since, "7 days")
+
+    from nobrainr.db.pool import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT id, content, summary, tags, category, confidence, importance,
+                   created_at, metadata, quality_score
+            FROM memories
+            WHERE source_type = 'synthesis'
+              AND category != '_archived'
+              AND superseded_by IS NULL
+              AND created_at > NOW() - INTERVAL '{interval}'
+              AND COALESCE(confidence, 0.7) >= $1
+            ORDER BY COALESCE(quality_score, 0.5) DESC NULLS LAST,
+                     confidence DESC NULLS LAST,
+                     created_at DESC
+            LIMIT $2
+            """,
+            min_conf, limit,
+        )
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["id"] = str(d["id"])
+        if d.get("created_at") and hasattr(d["created_at"], "isoformat"):
+            d["created_at"] = d["created_at"].isoformat()
+        if isinstance(d.get("metadata"), str):
+            try:
+                d["metadata"] = json.loads(d["metadata"])
+            except Exception:
+                pass
+        out.append(d)
+    return JSONResponse(out)
+
+
+async def api_insight_of_the_day(request: Request) -> JSONResponse:
+    """GET /api/insights/today — single insight card for dashboard home.
+
+    Picks one quality-scored synthesis from the last 30 days, biased toward
+    highest quality but with a small random shuffle so it changes day-to-day.
+    """
+    from nobrainr.db.pool import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, content, summary, tags, category, confidence,
+                   created_at, metadata, quality_score
+            FROM memories
+            WHERE source_type = 'synthesis'
+              AND category != '_archived'
+              AND superseded_by IS NULL
+              AND created_at > NOW() - INTERVAL '30 days'
+              AND quality_score IS NOT NULL
+            ORDER BY (quality_score * (0.7 + 0.3 * random())) DESC
+            LIMIT 1
+            """
+        )
+    if not row:
+        return JSONResponse({"insight": None})
+    d = dict(row)
+    d["id"] = str(d["id"])
+    if d.get("created_at") and hasattr(d["created_at"], "isoformat"):
+        d["created_at"] = d["created_at"].isoformat()
+    if isinstance(d.get("metadata"), str):
+        try:
+            d["metadata"] = json.loads(d["metadata"])
+        except Exception:
+            pass
+    return JSONResponse({"insight": d})
+
+
+async def api_conversations_search(request: Request) -> JSONResponse:
+    """GET /api/conversations — two-layer commonplace: search raw threads.
+
+    Hybrid vector + FTS search over conversations_raw. Returns thread
+    metadata (id, source_type, title, message_count). Use
+    /api/conversations/{id} to open the full thread.
+    """
+    q = request.query_params.get("q", "").strip()
+    source_type = request.query_params.get("source_type") or None
+    try:
+        limit = max(1, min(100, int(request.query_params.get("limit", 20))))
+    except ValueError:
+        limit = 20
+
+    if not q:
+        # No query = recent threads
+        from nobrainr.db.pool import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            args: list = [limit]
+            where = ""
+            if source_type:
+                args.insert(0, source_type)
+                where = "WHERE source_type = $1"
+                args[0], args[1] = args[0], args[1]  # already correct
+                rows = await conn.fetch(
+                    f"SELECT id, source_type, title, message_count, imported_at "
+                    f"FROM conversations_raw {where} "
+                    f"ORDER BY imported_at DESC LIMIT $2",
+                    source_type, limit,
+                )
+            else:
+                rows = await conn.fetch(
+                    "SELECT id, source_type, title, message_count, imported_at "
+                    "FROM conversations_raw "
+                    "ORDER BY imported_at DESC LIMIT $1",
+                    limit,
+                )
+        return JSONResponse([{
+            "id": str(r["id"]),
+            "source_type": r["source_type"],
+            "title": r["title"],
+            "message_count": r["message_count"],
+            "imported_at": r["imported_at"].isoformat() if r["imported_at"] else None,
+        } for r in rows])
+
+    embedding: list[float] | None = None
+    try:
+        embedding = await embed_text_with_timeout(q, timeout_s=15.0)
+    except (EmbedTimeout, Exception):
+        embedding = None
+
+    results = await queries.search_conversations_raw(
+        embedding=embedding, text_query=q, limit=limit, source_type=source_type,
+    )
+    # JSON-serialize datetimes
+    for r in results:
+        if r.get("imported_at") and hasattr(r["imported_at"], "isoformat"):
+            r["imported_at"] = r["imported_at"].isoformat()
+    return JSONResponse(results)
+
+
+async def api_conversation_detail(request: Request) -> JSONResponse:
+    """GET /api/conversations/{conv_id} — full thread for the Threads UI."""
+    conv_id = request.path_params["conv_id"]
+    if not _valid_uuid(conv_id):
+        return JSONResponse({"error": "Invalid conversation_id"}, status_code=400)
+    conv = await queries.get_conversation_raw(conv_id)
+    if not conv:
+        return JSONResponse({"error": "Not found"}, status_code=404)
+    if conv.get("imported_at") and hasattr(conv["imported_at"], "isoformat"):
+        conv["imported_at"] = conv["imported_at"].isoformat()
+    if isinstance(conv.get("messages"), str):
+        try:
+            conv["messages"] = json.loads(conv["messages"])
+        except Exception:
+            pass
+    if isinstance(conv.get("metadata"), str):
+        try:
+            conv["metadata"] = json.loads(conv["metadata"])
+        except Exception:
+            pass
+    return JSONResponse(conv)
+
+
 async def api_facts_search(request: Request) -> JSONResponse:
     """GET /api/facts — search atomic facts by query."""
     q = request.query_params.get("q", "").strip()
@@ -2040,6 +2221,10 @@ api_routes = [
     Route("/api/memories/{memory_id}/facts", api_memory_facts, methods=["GET"]),
     Route("/api/memories/{memory_id}/restore", api_memory_restore, methods=["POST"]),
     Route("/api/memories/{memory_id}/origin", api_memory_origin, methods=["GET"]),
+    Route("/api/insights", api_insights),
+    Route("/api/insights/today", api_insight_of_the_day),
+    Route("/api/conversations", api_conversations_search),
+    Route("/api/conversations/{conv_id}", api_conversation_detail),
     Route("/api/facts", api_facts_search),
     Route("/api/facts/stats", api_facts_stats),
     Route("/api/queue/{queue_id}/retry", api_queue_retry, methods=["POST"]),

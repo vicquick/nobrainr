@@ -736,6 +736,115 @@ async def _hybrid_search_rrf(
         return results
 
 
+async def search_conversations_raw(
+    embedding: list[float] | None,
+    text_query: str | None,
+    *,
+    limit: int = 20,
+    source_type: str | None = None,
+) -> list[dict]:
+    """Two-layer commonplace search: raw conversations from conversations_raw.
+
+    Hybrid: vector match on stored embedding + FTS on title_text + first
+    4000 chars of messages. Returns thread metadata + message_count, NOT
+    the full message blob (use get_conversation_raw for that).
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        params: list = []
+        conditions = []
+        idx = 1
+        if source_type:
+            conditions.append(f"source_type = ${idx}")
+            params.append(source_type)
+            idx += 1
+        where = (" AND " + " AND ".join(conditions)) if conditions else ""
+
+        # Vector branch
+        vec_rows: list = []
+        if embedding is not None:
+            vec_rows = await conn.fetch(
+                f"""
+                SELECT id, source_type, title, message_count, imported_at,
+                       1 - (embedding::{_HV} <=> $1::{_HV}) AS similarity
+                FROM conversations_raw
+                WHERE embedding IS NOT NULL{where}
+                ORDER BY embedding::{_HV} <=> $1::{_HV}
+                LIMIT $2
+                """,
+                embedding, limit * 3, *params,
+            )
+
+        # FTS branch on title_text + (first 4000 chars of messages cast)
+        fts_rows: list = []
+        if text_query:
+            fts_rows = await conn.fetch(
+                f"""
+                SELECT id, source_type, title, message_count, imported_at,
+                       ts_rank(
+                           to_tsvector('simple', nb_unaccent(
+                               COALESCE(title_text, '') || ' ' || LEFT(messages::text, 4000)
+                           )),
+                           plainto_tsquery('simple', nb_unaccent($1))
+                       ) AS fts_rank
+                FROM conversations_raw
+                WHERE to_tsvector('simple', nb_unaccent(
+                          COALESCE(title_text, '') || ' ' || LEFT(messages::text, 4000)
+                      )) @@ plainto_tsquery('simple', nb_unaccent($1)){where}
+                ORDER BY fts_rank DESC
+                LIMIT $2
+                """,
+                text_query, limit * 3, *params,
+            )
+
+        # Simple RRF
+        rrf_k = 60
+        rrf: dict[str, float] = {}
+        rows_by_id: dict[str, object] = {}
+        for rank, row in enumerate(vec_rows, start=1):
+            rid = str(row["id"])
+            rrf[rid] = rrf.get(rid, 0.0) + 1.0 / (rrf_k + rank)
+            rows_by_id[rid] = row
+        for rank, row in enumerate(fts_rows, start=1):
+            rid = str(row["id"])
+            rrf[rid] = rrf.get(rid, 0.0) + 1.0 / (rrf_k + rank)
+            if rid not in rows_by_id:
+                rows_by_id[rid] = row
+
+        sorted_ids = sorted(rrf, key=lambda r: rrf[r], reverse=True)[:limit]
+        return [
+            {
+                "id": str(rows_by_id[rid]["id"]),
+                "source_type": rows_by_id[rid].get("source_type"),
+                "title": rows_by_id[rid].get("title"),
+                "message_count": rows_by_id[rid].get("message_count"),
+                "imported_at": rows_by_id[rid].get("imported_at"),
+                "rrf_score": rrf[rid],
+            }
+            for rid in sorted_ids
+        ]
+
+
+async def get_conversation_raw(conv_id: str) -> dict | None:
+    """Fetch full raw conversation (messages JSON) for the Threads UI."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, source_type, source_file, title, messages, message_count,
+                   imported_at, metadata
+            FROM conversations_raw
+            WHERE id = $1::uuid
+            """,
+            conv_id,
+        )
+        if not row:
+            return None
+        d = dict(row)
+        d["id"] = str(d["id"])
+        return d
+
+
 async def get_memory(memory_id: str) -> dict | None:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -1576,10 +1685,17 @@ async def integrate_feedback_scores() -> int:
     auto-generated "was_useful=true" records silently inflated importance
     on every memory the agent touched, without real signal.
 
-    New rule: a memory must have >=5 feedback events AND at least one
+    Rule: a memory must have >=5 feedback events AND at least one
     negative vote before the importance adjustment fires. This way the
     only memories that move are those the agent has actually disagreed
     with — which is where the signal actually is.
+
+    Historical filter (2026-05-05): exclude the 100,072 one-time backfill
+    rows with context='auto: matched in session transcript' (note the space
+    after the colon — distinct from real auto-negative context like
+    'auto:low_recall' which has no space). Those rows were a session-import
+    artifact and would skew positive_ratio toward 1.0 even when a memory
+    starts collecting real negative signal.
     """
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -1600,6 +1716,8 @@ async def integrate_feedback_scores() -> int:
                        COUNT(*) FILTER (WHERE was_useful) ::real / COUNT(*) AS positive_ratio,
                        COUNT(*) FILTER (WHERE NOT was_useful) AS neg_count
                 FROM memory_outcomes
+                WHERE context IS NULL
+                   OR context NOT LIKE 'auto: matched in session transcript%'
                 GROUP BY memory_id
                 HAVING COUNT(*) >= 5
                    AND COUNT(*) FILTER (WHERE NOT was_useful) >= 1
@@ -1881,7 +1999,13 @@ async def archive_stale_memories(limit: int = 50) -> int:
 
 
 async def get_unscored_memories(limit: int = 20) -> list[dict]:
-    """Get memories that haven't been quality-scored yet."""
+    """Get memories that haven't been quality-scored yet.
+
+    Source priority: user values affine_memos / docx / sticky_notes / keep /
+    manual (personal, hand-curated) over chatgpt (43K bulk import). Score
+    these first so they reach the dashboard quality filter sooner. Within
+    each priority bucket, newest-first.
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
@@ -1892,7 +2016,23 @@ async def get_unscored_memories(limit: int = 20) -> list[dict]:
               AND category != '_archived'
               AND content IS NOT NULL
               AND length(content) > 20
-            ORDER BY created_at DESC
+            ORDER BY
+              CASE source_type
+                WHEN 'manual' THEN 0
+                WHEN 'affine_memos' THEN 1
+                WHEN 'docx' THEN 1
+                WHEN 'sticky_notes' THEN 1
+                WHEN 'keep' THEN 1
+                WHEN 'session' THEN 2
+                WHEN 'agent_learning' THEN 2
+                WHEN 'synthesis' THEN 2
+                WHEN 'claude' THEN 3
+                WHEN 'github' THEN 4
+                WHEN 'crawl' THEN 4
+                WHEN 'chatgpt' THEN 5
+                ELSE 6
+              END,
+              created_at DESC
             LIMIT $1
             """,
             limit,

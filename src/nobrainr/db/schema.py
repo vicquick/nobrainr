@@ -154,8 +154,21 @@ CREATE TABLE IF NOT EXISTS conversations_raw (
     messages        jsonb NOT NULL,
     message_count   int,
     imported_at     timestamptz DEFAULT now(),
-    metadata        jsonb DEFAULT '{{}}'::jsonb
+    metadata        jsonb DEFAULT '{{}}'::jsonb,
+    embedding       vector({settings.embedding_dimensions}),
+    embedded_at     timestamptz,
+    title_text      text
 );
+
+-- Two-layer commonplace (2026-05-05): raw conversations searchable
+-- alongside distilled memories. embedding is on title + first 4000 chars
+-- of concatenated messages (good enough for "find that thread about X"
+-- without re-embedding 78MB of conversation text).
+ALTER TABLE conversations_raw ADD COLUMN IF NOT EXISTS embedding vector({settings.embedding_dimensions});
+ALTER TABLE conversations_raw ADD COLUMN IF NOT EXISTS embedded_at timestamptz;
+ALTER TABLE conversations_raw ADD COLUMN IF NOT EXISTS title_text text;
+CREATE INDEX IF NOT EXISTS idx_conversations_raw_source ON conversations_raw (source_type);
+CREATE INDEX IF NOT EXISTS idx_conversations_raw_imported ON conversations_raw (imported_at DESC);
 
 -- ──────────────────────────────────────────────
 -- Knowledge graph: entities
