@@ -16,7 +16,7 @@ from starlette.routing import Route
 from nobrainr.config import settings
 from nobrainr.db import queries
 from nobrainr.db import write_queue
-from nobrainr.embeddings.ollama import embed_text
+from nobrainr.embeddings.ollama import embed_text, embed_text_with_timeout, EmbedTimeout
 from nobrainr.events import subscribe
 
 log = logging.getLogger(__name__)
