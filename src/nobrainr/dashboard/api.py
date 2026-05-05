@@ -1470,6 +1470,132 @@ async def api_extraction_eval_run_now(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+async def api_memory_origin(request: Request) -> JSONResponse:
+    """GET /api/memories/{memory_id}/origin — full source for the origin tab.
+
+    origin_kind:
+      conversation   — chatgpt/claude_web: full messages from conversations_raw,
+                       window_start/end mark the distillation window
+      document_chunk — docx/crawl: adjacent chunks (±2) from same document_id
+      self           — affine/github/sticky/manual/session/claude: memory IS source
+      derived        — synthesis/cross_machine/agent: no recoverable raw
+      none           — unrecognised source_type or missing linkage
+    """
+    from nobrainr.db.pool import get_pool
+    from uuid import UUID
+
+    memory_id = request.path_params["memory_id"]
+    if not _valid_uuid(memory_id):
+        return JSONResponse({"error": "Invalid memory_id"}, status_code=400)
+
+    memory = await queries.get_memory(memory_id)
+    if not memory:
+        return JSONResponse({"error": "Memory not found"}, status_code=404)
+
+    source_type = memory.get("source_type") or ""
+    metadata = memory.get("metadata") or {}
+    pool = await get_pool()
+
+    result: dict = {
+        "memory_id": memory_id,
+        "source_type": source_type,
+        "origin_kind": "none",
+    }
+
+    # ── Conversation (chatgpt / claude_web) ──────────────────────────────────
+    if source_type in ("chatgpt", "claude_web"):
+        conv_id = metadata.get("conversation_id")
+        if conv_id and _valid_uuid(conv_id):
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT id, title, messages, message_count, metadata "
+                    "FROM conversations_raw WHERE id = $1",
+                    UUID(conv_id),
+                )
+            if row:
+                conv_meta = row["metadata"] or {}
+                messages = row["messages"] or []
+                n = len(messages)
+                # Sliding-window params (size=8, overlap=2 → stride=6)
+                WINDOW_SIZE, STRIDE = 8, 6
+                win_idx = metadata.get("window_index", 0)
+                win_start = win_idx * STRIDE
+                win_end = min(win_start + WINDOW_SIZE - 1, n - 1)
+                result["origin_kind"] = "conversation"
+                result["conversation"] = {
+                    "id": str(row["id"]),
+                    "title": row["title"] or "Untitled",
+                    "model": conv_meta.get("model"),
+                    "original_date": conv_meta.get("original_date"),
+                    "message_count": row["message_count"] or n,
+                    "messages": messages,
+                    "window_index": win_idx,
+                    "total_windows": metadata.get("total_windows", 1),
+                    "window_start": win_start,
+                    "window_end": win_end,
+                }
+
+    # ── Document chunks (docx / crawl) ───────────────────────────────────────
+    elif source_type in ("docx", "crawl") and metadata.get("document_id"):
+        doc_id = metadata["document_id"]
+        chunk_idx = int(metadata.get("chunk_index", 0))
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, content, summary,
+                       (metadata->>'chunk_index')::int AS chunk_index,
+                       metadata->>'contextual_prefix' AS contextual_prefix
+                FROM memories
+                WHERE metadata->>'document_id' = $1
+                  AND (metadata->>'chunk_index')::int BETWEEN $2 AND $3
+                ORDER BY (metadata->>'chunk_index')::int
+                """,
+                doc_id,
+                max(0, chunk_idx - 2),
+                chunk_idx + 2,
+            )
+        result["origin_kind"] = "document_chunk"
+        result["document"] = {
+            "file_path": metadata.get("file_path") or metadata.get("document_title") or doc_id,
+            "document_title": metadata.get("document_title") or metadata.get("file_path") or "",
+            "document_id": doc_id,
+            "chunk_index": chunk_idx,
+            "chunk_total": int(metadata.get("chunk_total", 1)),
+            "contextual_prefix": metadata.get("contextual_prefix"),
+            "chunks": [
+                {
+                    "memory_id": str(r["id"]),
+                    "chunk_index": r["chunk_index"],
+                    "content": r["content"],
+                    "summary": r["summary"],
+                    "contextual_prefix": r["contextual_prefix"],
+                    "is_current": r["chunk_index"] == chunk_idx,
+                }
+                for r in rows
+            ],
+        }
+
+    # ── Self-contained ────────────────────────────────────────────────────────
+    elif source_type in (
+        "affine_memos", "github", "sticky_notes", "manual",
+        "claude", "session", "agent",
+    ):
+        result["origin_kind"] = "self"
+        result["self_content"] = memory.get("content", "")
+        result["self_metadata"] = {
+            k: v for k, v in metadata.items()
+            if k not in ("supersedes", "superseded_by")
+        }
+
+    # ── Derived (no recoverable raw) ─────────────────────────────────────────
+    elif source_type in ("synthesis", "cross_machine_insight"):
+        result["origin_kind"] = "derived"
+        result["self_content"] = memory.get("content", "")
+        result["self_metadata"] = metadata
+
+    return JSONResponse(result)
+
+
 async def api_commonplace(request: Request) -> JSONResponse:
     """GET /api/commonplace — community summaries for the commonplace view.
 
@@ -1675,6 +1801,7 @@ api_routes = [
     Route("/api/memories/{memory_id}/history", api_memory_history, methods=["GET"]),
     Route("/api/memories/{memory_id}/facts", api_memory_facts, methods=["GET"]),
     Route("/api/memories/{memory_id}/restore", api_memory_restore, methods=["POST"]),
+    Route("/api/memories/{memory_id}/origin", api_memory_origin, methods=["GET"]),
     Route("/api/facts", api_facts_search),
     Route("/api/facts/stats", api_facts_stats),
     Route("/api/queue/{queue_id}/retry", api_queue_retry, methods=["POST"]),
