@@ -868,6 +868,153 @@ async def api_smart_recall(request: Request) -> JSONResponse:
     return JSONResponse(results)
 
 
+async def api_memory_source(request: Request) -> JSONResponse:
+    """Resolve a memory's raw source — the "view origin" link.
+
+    Returns whatever URL / file / conversation the memory was extracted from
+    so the user can open the raw context. Different shapes per source_type:
+      - docx → {kind:'docx', file:<source_ref>, url:'/api/files/docx/<ref>'}
+      - affine_memos → {kind:'affine', file:<source_ref>}
+      - crawl → {kind:'web', url:<source_ref>}
+      - github → {kind:'github', ref:<source_ref>, url:'https://github.com/<owner>/<repo>'}
+      - chatgpt / claude → {kind:'thread', conversation_id, url:'/api/conversations/<id>'}
+      - sticky_notes / session / manual → {kind:'inline', content:<excerpt>}
+    """
+    memory_id = request.path_params["memory_id"]
+    if not _valid_uuid(memory_id):
+        return JSONResponse({"error": "Invalid memory_id"}, status_code=400)
+    mem = await queries.get_memory(memory_id)
+    if not mem:
+        return JSONResponse({"error": "Not found"}, status_code=404)
+
+    source_type = mem.get("source_type") or "unknown"
+    source_ref = mem.get("source_ref")
+    metadata = mem.get("metadata") or {}
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except Exception:
+            metadata = {}
+
+    if source_type == "docx" and source_ref:
+        return JSONResponse({
+            "kind": "docx", "file": source_ref,
+            "url": f"/api/files/docx/{source_ref}",
+        })
+    if source_type == "affine_memos" and source_ref:
+        return JSONResponse({
+            "kind": "affine", "file": source_ref,
+            "url": f"/api/files/affine/{source_ref}",
+        })
+    if source_type == "crawl" and source_ref:
+        return JSONResponse({"kind": "web", "url": source_ref})
+    if source_type == "github" and source_ref:
+        # Format like "github:vicquick/repo/path"
+        gh_url = source_ref
+        if source_ref.startswith("github:"):
+            parts = source_ref[len("github:"):].split("/", 2)
+            if len(parts) >= 2:
+                gh_url = f"https://github.com/{parts[0]}/{parts[1]}"
+                if len(parts) == 3:
+                    gh_url += f"/blob/main/{parts[2]}"
+        return JSONResponse({"kind": "github", "ref": source_ref, "url": gh_url})
+    if source_type in ("chatgpt", "claude", "claude_web"):
+        conv_id = metadata.get("conversation_id") if isinstance(metadata, dict) else None
+        if conv_id:
+            return JSONResponse({
+                "kind": "thread", "conversation_id": conv_id,
+                "url": f"/api/conversations/{conv_id}",
+            })
+    # Fallback: show source_ref as plain string
+    return JSONResponse({
+        "kind": "inline",
+        "source_type": source_type,
+        "source_ref": source_ref,
+        "content": (mem.get("content") or "")[:2000],
+    })
+
+
+async def api_files_docx(request: Request) -> Response:
+    """Serve a docx file from the /opt or import directory.
+
+    Read-only; only files under known import roots are served (no path
+    traversal). Returns the raw .docx bytes with proper MIME type.
+    """
+    import os
+    fname = request.path_params["filename"]
+    if "/" in fname or ".." in fname:
+        return Response("Bad filename", status_code=400)
+    candidates = [
+        f"/tmp/docx_remaining/{fname}",
+        f"/data/imports/docx/{fname}",
+        f"/app/imports/docx/{fname}",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            with open(path, "rb") as fh:
+                return Response(
+                    fh.read(),
+                    media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    headers={"Content-Disposition": f'inline; filename="{fname}"'},
+                )
+    return Response("Not found", status_code=404)
+
+
+async def api_files_affine(request: Request) -> Response:
+    """Serve an affine memo markdown file (read-only)."""
+    import os
+    fname = request.path_params["filename"]
+    if "/" in fname or ".." in fname:
+        return Response("Bad filename", status_code=400)
+    candidates = [
+        f"/tmp/memos_extracted/{fname}",
+        f"/data/imports/affine/{fname}",
+        f"/app/imports/affine/{fname}",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as fh:
+                return Response(fh.read(), media_type="text/markdown; charset=utf-8")
+    return Response("Not found", status_code=404)
+
+
+async def api_memory_click(request: Request) -> JSONResponse:
+    """Record a click as auto-positive feedback.
+
+    Fires when user opens/expands a search result. Writes was_useful=true
+    with context='auto:click' so the feedback loop has positive signal
+    that comes from real engagement, not just absence of negative.
+    Body: {query_trace_id, search_rank, query_text} — all optional but
+    recommended.
+    """
+    memory_id = request.path_params["memory_id"]
+    if not _valid_uuid(memory_id):
+        return JSONResponse({"error": "Invalid memory_id"}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    query_trace_id = body.get("query_trace_id")
+    query_text = body.get("query_text")
+    result_rank = body.get("search_rank") or body.get("result_rank")
+    if isinstance(result_rank, str):
+        try:
+            result_rank = int(result_rank)
+        except ValueError:
+            result_rank = None
+
+    result = await queries.store_memory_outcome(
+        memory_id,
+        True,
+        context="auto:click",
+        agent_id="auto-click-dashboard",
+        query_trace_id=query_trace_id,
+        query_text=query_text,
+        result_rank=result_rank,
+    )
+    return JSONResponse(result)
+
+
 async def api_memory_feedback(request: Request) -> JSONResponse:
     """Record feedback on a memory (was it useful?).
 
@@ -2217,6 +2364,10 @@ api_routes = [
     Route("/api/memories/{memory_id}", api_memory_update, methods=["POST"]),
     Route("/api/memories/{memory_id}", api_memory_delete, methods=["DELETE"]),
     Route("/api/memories/{memory_id}/feedback", api_memory_feedback, methods=["POST"]),
+    Route("/api/memories/{memory_id}/click", api_memory_click, methods=["POST"]),
+    Route("/api/memories/{memory_id}/source", api_memory_source, methods=["GET"]),
+    Route("/api/files/docx/{filename}", api_files_docx, methods=["GET"]),
+    Route("/api/files/affine/{filename}", api_files_affine, methods=["GET"]),
     Route("/api/memories/{memory_id}/history", api_memory_history, methods=["GET"]),
     Route("/api/memories/{memory_id}/facts", api_memory_facts, methods=["GET"]),
     Route("/api/memories/{memory_id}/restore", api_memory_restore, methods=["POST"]),
