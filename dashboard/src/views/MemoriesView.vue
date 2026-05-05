@@ -192,19 +192,30 @@ onMounted(async () => {
 .florilegium-shell {
   display: grid;
   grid-template-columns: 420px 1fr;
-  height: calc(100vh - 64px);
+  /* Min-height fills the viewport, but the shell can grow when the
+     index list is long. Body handles scroll → bottom items are
+     always reachable, no stranded content. */
+  min-height: calc(100vh - 64px);
 }
 
 @media (max-width: 900px) {
   .florilegium-shell { grid-template-columns: 1fr; }
 }
 
-/* INDEX (left sidebar) */
+/* INDEX (left sidebar) — sticky on desktop so it stays visible while
+   the right pane scrolls; on mobile it just flows in document order. */
 .florilegium-index {
   border-right: 1px solid var(--cp-gold-faint);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+}
+@media (min-width: 901px) {
+  .florilegium-index {
+    position: sticky;
+    top: 64px;
+    height: calc(100vh - 64px);
+    overflow: hidden;
+  }
 }
 
 .index-head {
@@ -342,9 +353,14 @@ onMounted(async () => {
 }
 
 .index-list {
-  flex-grow: 1;
-  overflow-y: auto;
-  padding: 4px 12px 24px;
+  padding: 4px 12px 32px;
+}
+@media (min-width: 901px) {
+  .index-list {
+    flex-grow: 1;
+    overflow-y: auto;
+    padding-bottom: 80px;  /* breathing room past the last entry */
+  }
 }
 
 .card-skeleton {
@@ -379,10 +395,12 @@ onMounted(async () => {
 .dotty { letter-spacing: 0.5em; color: var(--cp-gold-soft); }
 .loading-text { font-size: 13px; margin: 8px 0 0; letter-spacing: 0.05em; }
 
-/* PAGE (right) */
+/* PAGE (right) — body scrolls on mobile, internal scroll on desktop */
 .florilegium-page-right {
-  overflow-y: auto;
   padding: 0;
+}
+@media (min-width: 901px) {
+  .florilegium-page-right { overflow-y: auto; }
 }
 
 .page-empty {
@@ -414,32 +432,34 @@ onMounted(async () => {
   font-size: 14px;
 }
 
-/* MOBILE — single column. Index visible by default; opening a memory
-   slides the page over to cover the index. Tap '← back to gathering'
-   to return. (We mirror the AppBar's drawer behaviour.) */
+/* MOBILE — single column. Both panes flow in document order so body
+   scroll reveals everything; no internal-overflow trap. */
 @media (max-width: 900px) {
   .florilegium-shell {
     grid-template-columns: 1fr;
     height: auto;
-    min-height: calc(100vh - 64px);
+    min-height: 0;
   }
   .florilegium-index {
     border-right: none;
     border-bottom: 1px solid var(--cp-gold-faint);
     height: auto;
-    max-height: 50vh;
+    max-height: none;
+    overflow: visible;
   }
   .index-head { padding: 16px 14px 12px; }
   .index-title { font-size: 22px; }
   .filter-row { flex-direction: column; gap: 8px; }
+  .index-list {
+    flex-grow: 0;
+    overflow: visible;
+    padding: 4px 12px 24px;
+  }
   .florilegium-page-right {
-    min-height: 50vh;
+    overflow: visible;
+    padding-bottom: 32px;
   }
   .page-empty { padding: 32px 16px; }
   .empty-title { font-size: 18px; }
-}
-
-@media (max-width: 480px) {
-  .florilegium-index { max-height: 60vh; }
 }
 </style>
