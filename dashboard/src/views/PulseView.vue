@@ -1,332 +1,285 @@
 <template>
-  <v-container fluid style="max-width: 1200px;">
-    <!-- Header row with refresh indicator -->
-    <div class="d-flex align-center mb-4">
-      <v-icon icon="mdi-pulse" size="20" class="mr-2 text-medium-emphasis" />
-      <span class="text-subtitle-1 font-weight-bold">Live Pulse</span>
-      <v-spacer />
-      <div class="d-flex align-center ga-2">
-        <span class="text-caption text-medium-emphasis">refreshes in {{ countdown }}s</span>
-        <div class="live-dot" :class="{ active: pulsing }" />
-      </div>
-    </div>
+  <div class="pulse-page">
+    <div class="pulse-shell">
 
-    <template v-if="!stats">
-      <div class="skeleton-block mb-4" style="height: 160px;" />
-      <div class="skeleton-block mb-4" style="height: 120px;" />
-      <div class="skeleton-block" style="height: 200px;" />
-    </template>
-
-    <template v-else>
-      <!-- Extraction Progress -->
-      <v-card class="mb-4 pulse-card">
-        <div class="d-flex align-center pa-4" style="border-bottom: 1px solid rgba(255,255,255,0.04);">
-          <v-icon icon="mdi-lightning-bolt" size="20" class="mr-2 text-medium-emphasis" />
-          <span class="text-subtitle-1 font-weight-bold">Extraction</span>
-          <v-spacer />
-          <v-chip
-            v-if="rate !== null"
-            size="small"
-            variant="tonal"
-            :color="rate > 0 ? 'success' : 'default'"
-            class="font-weight-medium"
-          >
-            <v-icon icon="mdi-speedometer" size="12" class="mr-1" />
-            {{ rate > 0 ? `${rate}/min` : 'idle' }}
-          </v-chip>
-        </div>
-
-        <v-card-text class="pa-4">
-          <!-- Big numbers row -->
-          <div class="d-flex ga-3 mb-5 flex-wrap">
-            <div class="stat-box flex-grow-1 text-center">
-              <div class="text-h4 font-weight-bold text-primary">{{ stats.total_memories.toLocaleString() }}</div>
-              <div class="text-caption text-medium-emphasis mt-1">Total Memories</div>
-            </div>
-            <div class="stat-box flex-grow-1 text-center">
-              <div class="text-h4 font-weight-bold text-secondary">{{ stats.total_entities.toLocaleString() }}</div>
-              <div class="text-caption text-medium-emphasis mt-1">Entities</div>
-            </div>
-            <div class="stat-box flex-grow-1 text-center">
-              <div class="text-h4 font-weight-bold text-success">{{ stats.total_relations.toLocaleString() }}</div>
-              <div class="text-caption text-medium-emphasis mt-1">Relations</div>
-            </div>
-            <div class="stat-box flex-grow-1 text-center">
-              <div class="text-h4 font-weight-bold" :class="extractionPct >= 95 ? 'text-success' : 'text-warning'">
-                {{ extractionPct }}%
-              </div>
-              <div class="text-caption text-medium-emphasis mt-1">Extracted</div>
+      <!-- MASTHEAD -->
+      <header class="pulse-masthead">
+        <div class="masthead-rule" />
+        <div class="masthead-inner">
+          <div class="masthead-row">
+            <span class="folio-label">Liber Diurnus · Daybook</span>
+            <div class="live-indicator">
+              <span class="live-pulse" :class="{ active: pulsing }">❦</span>
+              <span class="live-cd">refresh in {{ countdown }}″</span>
             </div>
           </div>
+          <h1 class="pulse-title">The Scribe's Pulse</h1>
+          <p class="pulse-tagline">A daybook of the works in progress — what is being read, written, distilled.</p>
+        </div>
+        <div class="masthead-rule" />
+      </header>
 
-          <!-- Extraction progress bar -->
-          <div class="mb-3">
-            <div class="d-flex align-center justify-space-between mb-2">
-              <span class="text-body-2 text-medium-emphasis">
-                {{ stats.extraction_done.toLocaleString() }} done
-                <span class="ml-2 text-caption">/ {{ (stats.extraction_done + stats.extraction_pending).toLocaleString() }} total</span>
+      <!-- LOADING STATE -->
+      <template v-if="!stats">
+        <div class="loading-folio">
+          <span class="dotty">·  ·  ·</span>
+          <p class="loading-text">consulting the registry</p>
+        </div>
+      </template>
+
+      <template v-else>
+
+        <!-- I — EXTRACTION -->
+        <section class="quire">
+          <div class="quire-head">
+            <span class="quire-numeral">I.</span>
+            <span class="quire-title">Of memories scribed</span>
+            <span class="quire-flag" :class="{ active: rate !== null && rate > 0 }">
+              <span v-if="rate !== null && rate > 0">{{ rate }} per minute</span>
+              <span v-else>—</span>
+            </span>
+          </div>
+
+          <div class="ledger-figures">
+            <article class="ledger-line">
+              <span class="ledger-key">In total, scribed</span>
+              <span class="ledger-fig">{{ stats.total_memories.toLocaleString() }}</span>
+            </article>
+            <article class="ledger-line">
+              <span class="ledger-key">Entities catalogued</span>
+              <span class="ledger-fig">{{ stats.total_entities.toLocaleString() }}</span>
+            </article>
+            <article class="ledger-line">
+              <span class="ledger-key">Relations drawn</span>
+              <span class="ledger-fig">{{ stats.total_relations.toLocaleString() }}</span>
+            </article>
+            <article class="ledger-line accent">
+              <span class="ledger-key">Of those, extracted</span>
+              <span class="ledger-fig">{{ extractionPct }}<span class="pct-glyph">%</span></span>
+            </article>
+          </div>
+
+          <!-- Progress bar — gold on parchment -->
+          <div class="folio-progress">
+            <div class="folio-progress-bar" :style="{ width: extractionPct + '%' }" />
+          </div>
+          <div class="progress-meta">
+            <span><em>{{ stats.extraction_done.toLocaleString() }}</em> done</span>
+            <span class="progress-sep">·</span>
+            <span><em>{{ stats.extraction_pending.toLocaleString() }}</em> awaiting</span>
+            <span v-if="rate !== null" class="progress-sep">·</span>
+            <span v-if="rate !== null && deltaLastPoll !== 0">
+              <em>{{ deltaLastPoll > 0 ? '+' : '' }}{{ deltaLastPoll }}</em> this poll
+            </span>
+            <span v-if="rate && rate > 0 && stats.extraction_pending > 0" class="progress-sep">·</span>
+            <span v-if="rate && rate > 0 && stats.extraction_pending > 0">
+              estimated finish in <em>{{ eta }}</em>
+            </span>
+            <span v-if="stats.extraction_pending === 0" class="progress-clear">— backlog clear</span>
+          </div>
+
+          <!-- Sparkline -->
+          <div v-if="history.length > 1" class="sparkline-frame">
+            <div class="sparkline">
+              <div
+                v-for="(h, i) in history"
+                :key="i"
+                class="spark-bar"
+                :style="{
+                  height: maxDelta > 0 ? Math.max(4, (h.delta / maxDelta) * 56) + 'px' : '4px',
+                  opacity: 0.35 + (i / history.length) * 0.65,
+                }"
+                :title="`+${h.delta} extracted`"
+              />
+            </div>
+            <p class="sparkline-cap">
+              <em>average {{ avgRate }} per minute</em> over the last {{ history.length }} polls
+            </p>
+          </div>
+        </section>
+
+        <!-- II — BREAKDOWN: SOURCES, CATEGORIES, INSTRUMENTS -->
+        <section class="quire-trio">
+          <article class="trio-col">
+            <div class="quire-head">
+              <span class="quire-numeral">II.</span>
+              <span class="quire-title">By source</span>
+            </div>
+            <ul class="bar-list">
+              <li v-for="src in topSources" :key="src.source_type">
+                <span class="bar-label">{{ src.source_type }}</span>
+                <span class="bar-track">
+                  <span class="bar-fill primary" :style="{ width: ((src.cnt / stats.total_memories) * 100) + '%' }" />
+                </span>
+                <span class="bar-num">{{ src.cnt.toLocaleString() }}</span>
+              </li>
+            </ul>
+          </article>
+
+          <article class="trio-col">
+            <div class="quire-head">
+              <span class="quire-numeral">III.</span>
+              <span class="quire-title">By category</span>
+            </div>
+            <ul class="bar-list">
+              <li v-for="cat in topCategories" :key="cat.category">
+                <span class="bar-label">{{ cat.category }}</span>
+                <span class="bar-track">
+                  <span class="bar-fill secondary" :style="{ width: ((cat.cnt / stats.total_memories) * 100) + '%' }" />
+                </span>
+                <span class="bar-num">{{ cat.cnt.toLocaleString() }}</span>
+              </li>
+            </ul>
+          </article>
+
+          <article class="trio-col">
+            <div class="quire-head">
+              <span class="quire-numeral">IV.</span>
+              <span class="quire-title">By instrument</span>
+            </div>
+            <ul class="bar-list">
+              <li v-for="m in topMachines" :key="m.source_machine">
+                <span class="bar-label">{{ m.source_machine }}</span>
+                <span class="bar-track">
+                  <span class="bar-fill tertiary" :style="{ width: ((m.cnt / stats.total_memories) * 100) + '%' }" />
+                </span>
+                <span class="bar-num">{{ m.cnt.toLocaleString() }}</span>
+              </li>
+            </ul>
+          </article>
+        </section>
+
+        <!-- V — LATE LABOUR: LIVE LLM ACTIVITY -->
+        <section v-if="health" class="quire">
+          <div class="quire-head">
+            <span class="quire-numeral">V.</span>
+            <span class="quire-title">Of late labour</span>
+            <span class="quire-flag" :class="{ active: health.llm_activity && health.llm_activity.active_calls > 0 }">
+              {{ health.llm_activity?.active_calls ?? 0 }} in flight
+            </span>
+          </div>
+
+          <!-- Currently processing -->
+          <div v-if="health.write_queue?.currently_processing?.length" class="labour-section">
+            <p class="labour-eyebrow">Now writing</p>
+            <article
+              v-for="row in health.write_queue.currently_processing"
+              :key="row.id"
+              class="labour-row clickable"
+              @click="openQueueRow(row)"
+            >
+              <span class="labour-cat" :class="`cat-${categoryColor(row.category)}`">
+                {{ row.category || 'unmarked' }}
               </span>
-              <span class="text-body-2 font-weight-bold text-medium-emphasis">
-                {{ stats.extraction_pending.toLocaleString() }} pending
+              <span class="labour-text">{{ row.summary || row.content_preview }}</span>
+              <span class="labour-age">{{ formatAge(row.age_s) }}</span>
+            </article>
+          </div>
+
+          <!-- Pending backlog -->
+          <div v-if="health.write_queue?.pending_by_category?.length" class="labour-section">
+            <p class="labour-eyebrow">Awaiting the pen</p>
+            <div class="pending-row">
+              <span
+                v-for="c in health.write_queue.pending_by_category"
+                :key="c.category"
+                class="pending-tag"
+                :class="`cat-${categoryColor(c.category)}`"
+              >
+                {{ c.category || 'unmarked' }}
+                <em>{{ c.count }}</em>
               </span>
             </div>
-            <v-progress-linear
-              :model-value="extractionPct"
-              :color="extractionPct >= 95 ? 'success' : 'warning'"
-              height="12"
-              rounded
-              bg-color="surface-bright"
-              class="mb-2"
-            />
           </div>
 
-          <!-- Rate / ETA row -->
-          <div v-if="rate !== null" class="d-flex ga-4 flex-wrap">
-            <div class="meta-chip">
-              <v-icon icon="mdi-trending-up" size="14" class="mr-1" />
-              <span>{{ deltaLastPoll > 0 ? `+${deltaLastPoll}` : deltaLastPoll }} this poll</span>
-            </div>
-            <div v-if="rate > 0 && stats.extraction_pending > 0" class="meta-chip">
-              <v-icon icon="mdi-timer-outline" size="14" class="mr-1" />
-              <span>ETA {{ eta }}</span>
-            </div>
-            <div v-if="stats.extraction_pending === 0" class="meta-chip text-success">
-              <v-icon icon="mdi-check-circle-outline" size="14" class="mr-1" />
-              <span>Backlog clear</span>
-            </div>
-          </div>
-        </v-card-text>
-      </v-card>
-
-      <!-- Sources + Categories row -->
-      <v-row>
-        <v-col cols="12" md="4">
-          <v-card class="pulse-card h-100">
-            <div class="d-flex align-center pa-4" style="border-bottom: 1px solid rgba(255,255,255,0.04);">
-              <v-icon icon="mdi-import" size="18" class="mr-2 text-medium-emphasis" />
-              <span class="text-subtitle-2 font-weight-bold">Sources</span>
-            </div>
-            <v-card-text class="pa-3">
-              <div
-                v-for="src in topSources"
-                :key="src.source_type"
-                class="d-flex align-center mb-2"
+          <!-- Recent calls -->
+          <div v-if="recentCallsReversed.length" class="labour-section">
+            <p class="labour-eyebrow">
+              Recent inquiries
+              <span class="labour-eyebrow-meta">·  avg {{ avgDuration }}″ ·  {{ liveRatio }}% live</span>
+            </p>
+            <TransitionGroup name="llm-list" tag="div" class="ticker">
+              <article
+                v-for="call in recentCallsReversed"
+                :key="call.started_at"
+                class="ticker-line clickable"
+                :class="`ticker-${call.status}`"
+                @click="openLlmCall(call)"
               >
-                <span class="text-caption source-label">{{ src.source_type }}</span>
-                <v-progress-linear
-                  :model-value="(src.cnt / stats.total_memories) * 100"
-                  color="primary"
-                  height="6"
-                  rounded
-                  bg-color="surface-bright"
-                  class="flex-grow-1 mx-2"
-                />
-                <span class="text-caption font-weight-medium tabular" style="min-width: 48px; text-align: right;">
-                  {{ src.cnt.toLocaleString() }}
+                <span class="ticker-mark" :class="`mark-${call.caller_kind}`">
+                  {{ call.caller_kind === 'live' ? '✦' : call.caller_kind === 'scheduler' ? '◇' : '·' }}
                 </span>
-              </div>
-            </v-card-text>
-          </v-card>
-        </v-col>
-
-        <v-col cols="12" md="4">
-          <v-card class="pulse-card h-100">
-            <div class="d-flex align-center pa-4" style="border-bottom: 1px solid rgba(255,255,255,0.04);">
-              <v-icon icon="mdi-tag-multiple-outline" size="18" class="mr-2 text-medium-emphasis" />
-              <span class="text-subtitle-2 font-weight-bold">Categories</span>
-            </div>
-            <v-card-text class="pa-3">
-              <div
-                v-for="cat in topCategories"
-                :key="cat.category"
-                class="d-flex align-center mb-2"
-              >
-                <span class="text-caption source-label">{{ cat.category }}</span>
-                <v-progress-linear
-                  :model-value="(cat.cnt / stats.total_memories) * 100"
-                  color="secondary"
-                  height="6"
-                  rounded
-                  bg-color="surface-bright"
-                  class="flex-grow-1 mx-2"
-                />
-                <span class="text-caption font-weight-medium tabular" style="min-width: 48px; text-align: right;">
-                  {{ cat.cnt.toLocaleString() }}
+                <span class="ticker-text">{{ call.prompt_preview || '— no prompt recorded —' }}</span>
+                <span class="ticker-dur">{{ displayDuration(call, now) }}</span>
+                <span class="ticker-status">
+                  <span v-if="call.status === 'in_flight'" class="status-flight">⟳</span>
+                  <span v-else-if="call.status === 'ok'" class="status-ok">✓</span>
+                  <span v-else-if="call.status === 'timeout'" class="status-timeout">⌛</span>
+                  <span v-else class="status-err">✗</span>
                 </span>
-              </div>
-            </v-card-text>
-          </v-card>
-        </v-col>
-
-        <v-col cols="12" md="4">
-          <v-card class="pulse-card h-100">
-            <div class="d-flex align-center pa-4" style="border-bottom: 1px solid rgba(255,255,255,0.04);">
-              <v-icon icon="mdi-server-outline" size="18" class="mr-2 text-medium-emphasis" />
-              <span class="text-subtitle-2 font-weight-bold">Machines</span>
-            </div>
-            <v-card-text class="pa-3">
-              <div
-                v-for="m in topMachines"
-                :key="m.source_machine"
-                class="d-flex align-center mb-2"
-              >
-                <span class="text-caption source-label">{{ m.source_machine }}</span>
-                <v-progress-linear
-                  :model-value="(m.cnt / stats.total_memories) * 100"
-                  color="info"
-                  height="6"
-                  rounded
-                  bg-color="surface-bright"
-                  class="flex-grow-1 mx-2"
-                />
-                <span class="text-caption font-weight-medium tabular" style="min-width: 48px; text-align: right;">
-                  {{ m.cnt.toLocaleString() }}
-                </span>
-              </div>
-            </v-card-text>
-          </v-card>
-        </v-col>
-      </v-row>
-
-      <!-- Delta history sparkline (text) -->
-      <v-card class="pulse-card mt-4" v-if="history.length > 1">
-        <div class="d-flex align-center pa-4" style="border-bottom: 1px solid rgba(255,255,255,0.04);">
-          <v-icon icon="mdi-chart-line" size="18" class="mr-2 text-medium-emphasis" />
-          <span class="text-subtitle-2 font-weight-bold">Extraction History</span>
-          <span class="text-caption text-medium-emphasis ml-2">(last {{ history.length }} polls, every 10s)</span>
-        </div>
-        <v-card-text class="pa-4">
-          <div class="d-flex align-end ga-1" style="height: 48px;">
-            <div
-              v-for="(h, i) in history"
-              :key="i"
-              class="history-bar"
-              :style="{
-                height: maxDelta > 0 ? `${Math.max(4, (h.delta / maxDelta) * 48)}px` : '4px',
-                opacity: 0.4 + (i / history.length) * 0.6,
-              }"
-              :title="`+${h.delta} extracted`"
-            />
-          </div>
-          <div class="text-caption text-medium-emphasis mt-2">
-            avg {{ avgRate }}/min over last {{ history.length }} polls
-          </div>
-        </v-card-text>
-      </v-card>
-
-      <!-- LLM Activity — what llama-server is doing right now -->
-      <v-card class="mb-4 pulse-card" v-if="health">
-        <div class="d-flex align-center pa-4" style="border-bottom: 1px solid rgba(255,255,255,0.04);">
-          <v-icon icon="mdi-brain" size="20" class="mr-2 text-medium-emphasis" />
-          <span class="text-subtitle-1 font-weight-bold">LLM Activity</span>
-          <v-spacer />
-          <v-chip
-            v-if="health.llm_activity"
-            size="small"
-            variant="tonal"
-            :color="health.llm_activity.active_calls > 0 ? 'success' : 'default'"
-            class="font-weight-medium"
-          >
-            <v-icon icon="mdi-radar" size="12" class="mr-1" />
-            {{ health.llm_activity.active_calls }} in flight
-          </v-chip>
-        </div>
-        <v-card-text class="pa-4">
-          <!-- Currently processing (from write queue) -->
-          <div v-if="health.write_queue?.currently_processing?.length" class="mb-4">
-            <div class="text-caption text-medium-emphasis mb-2">Write queue processing</div>
-            <div v-for="row in health.write_queue.currently_processing" :key="row.id"
-              class="llm-row clickable-row" @click="openQueueRow(row)">
-              <v-chip size="x-small" :color="categoryColor(row.category)" variant="tonal" class="mr-2">
-                {{ row.category || '(none)' }}
-              </v-chip>
-              <span class="text-body-2 text-truncate flex-grow-1">{{ row.summary || row.content_preview }}</span>
-              <span class="text-caption text-medium-emphasis ml-2 font-mono">{{ formatAge(row.age_s) }}</span>
-              <v-icon icon="mdi-chevron-right" size="14" class="ml-1 text-medium-emphasis" style="opacity: 0.4;" />
-            </div>
-          </div>
-          <div v-else class="text-caption text-medium-emphasis mb-3">No writes currently processing</div>
-
-          <!-- Pending by category -->
-          <div v-if="health.write_queue?.pending_by_category?.length" class="mb-4">
-            <div class="text-caption text-medium-emphasis mb-2">Pending backlog</div>
-            <div class="d-flex flex-wrap ga-2">
-              <v-chip v-for="c in health.write_queue.pending_by_category" :key="c.category"
-                size="small" :color="categoryColor(c.category)" variant="tonal">
-                {{ c.category || '(none)' }}: {{ c.count }}
-              </v-chip>
-            </div>
-          </div>
-
-          <!-- Recent LLM calls -->
-          <div v-if="recentCallsReversed.length">
-            <div class="text-caption text-medium-emphasis mb-2">
-              Recent LLM calls
-              <span class="ml-1">· avg {{ avgDuration }}s · {{ liveRatio }}% live</span>
-            </div>
-            <TransitionGroup name="llm-list" tag="div" class="llm-call-list">
-              <div v-for="call in recentCallsReversed" :key="call.started_at"
-                class="llm-call-row clickable-row" :class="`llm-call--${call.status}`"
-                @click="openLlmCall(call)">
-                <span class="caller-dot" :class="`caller-dot--${call.caller_kind}`" :title="call.caller_kind" />
-                <span class="llm-prompt">{{ call.prompt_preview || '(no prompt)' }}</span>
-                <span class="llm-duration font-mono">{{ displayDuration(call, now) }}</span>
-                <v-icon v-if="call.status === 'in_flight'" icon="mdi-loading" size="14" class="ml-2 rotate text-info" />
-                <v-icon v-else-if="call.status === 'ok'" icon="mdi-check-circle" size="14" class="ml-2 text-success" />
-                <v-icon v-else-if="call.status === 'timeout'" icon="mdi-clock-alert" size="14" class="ml-2 text-warning" />
-                <v-icon v-else icon="mdi-alert-circle" size="14" class="ml-2 text-error" />
-              </div>
+              </article>
             </TransitionGroup>
           </div>
-          <div v-else class="text-caption text-medium-emphasis">No recent LLM calls</div>
 
-          <!-- Detail dialog -->
-          <v-dialog v-model="showDetail" max-width="640" scrollable>
-            <v-card rounded="xl">
-              <v-card-title class="d-flex align-center pa-4 pb-2">
-                <template v-if="detailKind === 'queue'">
-                  <v-chip size="x-small" :color="categoryColor(detailQueue?.category)" variant="tonal" class="mr-2">
-                    {{ detailQueue?.category || '(none)' }}
-                  </v-chip>
-                  <span class="text-body-1 font-weight-medium">Write queue item</span>
-                </template>
-                <template v-else>
-                  <span class="caller-dot mr-2" :class="`caller-dot--${detailCall?.caller_kind}`" style="flex-shrink:0;" />
-                  <span class="text-body-1 font-weight-medium">{{ detailCall?.caller_kind || 'LLM call' }}</span>
-                  <v-chip size="x-small" :color="detailCall?.status === 'ok' ? 'success' : detailCall?.status === 'in_flight' ? 'info' : 'warning'"
-                    variant="tonal" class="ml-2">{{ detailCall?.status }}</v-chip>
-                  <span class="text-caption text-medium-emphasis ml-2 font-mono">{{ detailCall ? displayDuration(detailCall, now) : '' }}</span>
-                </template>
-                <v-spacer />
-                <v-btn icon="mdi-close" variant="text" size="small" @click="showDetail = false" />
-              </v-card-title>
-              <v-card-text class="pa-4 pt-2">
-                <template v-if="detailKind === 'queue' && detailQueue">
-                  <div v-if="detailQueue.summary" class="mb-3">
-                    <div class="text-caption text-medium-emphasis mb-1">Summary</div>
-                    <div class="text-body-2" style="line-height: 1.6;">{{ detailQueue.summary }}</div>
-                  </div>
-                  <div>
-                    <div class="text-caption text-medium-emphasis mb-1">Content</div>
-                    <div v-if="queueFullContent" class="text-body-2 content-pre">{{ queueFullContent }}</div>
-                    <div v-else-if="loadingQueueContent" class="text-caption text-medium-emphasis">Loading…</div>
-                    <div v-else class="text-body-2 content-pre">{{ detailQueue.content_preview }}</div>
-                  </div>
-                  <div class="text-caption text-medium-emphasis mt-3">
-                    Processing for {{ formatAge(detailQueue.age_s) }} · id {{ detailQueue.id.slice(0, 8) }}
-                  </div>
-                </template>
-                <template v-else-if="detailKind === 'llm' && detailCall">
-                  <div class="text-caption text-medium-emphasis mb-1">Prompt</div>
-                  <div class="content-pre text-body-2">{{ detailCall.prompt_preview || '(no prompt recorded)' }}</div>
-                </template>
-              </v-card-text>
-            </v-card>
-          </v-dialog>
-        </v-card-text>
-      </v-card>
-    </template>
-  </v-container>
+          <p v-if="!health.write_queue?.currently_processing?.length && !recentCallsReversed.length"
+             class="labour-empty">— the desk is quiet —</p>
+        </section>
+
+      </template>
+    </div>
+
+    <!-- DETAIL DIALOG — folio page treatment -->
+    <Teleport to="body">
+      <div v-if="showDetail" class="folio-overlay" @click.self="showDetail = false">
+        <div class="folio-page">
+          <div class="page-header">
+            <span class="ornament-sm">❦</span>
+            <span class="page-kicker">
+              <template v-if="detailKind === 'queue'">Write queue · entry</template>
+              <template v-else>{{ detailCall?.caller_kind || 'inquiry' }} · {{ detailCall?.status }}</template>
+            </span>
+            <button class="page-close" @click="showDetail = false">×</button>
+          </div>
+
+          <div class="page-content">
+            <template v-if="detailKind === 'queue' && detailQueue">
+              <p class="page-eyebrow">Category</p>
+              <p class="page-meta-line">
+                <span class="page-tag" :class="`cat-${categoryColor(detailQueue.category)}`">
+                  {{ detailQueue.category || 'unmarked' }}
+                </span>
+              </p>
+
+              <template v-if="detailQueue.summary">
+                <p class="page-eyebrow">Summary</p>
+                <p class="page-body">{{ detailQueue.summary }}</p>
+              </template>
+
+              <p class="page-eyebrow">Content</p>
+              <p v-if="loadingQueueContent" class="page-loading">
+                <span class="dotty">·  ·  ·</span>
+              </p>
+              <p v-else class="page-pre">{{ queueFullContent || detailQueue.content_preview }}</p>
+
+              <p class="page-source">
+                <em>at the desk</em> {{ formatAge(detailQueue.age_s) }} · <em>id</em> {{ detailQueue.id.slice(0, 8) }}
+              </p>
+            </template>
+
+            <template v-else-if="detailKind === 'llm' && detailCall">
+              <p class="page-eyebrow">Status · duration</p>
+              <p class="page-meta-line">
+                <span class="page-tag">{{ detailCall.status }}</span>
+                <span class="page-dur">{{ displayDuration(detailCall, now) }}</span>
+              </p>
+              <p class="page-eyebrow">Prompt</p>
+              <p class="page-pre">{{ detailCall.prompt_preview || '— no prompt recorded —' }}</p>
+            </template>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -364,7 +317,6 @@ interface HealthPayload {
 }
 const health = ref<HealthPayload | null>(null)
 
-// Detail dialog
 interface QueueRow { id: string; category: string | null; age_s: number; summary: string; content_preview: string; skip_dedup: boolean }
 const showDetail = ref(false)
 const detailKind = ref<'queue' | 'llm' | ''>('')
@@ -399,7 +351,6 @@ const POLL_INTERVAL = 10_000
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let countdownTimer: ReturnType<typeof setInterval> | null = null
 
-// `now` ticks every second so in-flight call durations update live
 const now = ref(Date.now() / 1000)
 let tickTimer: ReturnType<typeof setInterval> | null = null
 
@@ -534,7 +485,6 @@ onMounted(() => {
   fetchStats()
   fetchHealth()
   pollTimer = setInterval(() => { fetchStats(); fetchHealth() }, POLL_INTERVAL)
-  // Live tick every 1s so in-flight call ages update smoothly between polls
   tickTimer = setInterval(() => { now.value = Date.now() / 1000 }, 1000)
   countdownTimer = setInterval(() => {
     countdown.value = countdown.value <= 1 ? 10 : countdown.value - 1
@@ -549,165 +499,522 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.pulse-card {
-  border: 1px solid rgba(255, 255, 255, 0.04);
-}
-.stat-box {
-  padding: 12px 16px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.02);
-  min-width: 100px;
-}
-.source-label {
-  min-width: 100px;
-  max-width: 100px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
-}
-.meta-chip {
-  display: flex;
-  align-items: center;
-  font-size: 0.75rem;
-  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
-  background: rgba(255, 255, 255, 0.03);
-  border-radius: 8px;
-  padding: 4px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
-}
-.tabular {
-  font-variant-numeric: tabular-nums;
-}
-.history-bar {
-  width: 10px;
-  background: rgb(var(--v-theme-primary));
-  border-radius: 3px 3px 0 0;
-  flex-shrink: 0;
-  transition: height 300ms ease;
-}
-.live-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: rgba(var(--v-theme-on-surface), 0.2);
-  transition: background 300ms ease;
-}
-.live-dot.active {
-  background: rgb(var(--v-theme-success));
-  box-shadow: 0 0 6px rgb(var(--v-theme-success));
-}
-.skeleton-block {
-  background: linear-gradient(90deg, rgb(var(--v-theme-surface)) 25%, rgba(255,255,255,0.03) 50%, rgb(var(--v-theme-surface)) 75%);
-  background-size: 200% 100%;
-  animation: shimmer 1.5s infinite;
-  border-radius: 12px;
-}
-@keyframes shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+.pulse-page {
+  --cp-gold: #c8a96e;
+  --cp-gold-soft: rgba(200, 169, 110, 0.45);
+  --cp-gold-faint: rgba(200, 169, 110, 0.18);
+  --cp-ink: rgba(238, 224, 196, 0.94);
+  --cp-ink-mute: rgba(238, 224, 196, 0.55);
+  --cp-bg-deep: rgba(14, 11, 6, 0.55);
+  --cat-primary: #c8a96e;
+  --cat-secondary: #9d6c4a;
+  --cat-info: #6e8fa9;
+  --cat-warning: #c89e6e;
+  --cat-success: #8aa96e;
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
+  color: var(--cp-ink);
+  padding: 32px 24px 80px;
+  min-height: 100vh;
 }
 
-.llm-row {
-  display: flex;
-  align-items: center;
-  padding: 6px 0;
-  border-bottom: 1px solid rgba(255,255,255,0.04);
-  font-size: 13px;
-}
-.llm-row:last-child { border-bottom: none; }
-.font-mono {
-  font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
-  font-feature-settings: "tnum" 1;
+.pulse-shell {
+  max-width: 980px;
+  margin: 0 auto;
 }
 
-.llm-call-list {
-  max-height: 360px;
-  overflow-y: auto;
-  border-top: 1px solid rgba(255,255,255,0.04);
-  margin-top: 4px;
-  padding-top: 4px;
+/* MASTHEAD */
+.pulse-masthead { margin-bottom: 36px; }
+.masthead-rule {
+  height: 1px;
+  background: linear-gradient(
+    90deg, transparent, var(--cp-gold-soft) 30%,
+    var(--cp-gold) 50%, var(--cp-gold-soft) 70%, transparent
+  );
 }
-.llm-call-row {
-  display: grid;
-  grid-template-columns: 12px 1fr 52px 16px;
+.masthead-inner { padding: 16px 0 12px; text-align: center; }
+.masthead-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--cp-ink-mute);
+  margin-bottom: 12px;
+}
+.folio-label {
+  font-style: italic;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--cp-gold);
+  font-size: 10px;
+}
+.live-indicator {
+  display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 4px;
-  font-size: 12.5px;
-  border-bottom: 1px solid rgba(255,255,255,0.03);
-  color: rgb(var(--v-theme-on-surface));
+  font-size: 11px;
+  font-style: italic;
+  letter-spacing: 0.05em;
 }
-.llm-call-row:last-child { border-bottom: none; }
+.live-pulse {
+  display: inline-block;
+  color: var(--cp-gold-soft);
+  font-size: 14px;
+  transition: color 600ms ease, transform 600ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.live-pulse.active {
+  color: var(--cp-gold);
+  transform: scale(1.25);
+}
+.live-cd {
+  color: var(--cp-ink-mute);
+  font-variant-numeric: tabular-nums;
+}
+.pulse-title {
+  font-family: Georgia, serif;
+  font-size: clamp(34px, 4.5vw, 48px);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  margin: 0 0 4px;
+  color: var(--cp-ink);
+}
+.pulse-tagline {
+  font-style: italic;
+  color: var(--cp-ink-mute);
+  font-size: 14px;
+  margin: 0 0 16px;
+}
 
-.llm-prompt {
+/* QUIRE — section block */
+.quire {
+  margin-bottom: 56px;
+  padding: 0;
+}
+.quire-head {
+  display: grid;
+  grid-template-columns: 50px 1fr auto;
+  gap: 12px;
+  align-items: baseline;
+  padding-bottom: 10px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--cp-gold-faint);
+}
+.quire-numeral {
+  font-family: Georgia, serif;
+  font-size: 28px;
+  color: var(--cp-gold);
+  font-weight: 300;
+  text-align: right;
+  font-style: italic;
+}
+.quire-title {
+  font-family: Georgia, serif;
+  font-size: 18px;
+  font-style: italic;
+  color: var(--cp-ink);
+  letter-spacing: 0.03em;
+}
+.quire-flag {
+  font-family: Georgia, serif;
+  font-style: italic;
+  color: var(--cp-ink-mute);
+  font-size: 13px;
+}
+.quire-flag.active {
+  color: var(--cp-gold);
+}
+
+/* LEDGER FIGURES */
+.ledger-figures {
+  display: grid;
+  gap: 0;
+  margin-bottom: 24px;
+}
+.ledger-line {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  padding: 10px 8px 10px 64px;
+  border-bottom: 1px dotted var(--cp-gold-faint);
+  font-family: Georgia, serif;
+}
+.ledger-line.accent {
+  background: linear-gradient(90deg, transparent, rgba(200, 169, 110, 0.06));
+  border-bottom-color: var(--cp-gold-soft);
+  border-bottom-style: solid;
+}
+.ledger-key {
+  font-style: italic;
+  font-size: 14px;
+  color: var(--cp-ink-mute);
+}
+.ledger-fig {
+  font-size: 22px;
+  color: var(--cp-ink);
+  font-variant-numeric: tabular-nums;
+  font-weight: 400;
+}
+.ledger-line.accent .ledger-fig {
+  color: var(--cp-gold);
+}
+.pct-glyph {
+  font-size: 14px;
+  margin-left: 1px;
+  color: var(--cp-ink-mute);
+}
+
+/* PROGRESS BAR */
+.folio-progress {
+  height: 6px;
+  background: rgba(200, 169, 110, 0.08);
+  border-top: 1px solid var(--cp-gold-faint);
+  border-bottom: 1px solid var(--cp-gold-faint);
+  margin: 16px 64px 8px;
+  position: relative;
+  overflow: hidden;
+}
+.folio-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--cp-gold-soft), var(--cp-gold));
+  transition: width 600ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.progress-meta {
+  font-family: Georgia, serif;
+  font-size: 13px;
+  font-style: italic;
+  color: var(--cp-ink-mute);
+  text-align: left;
+  margin: 0 64px 24px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+.progress-meta em { color: var(--cp-ink); font-style: normal; font-variant-numeric: tabular-nums; }
+.progress-sep { color: var(--cp-gold-soft); }
+.progress-clear { color: var(--cp-gold); font-style: italic; }
+
+/* SPARKLINE */
+.sparkline-frame {
+  margin: 16px 64px 0;
+  padding: 16px 0 0;
+  border-top: 1px dotted var(--cp-gold-faint);
+}
+.sparkline {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 60px;
+}
+.spark-bar {
+  flex: 1;
+  background: var(--cp-gold);
+  min-height: 4px;
+  transition: height 300ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.sparkline-cap {
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 12px;
+  color: var(--cp-ink-mute);
+  margin: 8px 0 0;
+}
+.sparkline-cap em { color: var(--cp-ink); font-style: normal; }
+
+/* QUIRE TRIO — three-column layout */
+.quire-trio {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 36px;
+  margin-bottom: 56px;
+}
+@media (max-width: 760px) {
+  .quire-trio { grid-template-columns: 1fr; gap: 36px; }
+}
+.trio-col .quire-head {
+  grid-template-columns: 32px 1fr;
+}
+.trio-col .quire-numeral { font-size: 22px; }
+.trio-col .quire-title { font-size: 14px; }
+
+/* BAR LIST */
+.bar-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.bar-list li {
+  display: grid;
+  grid-template-columns: 90px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px dotted var(--cp-gold-faint);
+}
+.bar-list li:last-child { border-bottom: none; }
+.bar-label {
+  font-family: Georgia, serif;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--cp-ink-mute);
+  letter-spacing: 0.02em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: 12.5px;
-  color: rgba(255,255,255,0.82);
-  min-width: 0;
 }
-
-.llm-duration {
-  font-size: 11.5px;
-  color: rgba(255,255,255,0.55);
-  text-align: right;
-  white-space: nowrap;
+.bar-track {
+  height: 4px;
+  background: rgba(200, 169, 110, 0.08);
+  position: relative;
+  display: block;
 }
-
-.llm-call--in_flight { background: rgba(33,150,243,0.04); }
-.llm-call--in_flight .llm-prompt { color: rgba(255,255,255,1); font-weight: 500; }
-.llm-call--in_flight .llm-duration { color: rgb(var(--v-theme-info)); }
-.llm-call--error { opacity: 0.65; }
-.llm-call--timeout { opacity: 0.78; }
-
-.caller-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
+.bar-fill {
+  display: block;
+  height: 100%;
+  transition: width 500ms cubic-bezier(0.22, 1, 0.36, 1);
 }
-.caller-dot--live {
-  background: rgb(var(--v-theme-success));
-  box-shadow: 0 0 6px rgba(0,200,83,0.55);
-  animation: pulse-live 2.2s ease-in-out infinite;
-}
-.caller-dot--scheduler {
-  background: rgba(255,255,255,0.32);
-}
-@keyframes pulse-live {
-  0%, 100% { opacity: 0.75; transform: scale(1); }
-  50%      { opacity: 1;    transform: scale(1.15); }
-}
-@keyframes rotate { from { transform: rotate(0); } to { transform: rotate(360deg); } }
-.rotate { animation: rotate 1.2s linear infinite; }
-
-/* TransitionGroup: new items slide in, old ones fade out — no full redraw flicker */
-.llm-list-enter-active,
-.llm-list-leave-active { transition: all 320ms cubic-bezier(.2, .9, .3, 1); }
-.llm-list-enter-from   { opacity: 0; transform: translateY(-6px); }
-.llm-list-leave-to     { opacity: 0; transform: translateY(6px); }
-.llm-list-leave-active { position: absolute; width: calc(100% - 32px); }
-.llm-list-move         { transition: transform 320ms cubic-bezier(.2, .9, .3, 1); }
-
-.clickable-row {
-  cursor: pointer;
-  transition: background 150ms ease;
-  border-radius: 6px;
-}
-.clickable-row:hover { background: rgba(255,255,255,0.05); }
-
-.content-pre {
-  white-space: pre-wrap;
-  font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+.bar-fill.primary { background: var(--cp-gold); }
+.bar-fill.secondary { background: var(--cat-secondary); }
+.bar-fill.tertiary { background: var(--cat-info); }
+.bar-num {
+  font-family: Georgia, serif;
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
-  line-height: 1.6;
-  background: rgba(255,255,255,0.03);
-  border-radius: 8px;
-  padding: 12px 14px;
-  max-height: 380px;
-  overflow-y: auto;
-  border: 1px solid rgba(255,255,255,0.06);
+  color: var(--cp-ink);
+  min-width: 56px;
+  text-align: right;
 }
+
+/* LATE LABOUR */
+.labour-section {
+  margin-bottom: 24px;
+  padding-left: 64px;
+}
+.labour-eyebrow {
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--cp-gold);
+  margin: 0 0 8px;
+}
+.labour-eyebrow-meta {
+  color: var(--cp-ink-mute);
+  text-transform: none;
+  letter-spacing: 0.05em;
+  font-size: 11px;
+}
+
+.labour-row {
+  display: grid;
+  grid-template-columns: 100px 1fr auto;
+  gap: 12px;
+  align-items: baseline;
+  padding: 8px 0;
+  border-bottom: 1px dotted var(--cp-gold-faint);
+  cursor: pointer;
+  transition: padding 150ms;
+}
+.labour-row:hover { padding-left: 4px; background: rgba(200, 169, 110, 0.03); }
+.labour-cat {
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  font-style: italic;
+  color: var(--cp-ink-mute);
+}
+.labour-text {
+  font-family: Georgia, serif;
+  font-size: 13px;
+  color: var(--cp-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.labour-age {
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: var(--cp-ink-mute);
+}
+
+/* PENDING TAGS */
+.pending-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  align-items: baseline;
+}
+.pending-tag {
+  font-family: Georgia, serif;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--cp-ink-mute);
+}
+.pending-tag em {
+  color: var(--cp-ink);
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  margin-left: 4px;
+  padding: 0 4px;
+  background: rgba(200, 169, 110, 0.1);
+}
+
+/* TICKER */
+.ticker { display: flex; flex-direction: column; }
+.ticker-line {
+  display: grid;
+  grid-template-columns: 18px 1fr 56px 18px;
+  gap: 8px;
+  align-items: baseline;
+  padding: 7px 0;
+  border-bottom: 1px dotted var(--cp-gold-faint);
+  cursor: pointer;
+  transition: all 150ms;
+}
+.ticker-line:hover { padding-left: 4px; background: rgba(200, 169, 110, 0.03); }
+.ticker-mark {
+  text-align: center;
+  font-size: 11px;
+  color: var(--cp-gold-soft);
+}
+.ticker-mark.mark-live { color: var(--cp-gold); }
+.ticker-mark.mark-scheduler { color: var(--cat-info); }
+.ticker-text {
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 12px;
+  color: var(--cp-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ticker-dur {
+  font-family: Georgia, serif;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: var(--cp-ink-mute);
+  text-align: right;
+}
+.ticker-status { text-align: center; font-size: 12px; }
+.status-flight { color: var(--cat-info); display: inline-block; animation: spin-slow 1.4s linear infinite; }
+.status-ok { color: var(--cat-success); }
+.status-timeout { color: var(--cat-warning); }
+.status-err { color: #c47a6a; }
+@keyframes spin-slow { to { transform: rotate(360deg); } }
+
+.ticker-in_flight { background: linear-gradient(90deg, transparent, rgba(110, 143, 169, 0.04)); }
+.ticker-timeout { color: var(--cat-warning); }
+.ticker-error { background: rgba(196, 122, 106, 0.04); }
+
+/* TRANSITION */
+.llm-list-enter-active, .llm-list-leave-active { transition: all 350ms cubic-bezier(0.22, 1, 0.36, 1); }
+.llm-list-enter-from { opacity: 0; transform: translateY(-4px); }
+.llm-list-leave-to { opacity: 0; transform: translateX(8px); }
+
+/* LOADING & EMPTY */
+.loading-folio, .labour-empty {
+  text-align: center;
+  padding: 48px 0;
+  color: var(--cp-ink-mute);
+  font-style: italic;
+  font-family: Georgia, serif;
+}
+.loading-text { font-size: 13px; margin: 8px 0 0; letter-spacing: 0.05em; }
+.dotty { letter-spacing: 0.5em; color: var(--cp-gold-soft); }
+
+/* FOLIO PAGE DIALOG */
+.folio-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 6, 3, 0.85);
+  backdrop-filter: blur(4px);
+  z-index: 9999;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 40px 20px;
+  overflow-y: auto;
+}
+.folio-page {
+  max-width: 720px;
+  width: 100%;
+  background: linear-gradient(180deg, rgba(28, 22, 13, 0.98), rgba(18, 14, 8, 0.98));
+  border: 1px solid var(--cp-gold-faint);
+  border-top: 3px solid var(--cp-gold);
+  font-family: Georgia, serif;
+  animation: page-rise 280ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes page-rise {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.page-header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 18px 28px;
+  border-bottom: 1px solid var(--cp-gold-faint);
+}
+.ornament-sm { color: var(--cp-gold); font-size: 14px; }
+.page-kicker {
+  font-size: 10px; letter-spacing: 0.25em;
+  text-transform: uppercase; color: var(--cp-gold);
+  font-style: italic; flex-grow: 1;
+}
+.page-close {
+  background: transparent; border: 1px solid var(--cp-gold-faint);
+  color: var(--cp-ink-mute); font-size: 22px;
+  width: 30px; height: 30px; cursor: pointer;
+  font-family: Georgia, serif; line-height: 1;
+  transition: all 150ms;
+}
+.page-close:hover { color: var(--cp-gold); border-color: var(--cp-gold); }
+.page-content { padding: 24px 36px 36px; }
+.page-eyebrow {
+  font-family: Georgia, serif; font-style: italic;
+  font-size: 11px; letter-spacing: 0.18em;
+  text-transform: uppercase; color: var(--cp-gold);
+  margin: 16px 0 8px;
+}
+.page-eyebrow:first-child { margin-top: 0; }
+.page-meta-line { display: flex; gap: 8px; align-items: center; margin: 0 0 12px; }
+.page-tag {
+  font-size: 11px; letter-spacing: 0.05em;
+  padding: 4px 10px; background: rgba(200, 169, 110, 0.15);
+  color: var(--cp-ink); font-style: italic;
+}
+.page-dur {
+  font-family: Georgia, serif; font-variant-numeric: tabular-nums;
+  font-size: 13px; color: var(--cp-ink-mute);
+}
+.page-body {
+  font-size: 16px; line-height: 1.75;
+  color: var(--cp-ink); margin: 0 0 16px;
+  font-family: Georgia, serif;
+}
+.page-pre {
+  font-family: Georgia, serif; font-size: 13px;
+  line-height: 1.7; color: var(--cp-ink);
+  white-space: pre-wrap; margin: 0 0 16px;
+  padding: 14px 16px; background: rgba(200, 169, 110, 0.04);
+  border-left: 2px solid var(--cp-gold-soft);
+}
+.page-source {
+  font-style: italic; color: var(--cp-ink-mute);
+  font-size: 12px; margin: 16px 0 0;
+}
+.page-source em { color: var(--cp-ink-mute); }
+.page-loading { text-align: center; padding: 24px 0; }
+
+/* CATEGORY COLORS */
+.cat-primary { color: var(--cp-gold); }
+.cat-secondary { color: var(--cat-secondary); }
+.cat-info { color: var(--cat-info); }
+.cat-warning { color: var(--cat-warning); }
+.cat-success { color: var(--cat-success); }
+.cat-default { color: var(--cp-ink-mute); }
+
+.clickable { cursor: pointer; }
 </style>
