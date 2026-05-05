@@ -540,6 +540,151 @@ async def send_email_digest() -> dict:
         }
 
 
+async def send_knowledge_digest() -> dict:
+    """Daily knowledge digest — the wonderful one.
+
+    Distinct from send_email_digest (which is alerting-only and silent when
+    all-clear). This one always sends once a day with:
+      - Top 3 synthesis insights from last 24h
+      - Memory of the day (high-quality random pick)
+      - Stale memories needing re-verification (count + top 3 oldest)
+      - Distillation/extraction progress
+      - Bridge connections discovered (new cross-community links)
+      - Trending topics from interest_signals
+    """
+    if not settings.monitoring_email_enabled:
+        return {"status": "skipped", "reason": "email_disabled"}
+    if not settings.monitoring_smtp_host or not settings.monitoring_smtp_to:
+        return {"status": "skipped", "reason": "smtp_not_configured"}
+
+    from nobrainr.db.pool import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        recent_insights = await conn.fetch(
+            """
+            SELECT id, content, summary, confidence, quality_score, created_at, metadata
+            FROM memories
+            WHERE source_type = 'synthesis'
+              AND created_at > NOW() - INTERVAL '24 hours'
+              AND superseded_by IS NULL
+              AND category != '_archived'
+            ORDER BY COALESCE(quality_score, 0.5) DESC, confidence DESC
+            LIMIT 3
+            """
+        )
+        memory_of_day = await conn.fetchrow(
+            """
+            SELECT id, content, summary, source_type, quality_score, created_at
+            FROM memories
+            WHERE quality_score >= 0.6 AND superseded_by IS NULL
+              AND category != '_archived'
+              AND source_type IN ('manual','affine_memos','docx','session','agent_learning','synthesis')
+            ORDER BY (quality_score * (0.5 + 0.5 * random())) DESC
+            LIMIT 1
+            """
+        )
+        stale_count = await conn.fetchval("SELECT COUNT(*) FROM stale_memories")
+        stale_top = await conn.fetch(
+            "SELECT id, summary_excerpt, claim_kind, staleness_days FROM stale_memories LIMIT 3"
+        )
+        progress = await conn.fetchrow(
+            """
+            SELECT
+              (SELECT COUNT(*) FROM memories WHERE extraction_status='pending') AS extr_pending,
+              (SELECT COUNT(*) FROM memories WHERE quality_score IS NULL AND category != '_archived') AS unscored,
+              (SELECT COUNT(*) FROM conversations_raw WHERE embedding IS NULL) AS conv_unembedded,
+              (SELECT COUNT(*) FROM memories) AS total
+            """
+        )
+        new_bridges = await conn.fetch(
+            """
+            SELECT er.source_id, er.target_id, er.relation_type, er.created_at,
+                   se.canonical_name AS src_name, te.canonical_name AS tgt_name
+            FROM entity_relations er
+            JOIN entities se ON se.id = er.source_id
+            JOIN entities te ON te.id = er.target_id
+            WHERE er.created_at > NOW() - INTERVAL '24 hours'
+              AND se.community_id IS NOT NULL
+              AND te.community_id IS NOT NULL
+              AND se.community_id != te.community_id
+            ORDER BY er.created_at DESC
+            LIMIT 5
+            """
+        )
+        trending = await conn.fetch(
+            """
+            SELECT topic, COUNT(*) AS hits, MAX(created_at) AS last
+            FROM interest_signals
+            WHERE created_at > NOW() - INTERVAL '7 days'
+            GROUP BY topic
+            ORDER BY hits DESC, last DESC
+            LIMIT 8
+            """
+        )
+
+    machine = settings.source_machine or socket.gethostname()
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    parts = [f"<h2 style='color:#222'>Knowledge digest · {today}</h2>"]
+    if recent_insights:
+        parts.append("<h3>✦ Insights from the last 24h</h3><ul>")
+        for r in recent_insights:
+            text = (r["summary"] or r["content"])[:300]
+            parts.append(f"<li>{escape(text)}</li>")
+        parts.append("</ul>")
+    else:
+        parts.append("<p style='color:#888'>No new syntheses today. The graph is digesting.</p>")
+    if memory_of_day:
+        text = (memory_of_day["summary"] or memory_of_day["content"])[:400]
+        parts.append(
+            f"<h3>📓 Memory of the day · {escape(memory_of_day['source_type'] or '')}</h3>"
+            f"<blockquote style='border-left:3px solid #999;padding-left:10px;color:#444'>{escape(text)}</blockquote>"
+        )
+    parts.append(f"<h3>🌱 Progress</h3><ul>"
+                 f"<li>Total memories: <b>{progress['total']:,}</b></li>"
+                 f"<li>Extraction pending: {progress['extr_pending']:,}</li>"
+                 f"<li>Quality unscored: {progress['unscored']:,}</li>"
+                 f"<li>Raw conversations awaiting embed: {progress['conv_unembedded']:,}</li>"
+                 f"</ul>")
+    if stale_count and stale_count > 0:
+        parts.append(f"<h3>⚠ {stale_count} memories due for re-verification</h3><ul>")
+        for s in stale_top:
+            parts.append(
+                f"<li><code>{escape(s['claim_kind'] or '?')}</code> · {s['staleness_days']}d window · "
+                f"{escape((s['summary_excerpt'] or '')[:120])}</li>"
+            )
+        parts.append("</ul>")
+    if new_bridges:
+        parts.append("<h3>🔗 New cross-community connections</h3><ul>")
+        for b in new_bridges:
+            parts.append(
+                f"<li>{escape(b['src_name'] or '')} <i>→ {escape(b['relation_type'] or '')} →</i> "
+                f"{escape(b['tgt_name'] or '')}</li>"
+            )
+        parts.append("</ul>")
+    if trending:
+        parts.append("<h3>📈 Trending interests (7d)</h3><ul>")
+        for t in trending:
+            parts.append(f"<li>{escape(t['topic'] or '')} · {t['hits']} signals</li>")
+        parts.append("</ul>")
+
+    body = (
+        "<html><body style='font-family:Inter,system-ui,sans-serif;max-width:680px;line-height:1.5'>"
+        + "".join(parts)
+        + f"<p style='color:#aaa;font-size:12px;margin-top:24px'>{machine} · {today} · nobrainr</p>"
+        "</body></html>"
+    )
+    subject = f"[{machine}] Knowledge digest · {today}"
+
+    try:
+        await asyncio.to_thread(_send_smtp, subject, body)
+        return {"status": "sent", "insights": len(recent_insights),
+                "stale": int(stale_count or 0), "bridges": len(new_bridges)}
+    except Exception as exc:
+        logger.exception("send_knowledge_digest: SMTP send failed")
+        return {"status": "error", "error": str(exc)}
+
+
 def _send_smtp(subject: str, body: str) -> None:
     """Send an HTML email via SMTP (runs in thread executor).
 

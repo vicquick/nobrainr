@@ -22,6 +22,7 @@ SQL_JOB_DELAYS: dict[str, float] = {
     "feedback_integration": 120,
     "monitor_health": 30,
     "email_digest": 300,
+    "knowledge_digest": 600,
     # Medium — one per 5-10 min through first half hour
     "memory_decay": 300,
     "auto_tier": 600,
@@ -88,6 +89,10 @@ LLM_JOB_DELAYS = {
     "lesson_classifier": 38 * 60,
     # Fact-augmented key expansion (LongMemEval pattern)
     "key_expansion": 7 * 60,
+    # Two-layer commonplace: backfill embeddings for raw conversations
+    # so the Threads tab can search them. ~4h to backfill 2362 conversations
+    # at 10/run × 1h interval × 7s/embed.
+    "conversation_embedding_backfill": 9 * 60,
 }
 
 # Per-job timeout for LLM operations
@@ -160,6 +165,7 @@ class Scheduler:
             {"name": "extraction_eval", "interval_hours": settings.extraction_eval_interval_hours, "type": "sql"},
             {"name": "monitor_health", "interval_hours": settings.monitoring_interval_hours, "type": "system"},
             {"name": "email_digest", "interval_hours": 24.0, "type": "system"},
+            {"name": "knowledge_digest", "interval_hours": 24.0, "type": "system"},
         ]
         llm_jobs = [
             {"name": "chatgpt_distill", "interval_hours": settings.chatgpt_distill_interval_hours, "type": "llm"},
@@ -289,6 +295,15 @@ class Scheduler:
                     )
                 )
             )
+            self._tasks.append(
+                asyncio.create_task(
+                    self._run_periodic(
+                        "knowledge_digest",
+                        sj.send_knowledge_digest,
+                        24.0 * 3600,  # once per day — the wonderful one
+                    )
+                )
+            )
 
         # LLM-powered jobs (import here to avoid circular imports at module level)
         from nobrainr import scheduler_jobs
@@ -339,6 +354,8 @@ class Scheduler:
              2.0 * 3600),  # every 2h; each run processes 25 chunks, auto-idles when empty
             ("lesson_classifier", scheduler_jobs.lesson_classifier,
              settings.lesson_classifier_interval_hours * 3600),
+            ("conversation_embedding_backfill", scheduler_jobs.conversation_embedding_backfill,
+             1.0 * 3600),  # every 1h; 10 conv/run, ~4h to drain 2362 backlog
         ]
 
         for name, job_func, interval in llm_jobs:
