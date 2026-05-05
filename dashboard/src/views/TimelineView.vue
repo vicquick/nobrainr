@@ -1,217 +1,177 @@
 <template>
-  <v-container fluid style="max-width: 900px;">
-    <!-- Filter Bar -->
-    <div class="d-flex ga-3 mb-5 align-center">
-      <v-select
-        v-model="categoryFilter"
-        :items="categoryOptions"
-        label="Category"
-        clearable
-        style="max-width: 200px;"
-      />
-      <v-select
-        v-model="machineFilter"
-        :items="machineOptions"
-        label="Machine"
-        clearable
-        style="max-width: 200px;"
-      />
-      <!-- Write queue indicator — polls /api/health/detailed.write_queue every 15s -->
-      <v-chip
-        v-if="queueInfo"
-        :color="queueChipColor"
-        variant="tonal"
-        size="small"
-        class="ml-auto queue-chip"
-        :class="{ 'queue-chip--busy': queueInfo.depth > 0 }"
-        :title="queueTitle"
-      >
-        <v-icon start size="14" :icon="queueChipIcon" />
-        queue: {{ queueInfo.depth }}<span v-if="queueInfo.stale_processing > 0"> · stale {{ queueInfo.stale_processing }}</span>
-      </v-chip>
-    </div>
+  <div class="annals-page">
+    <div class="annals-shell">
 
-    <!-- Loading -->
-    <template v-if="loading">
-      <div v-for="n in 3" :key="n" class="skeleton-block mb-4" />
-    </template>
-
-    <!-- Timeline -->
-    <template v-else-if="groupedMemories.length">
-      <div v-for="group in groupedMemories" :key="group.date" class="mb-8">
-        <div class="d-flex align-center mb-4">
-          <div class="timeline-date-pill">{{ group.date }}</div>
-          <div class="timeline-line" />
+      <!-- MASTHEAD -->
+      <header class="annals-masthead">
+        <div class="masthead-rule" />
+        <div class="masthead-inner">
+          <div class="masthead-row">
+            <span class="folio-label">Annales · Chronicle</span>
+            <div v-if="queueInfo" class="queue-indicator" :class="queueIndicatorClass">
+              <span class="queue-mark">❦</span>
+              queue · <em>{{ queueInfo.depth }}</em>
+              <span v-if="queueInfo.stale_processing > 0">· stale <em>{{ queueInfo.stale_processing }}</em></span>
+            </div>
+          </div>
+          <h1 class="annals-title">The Annals</h1>
+          <p class="annals-tagline">A daily record of all that has been read, written, distilled into memory.</p>
         </div>
+        <div class="masthead-rule" />
+      </header>
 
-        <div class="timeline-entries">
-          <TransitionGroup name="crystallize">
-          <div
-            v-for="entry in group.items"
-            :key="entry.key"
-            class="timeline-entry d-flex ga-3 mb-3"
-            :class="{
-              'timeline-entry--ghost': entry.queue_status === 'pending',
-              'timeline-entry--rejected': entry.queue_status === 'failed',
-            }"
-          >
-            <!-- Time -->
-            <div
-              class="text-caption pt-1"
-              :class="entry.queue_status ? 'text-warning' : 'text-medium-emphasis'"
-              style="min-width: 56px; font-variant-numeric: tabular-nums;"
-            >
-              <span v-if="entry.queue_status === 'pending'" class="ghost-tilde">~</span>
-              <span v-if="entry.queue_status === 'failed'" class="ghost-tilde">×</span>
-              {{ new Date(entry.created_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) }}
-            </div>
+      <!-- FILTERS -->
+      <div class="annals-controls">
+        <label class="ctl">
+          <span class="ctl-label">Category</span>
+          <select v-model="categoryFilter" class="folio-select">
+            <option :value="null">All</option>
+            <option v-for="c in categoryOptions" :key="c" :value="c">{{ c }}</option>
+          </select>
+        </label>
+        <label class="ctl">
+          <span class="ctl-label">Instrument</span>
+          <select v-model="machineFilter" class="folio-select">
+            <option :value="null">All</option>
+            <option v-for="m in machineOptions" :key="m" :value="m">{{ m }}</option>
+          </select>
+        </label>
+      </div>
 
-            <!-- Dot + line -->
-            <div class="d-flex flex-column align-center" style="width: 12px;">
-              <div
-                class="timeline-dot"
-                :class="{
-                  'timeline-dot--pending': entry.queue_status === 'pending',
-                  'timeline-dot--failed': entry.queue_status === 'failed',
-                  'timeline-dot--chunked': entry.isChunkGroup,
-                }"
-              />
-              <div
-                class="timeline-stem"
-                :class="{ 'timeline-stem--flow': entry.queue_status === 'pending' }"
-              />
-            </div>
+      <!-- LOADING -->
+      <div v-if="loading" class="annals-loading">
+        <span class="dotty">·  ·  ·</span>
+        <p class="loading-text">consulting the chronicle</p>
+      </div>
 
-            <!-- Card -->
-            <v-card
-              variant="flat"
-              class="flex-grow-1 timeline-card"
+      <!-- ANNALS -->
+      <template v-else-if="groupedMemories.length">
+        <section
+          v-for="group in groupedMemories"
+          :key="group.date"
+          class="annal-day"
+        >
+          <div class="day-header">
+            <h2 class="day-title">{{ formatDayTitle(group.date) }}</h2>
+            <span class="day-rule" />
+            <span class="day-count">
+              <em>{{ group.items.length }}</em> {{ group.items.length === 1 ? 'memory' : 'memories' }}
+            </span>
+          </div>
+
+          <TransitionGroup name="crystallize" tag="div" class="day-entries">
+            <article
+              v-for="entry in group.items"
+              :key="entry.key"
+              class="annal-entry"
               :class="{
-                'timeline-card--ghost': entry.queue_status === 'pending',
-                'timeline-card--rejected': entry.queue_status === 'failed',
-                'timeline-card--expanded': expandedIds.has(entry.key),
-                'timeline-card--clickable': true,
+                'entry-ghost': entry.queue_status === 'pending',
+                'entry-rejected': entry.queue_status === 'failed',
+                'entry-expanded': expandedIds.has(entry.key),
+                'entry-chunked': entry.isChunkGroup,
               }"
               @click="toggleExpand(entry.key)"
             >
-              <v-card-text class="pa-3">
-                <!-- Header row -->
-                <div class="d-flex align-start ga-2 mb-1">
-                  <div
-                    class="text-body-2 font-weight-medium flex-grow-1"
-                    :class="{ 'ghost-text': entry.queue_status }"
-                    style="line-height: 1.5;"
-                  >
-                    {{ entry.isChunkGroup ? (entry.chunks[0].metadata?.document_title || entry.summary || entry.content.slice(0, 200)) : (entry.summary || entry.content.slice(0, 200) + (entry.content.length > 200 ? '…' : '')) }}
-                  </div>
-                  <v-icon
-                    :icon="expandedIds.has(entry.key) ? 'mdi-chevron-up' : 'mdi-chevron-down'"
-                    size="16"
-                    class="expand-icon mt-1"
-                    style="opacity: 0.4; flex-shrink: 0;"
-                  />
-                </div>
+              <!-- Marginalia: time -->
+              <div class="entry-margin">
+                <span v-if="entry.queue_status === 'pending'" class="margin-glyph pending">~</span>
+                <span v-else-if="entry.queue_status === 'failed'" class="margin-glyph failed">✗</span>
+                <span v-else-if="entry.isChunkGroup" class="margin-glyph chunked">¶</span>
+                <span v-else class="margin-glyph dot">·</span>
+                <span class="margin-time">
+                  {{ formatTime(entry.created_at) }}
+                </span>
+              </div>
 
-                <!-- Preview (collapsed) -->
-                <div
+              <!-- Body -->
+              <div class="entry-body">
+                <h3 class="entry-title" :class="{ ghost: entry.queue_status }">
+                  {{ entry.isChunkGroup
+                    ? (entry.chunks[0].metadata?.document_title || entry.summary || entry.content.slice(0, 200))
+                    : (entry.summary || entry.content.slice(0, 200) + (entry.content.length > 200 ? '…' : '')) }}
+                </h3>
+
+                <p
                   v-if="!expandedIds.has(entry.key)"
-                  class="text-body-2 text-medium-emphasis mb-2"
-                  :class="{ 'ghost-text': entry.queue_status }"
-                  style="line-height: 1.5;"
+                  class="entry-preview"
+                  :class="{ ghost: entry.queue_status }"
                 >
-                  {{ currentPageContent(entry).slice(0, 180) }}{{ currentPageContent(entry).length > 180 ? '…' : '' }}
+                  {{ currentPageContent(entry).slice(0, 220) }}{{ currentPageContent(entry).length > 220 ? '…' : '' }}
+                </p>
+                <div v-else class="entry-expanded" :class="{ ghost: entry.queue_status }">
+                  {{ currentPageContent(entry) }}
                 </div>
 
-                <!-- Expanded full content -->
-                <div
-                  v-else
-                  class="expanded-content mb-2"
-                  :class="{ 'ghost-text': entry.queue_status }"
-                >
-                  <div class="content-prose">{{ currentPageContent(entry) }}</div>
-                </div>
-
-                <!-- Chunk page navigator -->
-                <div v-if="entry.isChunkGroup && entry.chunks.length > 1" class="page-nav mb-2" @click.stop>
-                  <span class="page-nav__label">{{ entry.chunks.length }} pages</span>
+                <!-- Page navigator for chunk groups -->
+                <div v-if="entry.isChunkGroup && entry.chunks.length > 1" class="page-nav" @click.stop>
+                  <span class="page-nav-label">{{ entry.chunks.length }} pages</span>
                   <button
                     v-for="(chunk, i) in entry.chunks"
                     :key="chunk.id"
-                    class="page-nav__btn"
-                    :class="{ 'page-nav__btn--active': (activePages.get(entry.key) ?? 0) === i }"
+                    class="page-btn"
+                    :class="{ active: (activePages.get(entry.key) ?? 0) === i }"
                     @click.stop="setPage(entry.key, i)"
-                  >{{ i + 1 }}</button>
+                  >{{ toRoman(i + 1).toLowerCase() }}</button>
                 </div>
-                <div v-else-if="entry.isChunkGroup" class="page-nav mb-2">
-                  <span class="page-nav__label">1 of {{ entry.chunks[0].metadata?.chunk_total ?? 1 }} pages loaded</span>
+                <div v-else-if="entry.isChunkGroup" class="page-nav">
+                  <span class="page-nav-label">i of {{ entry.chunks[0].metadata?.chunk_total ?? 1 }} pages</span>
                 </div>
 
                 <!-- Meta row -->
-                <div class="d-flex ga-2 align-center flex-wrap">
-                  <v-chip v-if="entry.category" size="x-small" variant="tonal" color="primary" class="font-weight-medium">
-                    {{ entry.category }}
-                  </v-chip>
-                  <v-chip v-if="entry.source_machine" size="x-small" variant="tonal" color="secondary" class="font-weight-medium">
-                    {{ entry.source_machine }}
-                  </v-chip>
+                <div class="entry-meta">
+                  <span v-if="entry.category" class="meta-tag">{{ entry.category }}</span>
+                  <span v-if="entry.source_machine" class="meta-tag muted">{{ entry.source_machine }}</span>
 
-                  <!-- Queue status marker -->
                   <span
                     v-if="entry.queue_status === 'pending'"
-                    class="queue-marker queue-marker--pending"
+                    class="state-mark drafting"
                     :title="`Awaiting extraction${entry.attempts ? ` (retry ${entry.attempts}/${entry.max_attempts})` : ''}`"
                   >
-                    <span class="queue-marker__dots"><i /><i /><i /></span>
+                    <span class="state-dots"><i /><i /><i /></span>
                     drafting
                   </span>
                   <span
                     v-else-if="entry.queue_status === 'failed'"
-                    class="queue-marker queue-marker--failed"
-                    :title="entry.error_message || 'Write pipeline failed after max retries — memory was not stored'"
+                    class="state-mark rejected"
+                    :title="entry.error_message || 'Write pipeline failed after max retries'"
                   >
-                    <v-icon icon="mdi-alert-circle-outline" size="12" class="mr-1" />
                     rejected · {{ entry.attempts }}/{{ entry.max_attempts }}
                     <button
                       class="retry-btn"
                       :disabled="retryingIds.has(entry.key)"
-                      :title="'Retry storing this memory'"
+                      title="Retry storing this memory"
                       @click.stop="retryQueue(entry)"
                     >
-                      <v-icon :icon="retryingIds.has(entry.key) ? 'mdi-loading' : 'mdi-refresh'" size="11" :class="{ 'spin': retryingIds.has(entry.key) }" />
+                      <span :class="{ spin: retryingIds.has(entry.key) }">↻</span>
                     </button>
                   </span>
 
-                  <v-spacer />
-                  <div v-if="!entry.queue_status && entry.importance > 0" class="d-flex align-center ga-1">
-                    <v-progress-linear
-                      :model-value="entry.importance * 100"
-                      color="warning"
-                      height="3"
-                      rounded
-                      style="width: 40px;"
-                    />
-                  </div>
+                  <span class="meta-spacer" />
+                  <span v-if="!entry.queue_status && entry.importance > 0" class="importance-bar"
+                    :title="`importance ${(entry.importance * 100).toFixed(0)}%`">
+                    <span class="importance-fill" :style="{ width: (entry.importance * 100) + '%' }" />
+                  </span>
+                  <span class="entry-chev">{{ expandedIds.has(entry.key) ? '↑' : '↓' }}</span>
                 </div>
-              </v-card-text>
-            </v-card>
-          </div>
+              </div>
+            </article>
           </TransitionGroup>
-        </div>
+        </section>
+      </template>
+
+      <div v-else class="annals-empty">
+        <span class="ornament">❦</span>
+        <p>No memories in this window of the chronicle.</p>
       </div>
-    </template>
 
-    <div v-else class="text-center text-medium-emphasis pa-12">
-      <v-icon icon="mdi-timeline-clock-outline" size="40" class="mb-2 d-block mx-auto" style="opacity: 0.2;" />
-      No memories found
+      <div v-if="hasMore && !loading" class="load-more">
+        <button class="folio-button" :disabled="loadingMore" @click="loadMore">
+          <span v-if="loadingMore" class="dotty">·  ·  ·</span>
+          <span v-else>turn the page</span>
+        </button>
+      </div>
     </div>
-
-    <!-- Load More -->
-    <div v-if="hasMore && !loading" class="text-center mt-4 mb-6">
-      <v-btn variant="tonal" color="primary" :loading="loadingMore" @click="loadMore">
-        Load more
-      </v-btn>
-    </div>
-  </v-container>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -233,25 +193,22 @@ const {
   loadMore,
 } = useTimeline()
 
-// Expand state — track by entry key
 const expandedIds = ref<Set<string>>(new Set())
-// Retry in-progress tracking
 const retryingIds = ref<Set<string>>(new Set())
 
 async function retryQueue(entry: TimelineEntry) {
-  const queueId = entry.key  // for queue items key === memory id (queue row id)
+  const queueId = entry.key
   retryingIds.value.add(entry.key)
   retryingIds.value = new Set(retryingIds.value)
   try {
     await fetch(`/api/queue/${queueId}/retry`, { method: 'POST' })
-    // Refresh timeline after short delay so worker has time to claim it
     setTimeout(() => fetchTimeline({ silent: true }), 1500)
   } finally {
     retryingIds.value.delete(entry.key)
     retryingIds.value = new Set(retryingIds.value)
   }
 }
-// Page state for chunk groups — entry key → chunk index
+
 const activePages = ref<Map<string, number>>(new Map())
 
 function toggleExpand(key: string) {
@@ -260,21 +217,18 @@ function toggleExpand(key: string) {
   } else {
     expandedIds.value.add(key)
   }
-  // trigger reactivity
   expandedIds.value = new Set(expandedIds.value)
 }
 
 function setPage(key: string, page: number) {
   activePages.value.set(key, page)
   activePages.value = new Map(activePages.value)
-  // auto-expand when navigating pages
   if (!expandedIds.value.has(key)) {
     expandedIds.value.add(key)
     expandedIds.value = new Set(expandedIds.value)
   }
 }
 
-// ─── Entry shape ──────────────────────────────────────────────────────────────
 interface TimelineEntry {
   key: string
   created_at: string
@@ -288,7 +242,7 @@ interface TimelineEntry {
   max_attempts?: number
   error_message?: string | null
   isChunkGroup: boolean
-  chunks: Memory[]    // for chunk groups: all loaded chunks sorted by index
+  chunks: Memory[]
 }
 
 function currentPageContent(entry: TimelineEntry): string {
@@ -297,7 +251,27 @@ function currentPageContent(entry: TimelineEntry): string {
   return entry.chunks[page]?.content ?? entry.content
 }
 
-// ─── Grouping ─────────────────────────────────────────────────────────────────
+function formatTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString(undefined, {
+    hour: '2-digit', minute: '2-digit',
+  })
+}
+
+function formatDayTitle(date: string): string {
+  // Input is e.g. "Friday, May 5, 2026" — return as-is, the styles handle the small-caps
+  return date
+}
+
+function toRoman(n: number): string {
+  const r: [number, string][] = [
+    [50, 'L'], [40, 'XL'], [10, 'X'], [9, 'IX'],
+    [5, 'V'], [4, 'IV'], [1, 'I'],
+  ]
+  let out = ''
+  for (const [v, s] of r) { while (n >= v) { out += s; n -= v } }
+  return out
+}
+
 const categoryOptions = computed(() => {
   if (!statsStore.stats) return []
   return statsStore.stats.by_category.map(c => c.category)
@@ -309,14 +283,11 @@ const machineOptions = computed(() => {
 })
 
 const groupedMemories = computed(() => {
-  // 1. Separate queue items (pending/failed) from stored memories
   const queueItems = memories.value.filter(m => m.queue_status)
   const stored = memories.value.filter(m => !m.queue_status)
 
-  // 2. Group chunks by document_id
   const docGroups = new Map<string, Memory[]>()
   const standalone: Memory[] = []
-
   for (const mem of stored) {
     const docId = mem.metadata?.document_id
     if (docId) {
@@ -326,69 +297,44 @@ const groupedMemories = computed(() => {
       standalone.push(mem)
     }
   }
-
-  // Sort chunks within each doc group
   for (const chunks of docGroups.values()) {
     chunks.sort((a, b) => (a.metadata?.chunk_index ?? 0) - (b.metadata?.chunk_index ?? 0))
   }
 
-  // 3. Build flat entry list
   const entries: TimelineEntry[] = []
-
-  // Queue items as standalone entries
   for (const mem of queueItems) {
     entries.push({
-      key: mem.id,
-      created_at: mem.created_at,
-      summary: mem.summary,
-      content: mem.content,
-      category: mem.category,
-      source_machine: mem.source_machine,
+      key: mem.id, created_at: mem.created_at,
+      summary: mem.summary, content: mem.content,
+      category: mem.category, source_machine: mem.source_machine,
       importance: mem.importance,
-      queue_status: mem.queue_status,
-      attempts: mem.attempts,
-      max_attempts: mem.max_attempts,
-      error_message: mem.error_message,
-      isChunkGroup: false,
-      chunks: [mem],
+      queue_status: mem.queue_status, attempts: mem.attempts,
+      max_attempts: mem.max_attempts, error_message: mem.error_message,
+      isChunkGroup: false, chunks: [mem],
     })
   }
-
-  // Chunk groups — represent as single entry, keyed by document_id
   for (const [docId, chunks] of docGroups) {
     const first = chunks[0]
     entries.push({
-      key: `doc:${docId}`,
-      created_at: first.created_at,
+      key: `doc:${docId}`, created_at: first.created_at,
       summary: first.metadata?.document_title as string ?? first.summary,
       content: first.content,
-      category: first.category,
-      source_machine: first.source_machine,
+      category: first.category, source_machine: first.source_machine,
       importance: first.importance,
-      isChunkGroup: true,
-      chunks,
+      isChunkGroup: true, chunks,
     })
   }
-
-  // Standalone stored memories
   for (const mem of standalone) {
     entries.push({
-      key: mem.id,
-      created_at: mem.created_at,
-      summary: mem.summary,
-      content: mem.content,
-      category: mem.category,
-      source_machine: mem.source_machine,
+      key: mem.id, created_at: mem.created_at,
+      summary: mem.summary, content: mem.content,
+      category: mem.category, source_machine: mem.source_machine,
       importance: mem.importance,
-      isChunkGroup: false,
-      chunks: [mem],
+      isChunkGroup: false, chunks: [mem],
     })
   }
-
-  // 4. Sort all by created_at desc
   entries.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
 
-  // 5. Group by day
   const groups: Record<string, TimelineEntry[]> = {}
   for (const entry of entries) {
     const day = new Date(entry.created_at).toLocaleDateString(undefined, {
@@ -419,7 +365,6 @@ function stopPoll() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
 }
 
-// ── Write queue indicator (polls /api/health/detailed every 15s) ─────────
 interface QueueInfo { depth: number; stale_processing: number }
 const queueInfo = ref<QueueInfo | null>(null)
 let queueTimer: ReturnType<typeof setInterval> | null = null
@@ -434,31 +379,13 @@ async function fetchQueue() {
   } catch { /* transient — next tick will retry */ }
 }
 
-const queueChipColor = computed(() => {
+const queueIndicatorClass = computed(() => {
   const q = queueInfo.value
-  if (!q) return 'default'
-  if (q.stale_processing > 0) return 'error'
-  if (q.depth > 100) return 'warning'
-  if (q.depth > 20) return 'info'
-  if (q.depth > 0) return 'success'
-  return 'default'
-})
-
-const queueChipIcon = computed(() => {
-  const q = queueInfo.value
-  if (!q) return 'mdi-clock-outline'
-  if (q.stale_processing > 0) return 'mdi-alert-circle-outline'
-  if (q.depth === 0) return 'mdi-check-circle-outline'
-  return 'mdi-database-sync-outline'
-})
-
-const queueTitle = computed(() => {
-  const q = queueInfo.value
-  if (!q) return 'write queue status loading…'
-  const parts = [`${q.depth} pending/processing`]
-  if (q.stale_processing > 0) parts.push(`${q.stale_processing} stale (>10min)`)
-  parts.push('polls /api/health/detailed every 15s')
-  return parts.join(' · ')
+  if (!q) return ''
+  if (q.stale_processing > 0) return 'queue-error'
+  if (q.depth > 100) return 'queue-warn'
+  if (q.depth > 0) return 'queue-active'
+  return 'queue-clear'
 })
 
 onMounted(async () => {
@@ -475,286 +402,427 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.timeline-date-pill {
-  background: rgba(var(--v-theme-primary), 0.12);
-  color: rgb(var(--v-theme-primary));
-  font-weight: 600;
-  font-size: 0.82rem;
-  padding: 4px 14px;
-  border-radius: 8px;
-  white-space: nowrap;
+.annals-page {
+  --cp-gold: #c8a96e;
+  --cp-gold-soft: rgba(200, 169, 110, 0.45);
+  --cp-gold-faint: rgba(200, 169, 110, 0.18);
+  --cp-ink: rgba(238, 224, 196, 0.94);
+  --cp-ink-mute: rgba(238, 224, 196, 0.55);
+  --cp-bg: rgba(18, 14, 8, 0.4);
+  --cp-bg-deep: rgba(14, 11, 6, 0.55);
+  --rejected: #c47a6a;
+  --pending: #c89e6e;
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
+  color: var(--cp-ink);
+  padding: 32px 24px 80px;
+  min-height: 100vh;
 }
-/* Queue indicator — subtle by default, animated pulse when work in flight */
-.queue-chip {
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.01em;
+
+.annals-shell {
+  max-width: 820px;
+  margin: 0 auto;
 }
-.queue-chip--busy :deep(.v-icon) {
-  animation: queue-pulse 1.8s ease-in-out infinite;
-}
-@keyframes queue-pulse {
-  0%, 100% { opacity: 0.6; }
-  50%      { opacity: 1; }
-}
-.timeline-line {
-  flex-grow: 1;
+
+/* MASTHEAD */
+.annals-masthead { margin-bottom: 32px; }
+.masthead-rule {
   height: 1px;
-  background: rgba(255, 255, 255, 0.06);
-  margin-left: 12px;
-}
-.timeline-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: rgb(var(--v-theme-primary));
-  flex-shrink: 0;
-  margin-top: 6px;
-  transition: background 320ms ease, box-shadow 320ms ease;
-}
-.timeline-dot--pending {
-  background: transparent;
-  box-shadow: inset 0 0 0 1.5px rgba(var(--v-theme-warning), 0.7);
-  animation: dot-breathe 2.6s ease-in-out infinite;
-}
-.timeline-dot--failed {
-  background: transparent;
-  box-shadow: inset 0 0 0 1.5px rgba(var(--v-theme-error), 0.55);
-}
-.timeline-dot--chunked {
-  background: rgba(var(--v-theme-primary), 0.5);
-  box-shadow: 0 0 0 2px rgba(var(--v-theme-primary), 0.18);
-}
-.timeline-stem {
-  width: 1px;
-  flex-grow: 1;
-  background: rgba(255, 255, 255, 0.06);
-  min-height: 8px;
-  position: relative;
-  overflow: hidden;
-}
-.timeline-stem--flow {
   background: linear-gradient(
-    to bottom,
-    rgba(var(--v-theme-warning), 0) 0%,
-    rgba(var(--v-theme-warning), 0.35) 50%,
-    rgba(var(--v-theme-warning), 0) 100%
+    90deg, transparent, var(--cp-gold-soft) 30%,
+    var(--cp-gold) 50%, var(--cp-gold-soft) 70%, transparent
   );
-  background-size: 100% 220%;
-  animation: stem-flow 2.8s linear infinite;
 }
-.timeline-card {
-  border: 1px solid rgba(255, 255, 255, 0.04);
-  transition: border-color 150ms ease, background-color 320ms ease, opacity 320ms ease;
+.masthead-inner { padding: 16px 0 12px; text-align: center; }
+.masthead-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--cp-ink-mute);
+  margin-bottom: 12px;
 }
-.timeline-card--clickable {
-  cursor: pointer;
+.folio-label {
+  font-style: italic;
+  letter-spacing: 0.22em;
+  color: var(--cp-gold);
+  font-size: 10px;
 }
-.timeline-card--clickable:hover {
-  border-color: rgba(255, 255, 255, 0.1);
-}
-.timeline-card--clickable:hover .expand-icon {
-  opacity: 0.7 !important;
-}
-.timeline-card--expanded {
-  border-color: rgba(var(--v-theme-primary), 0.2);
-}
-
-/* Expanded content */
-.expanded-content {
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
-  padding-top: 10px;
-  margin-top: 4px;
-}
-.content-prose {
-  font-size: 0.82rem;
-  line-height: 1.7;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: inherit;
-  max-height: 480px;
-  overflow-y: auto;
-  padding-right: 4px;
-}
-.content-prose::-webkit-scrollbar { width: 3px; }
-.content-prose::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 2px; }
-
-/* Page navigator */
-.page-nav {
+.queue-indicator {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding-top: 6px;
-}
-.page-nav__label {
-  font-size: 0.68rem;
-  color: rgba(var(--v-theme-on-surface), 0.35);
-  letter-spacing: 0.03em;
-  margin-right: 4px;
-  user-select: none;
-}
-.page-nav__btn {
-  min-width: 22px;
-  height: 22px;
-  border-radius: 4px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: transparent;
-  color: rgba(var(--v-theme-on-surface), 0.5);
-  font-size: 0.7rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 120ms, border-color 120ms, color 120ms;
-  line-height: 1;
-  padding: 0 5px;
-}
-.page-nav__btn:hover {
-  background: rgba(var(--v-theme-primary), 0.12);
-  border-color: rgba(var(--v-theme-primary), 0.3);
-  color: rgb(var(--v-theme-primary));
-}
-.page-nav__btn--active {
-  background: rgba(var(--v-theme-primary), 0.18);
-  border-color: rgba(var(--v-theme-primary), 0.4);
-  color: rgb(var(--v-theme-primary));
-}
-
-/* Ghost: memory in amber, not yet crystallized */
-.timeline-card--ghost {
-  background-color: color-mix(in oklch, rgb(var(--v-theme-surface)) 94%, rgb(var(--v-theme-warning)));
-  border: 1px dashed rgba(var(--v-theme-warning), 0.28);
-  position: relative;
-}
-.timeline-card--ghost::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  border-radius: inherit;
-  background: linear-gradient(
-    110deg,
-    transparent 0%, transparent 40%,
-    rgba(var(--v-theme-warning), 0.06) 50%,
-    transparent 60%, transparent 100%
-  );
-  background-size: 280% 100%;
-  animation: ghost-sweep 4.5s linear infinite;
-}
-.timeline-entry--ghost .ghost-text {
+  gap: 6px;
+  font-size: 11px;
   font-style: italic;
-  color: color-mix(in oklch, rgb(var(--v-theme-on-surface)) 78%, transparent);
+  letter-spacing: 0.05em;
+  color: var(--cp-ink-mute);
+}
+.queue-indicator em {
+  color: var(--cp-ink);
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+.queue-mark { color: var(--cp-gold-soft); font-size: 12px; }
+.queue-active .queue-mark { color: var(--cp-gold); }
+.queue-warn .queue-mark { color: var(--pending); }
+.queue-error .queue-mark { color: var(--rejected); }
+.queue-error em { color: var(--rejected); }
+
+.annals-title {
+  font-family: Georgia, serif;
+  font-size: clamp(34px, 4.5vw, 48px);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  margin: 0 0 4px;
+  color: var(--cp-ink);
+}
+.annals-tagline {
+  font-style: italic;
+  color: var(--cp-ink-mute);
+  font-size: 14px;
+  margin: 0 0 16px;
 }
 
-/* Rejected */
-.timeline-card--rejected {
-  background-color: color-mix(in oklch, rgb(var(--v-theme-surface)) 96%, rgb(var(--v-theme-error)));
-  border: 1px solid rgba(var(--v-theme-error), 0.18);
-  opacity: 0.82;
+/* CONTROLS */
+.annals-controls {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 32px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--cp-gold-faint);
 }
-.timeline-entry--rejected .ghost-text {
-  color: color-mix(in oklch, rgb(var(--v-theme-on-surface)) 70%, transparent);
-  text-decoration: line-through;
-  text-decoration-color: rgba(var(--v-theme-error), 0.35);
-  text-decoration-thickness: 1px;
+.ctl {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ctl-label {
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--cp-ink-mute);
+}
+.folio-select {
+  background: transparent;
+  border: 1px solid var(--cp-gold-faint);
+  color: var(--cp-ink);
+  font-family: Georgia, serif;
+  font-size: 13px;
+  padding: 4px 22px 4px 10px;
+  cursor: pointer;
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--cp-gold-soft) 50%);
+  background-position: right 8px center;
+  background-size: 6px 6px;
+  background-repeat: no-repeat;
+  letter-spacing: 0.04em;
+}
+.folio-select:hover { border-color: var(--cp-gold-soft); }
+.folio-select:focus { outline: none; border-color: var(--cp-gold); }
+.folio-select option {
+  background: #14110a;
+  color: var(--cp-ink);
 }
 
-.ghost-tilde {
-  display: inline-block;
-  width: 0.7em;
-  margin-right: 2px;
+/* ANNAL DAY */
+.annal-day {
+  margin-bottom: 56px;
+}
+.day-header {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 16px;
+  align-items: baseline;
+  margin-bottom: 20px;
+}
+.day-title {
+  font-family: Georgia, serif;
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--cp-gold);
+  font-style: italic;
+  margin: 0;
+}
+.day-rule {
+  height: 1px;
+  background: linear-gradient(
+    90deg, var(--cp-gold-soft), transparent
+  );
+  align-self: center;
+}
+.day-count {
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 12px;
+  color: var(--cp-ink-mute);
+  letter-spacing: 0.05em;
+}
+.day-count em {
+  color: var(--cp-ink);
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ANNAL ENTRY */
+.day-entries { display: flex; flex-direction: column; }
+.annal-entry {
+  display: grid;
+  grid-template-columns: 76px 1fr;
+  gap: 16px;
+  padding: 16px 8px;
+  border-bottom: 1px dotted var(--cp-gold-faint);
+  cursor: pointer;
+  transition: all 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.annal-entry:hover {
+  padding-left: 12px;
+  background: rgba(200, 169, 110, 0.025);
+}
+.annal-entry.entry-expanded {
+  background: rgba(200, 169, 110, 0.04);
+}
+.annal-entry.entry-ghost {
   opacity: 0.85;
 }
+.annal-entry.entry-rejected {
+  background: rgba(196, 122, 106, 0.04);
+  border-bottom-color: rgba(196, 122, 106, 0.15);
+}
 
-/* Typographic queue marker */
-.queue-marker {
-  display: inline-flex;
+/* MARGINALIA */
+.entry-margin {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  text-align: right;
+  padding-right: 12px;
+  border-right: 1px solid var(--cp-gold-faint);
+  font-family: Georgia, serif;
+}
+.margin-glyph {
+  font-family: Georgia, serif;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--cp-gold-soft);
+}
+.margin-glyph.dot { color: var(--cp-gold-soft); }
+.margin-glyph.chunked { color: var(--cp-gold); font-style: italic; }
+.margin-glyph.pending { color: var(--pending); }
+.margin-glyph.failed { color: var(--rejected); }
+.margin-time {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-style: italic;
+  color: var(--cp-ink-mute);
+  letter-spacing: 0.05em;
+}
+
+/* ENTRY BODY */
+.entry-body {
+  min-width: 0;
+}
+.entry-title {
+  font-family: Georgia, serif;
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--cp-ink);
+  margin: 0 0 6px;
+}
+.entry-title.ghost { color: var(--cp-ink-mute); font-style: italic; }
+.entry-preview {
+  font-family: Georgia, serif;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--cp-ink-mute);
+  margin: 0 0 10px;
+}
+.entry-expanded {
+  font-family: Georgia, serif;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--cp-ink);
+  margin: 0 0 12px;
+  padding: 12px 16px;
+  background: rgba(200, 169, 110, 0.04);
+  border-left: 2px solid var(--cp-gold-soft);
+  white-space: pre-wrap;
+}
+.entry-expanded.ghost, .entry-preview.ghost { color: var(--cp-ink-mute); }
+
+/* PAGE NAV (chunks) */
+.page-nav {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 4px;
-  font-size: 0.7rem;
-  font-weight: 500;
-  letter-spacing: 0.04em;
-  text-transform: lowercase;
-  font-variant-numeric: tabular-nums;
-  padding: 0 4px;
-  user-select: none;
+  margin: 8px 0 10px;
+  padding: 6px 0;
+  border-top: 1px dotted var(--cp-gold-faint);
 }
-.queue-marker--pending { color: rgb(var(--v-theme-warning)); }
-.queue-marker--failed  { color: rgb(var(--v-theme-error)); }
+.page-nav-label {
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 11px;
+  color: var(--cp-ink-mute);
+  margin-right: 8px;
+}
+.page-btn {
+  background: transparent;
+  border: 1px solid var(--cp-gold-faint);
+  color: var(--cp-ink-mute);
+  font-family: Georgia, serif;
+  font-size: 11px;
+  font-style: italic;
+  padding: 2px 7px;
+  min-width: 24px;
+  cursor: pointer;
+  letter-spacing: 0.05em;
+  transition: all 150ms;
+}
+.page-btn:hover { border-color: var(--cp-gold-soft); color: var(--cp-ink); }
+.page-btn.active {
+  border-color: var(--cp-gold);
+  color: var(--cp-gold);
+  background: rgba(200, 169, 110, 0.1);
+}
+
+/* META ROW */
+.entry-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-family: Georgia, serif;
+}
+.meta-tag {
+  font-size: 11px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--cp-gold);
+  font-style: italic;
+}
+.meta-tag.muted { color: var(--cp-ink-mute); }
+.meta-spacer { flex-grow: 1; }
+
+/* STATE MARKS */
+.state-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  font-style: italic;
+}
+.state-mark.drafting { color: var(--pending); }
+.state-mark.rejected { color: var(--rejected); }
+.state-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.state-dots i {
+  display: inline-block;
+  width: 4px; height: 4px;
+  background: var(--pending);
+  border-radius: 50%;
+  animation: pulse-dot 1.4s ease-in-out infinite;
+}
+.state-dots i:nth-child(2) { animation-delay: 0.2s; }
+.state-dots i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes pulse-dot {
+  0%, 80%, 100% { opacity: 0.3; }
+  40% { opacity: 1; }
+}
 
 .retry-btn {
+  background: transparent;
+  border: 1px solid rgba(196, 122, 106, 0.4);
+  color: var(--rejected);
+  width: 22px; height: 22px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 3px;
-  border: 1px solid rgba(var(--v-theme-error), 0.3);
-  background: transparent;
-  color: rgb(var(--v-theme-error));
-  cursor: pointer;
   margin-left: 4px;
-  opacity: 0.7;
-  transition: opacity 120ms, background 120ms;
-  vertical-align: middle;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 150ms;
 }
-.retry-btn:hover { opacity: 1; background: rgba(var(--v-theme-error), 0.1); }
-.retry-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.spin { animation: spin 0.8s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
+.retry-btn:hover:not(:disabled) {
+  border-color: var(--rejected);
+  background: rgba(196, 122, 106, 0.1);
+}
+.retry-btn:disabled { opacity: 0.5; cursor: wait; }
+.spin { display: inline-block; animation: spin-slow 1s linear infinite; }
+@keyframes spin-slow { to { transform: rotate(360deg); } }
 
-.queue-marker__dots {
-  display: inline-flex;
-  gap: 2px;
-  align-items: center;
+/* IMPORTANCE */
+.importance-bar {
+  display: inline-block;
+  width: 50px;
+  height: 2px;
+  background: rgba(200, 169, 110, 0.1);
+  position: relative;
 }
-.queue-marker__dots i {
-  width: 3px;
-  height: 3px;
-  border-radius: 50%;
-  background: currentColor;
-  opacity: 0.35;
-  animation: dot-wave 1.4s ease-in-out infinite;
+.importance-fill {
+  display: block;
+  height: 100%;
+  background: var(--cp-gold);
 }
-.queue-marker__dots i:nth-child(2) { animation-delay: 0.18s; }
-.queue-marker__dots i:nth-child(3) { animation-delay: 0.36s; }
+.entry-chev {
+  font-family: Georgia, serif;
+  color: var(--cp-gold-soft);
+  font-size: 12px;
+  font-style: italic;
+}
 
-/* Crystallization transition */
-.crystallize-enter-from { opacity: 0; transform: translateY(4px); }
-.crystallize-enter-active,
-.crystallize-leave-active { transition: opacity 340ms ease, transform 340ms ease; }
-.crystallize-leave-to { opacity: 0; transform: translateY(-2px); }
-.crystallize-move { transition: transform 420ms cubic-bezier(0.22, 0.61, 0.36, 1); }
+/* TRANSITIONS */
+.crystallize-enter-active { transition: all 350ms cubic-bezier(0.22, 1, 0.36, 1); }
+.crystallize-enter-from { opacity: 0; transform: translateY(-6px); }
+.crystallize-leave-active { transition: all 200ms ease; }
+.crystallize-leave-to { opacity: 0; }
 
-@keyframes dot-breathe {
-  0%, 100% { box-shadow: inset 0 0 0 1.5px rgba(var(--v-theme-warning), 0.35); }
-  50%       { box-shadow: inset 0 0 0 1.5px rgba(var(--v-theme-warning), 0.85); }
+/* STATES */
+.annals-loading, .annals-empty {
+  text-align: center;
+  padding: 80px 0;
+  color: var(--cp-ink-mute);
+  font-style: italic;
+  font-family: Georgia, serif;
 }
-@keyframes stem-flow {
-  0%   { background-position: 0 100%; }
-  100% { background-position: 0 -100%; }
+.annals-empty .ornament {
+  display: block;
+  font-size: 24px;
+  color: var(--cp-gold-soft);
+  margin-bottom: 12px;
 }
-@keyframes ghost-sweep {
-  0%   { background-position: -50% 0; }
-  100% { background-position: 150% 0; }
+.loading-text { font-size: 13px; margin: 8px 0 0; letter-spacing: 0.05em; }
+.dotty { letter-spacing: 0.5em; color: var(--cp-gold-soft); }
+
+/* LOAD MORE */
+.load-more {
+  text-align: center;
+  margin: 32px 0;
 }
-@keyframes dot-wave {
-  0%, 100% { opacity: 0.25; transform: translateY(0); }
-  50%       { opacity: 1;    transform: translateY(-1.5px); }
+.folio-button {
+  background: transparent;
+  border: 1px solid var(--cp-gold-soft);
+  color: var(--cp-gold);
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  padding: 10px 28px;
+  cursor: pointer;
+  transition: all 200ms;
 }
-@media (prefers-reduced-motion: reduce) {
-  .timeline-dot--pending,
-  .timeline-stem--flow,
-  .timeline-card--ghost::before,
-  .queue-marker__dots i { animation: none; }
+.folio-button:hover:not(:disabled) {
+  background: rgba(200, 169, 110, 0.08);
+  border-color: var(--cp-gold);
 }
-.skeleton-block {
-  background: linear-gradient(90deg, rgb(var(--v-theme-surface)) 25%, rgba(255,255,255,0.03) 50%, rgb(var(--v-theme-surface)) 75%);
-  background-size: 200% 100%;
-  animation: shimmer 1.5s infinite;
-  border-radius: 12px;
-  height: 120px;
-}
-@keyframes shimmer {
-  0%   { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
-}
+.folio-button:disabled { opacity: 0.6; cursor: wait; }
 </style>
