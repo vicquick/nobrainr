@@ -258,4 +258,17 @@ onMounted(load)
 }
 .dotty { letter-spacing: 0.5em; color: var(--cp-gold-soft); }
 .loading-text { font-size: 13px; margin: 8px 0 0; letter-spacing: 0.05em; }
+
+@media (max-width: 720px) {
+  .thread-page { padding: 16px 14px 64px; }
+  .thread-title { font-size: 22px; }
+  .msg {
+    grid-template-columns: 48px 1fr;
+    gap: 10px;
+    padding: 14px 0;
+  }
+  .msg-margin { padding-right: 8px; }
+  .msg-numeral { font-size: 14px; }
+  .msg-content { font-size: 13px; }
+}
 </style>

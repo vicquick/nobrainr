@@ -551,4 +551,52 @@ onMounted(() => {
 }
 .loading-text { font-size: 13px; margin: 8px 0 0; letter-spacing: 0.05em; }
 .dotty { letter-spacing: 0.5em; color: var(--cp-gold-soft); }
+
+/* MOBILE — kill fixed 64px paddings/margins, stack table-like grids */
+@media (max-width: 720px) {
+  .horarium-page { padding: 24px 14px 64px; }
+  .horarium-title { font-size: 30px; }
+
+  .quire { margin-bottom: 40px; }
+  .quire-head {
+    grid-template-columns: 36px 1fr auto;
+    gap: 8px;
+  }
+  .quire-numeral { font-size: 22px; }
+  .quire-title { font-size: 16px; }
+
+  .ledger-line { padding: 10px 4px 10px 24px; }
+  .ledger-fig { font-size: 18px; }
+  .progress-block { margin: 0 0 24px; }
+  .alert-line { margin: 0; }
+
+  /* Office table: scroll horizontally if columns too tight,
+     and shrink first-column max-width so long task names truncate */
+  .office-table {
+    display: block;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .office-row td:first-child .task-name {
+    display: inline-block;
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+  }
+
+  /* Events log: stack each row vertically — kicker line, then meta */
+  .event-line {
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      "type time"
+      "src  src"
+      "data data";
+    row-gap: 4px;
+  }
+  .event-type { grid-area: type; }
+  .event-time { grid-area: time; }
+  .event-source { grid-area: src; }
+  .event-data { grid-area: data; white-space: normal; }
+}
 </style>
