@@ -1489,20 +1489,44 @@ async def api_commonplace(request: Request) -> JSONResponse:
     async with pool.acquire() as conn:
         if q:
             embedding = await embed_text(q)
+            # Semantic search on community_summaries where embedding exists,
+            # fall back to all entity-communities ordered by memory_count
             rows = await conn.fetch(
                 """
-                SELECT cs.community_id, cs.title, cs.summary, cs.key_topics,
-                       cs.member_count, cs.updated_at,
-                       1 - (cs.embedding <=> $1::vector) AS score,
-                       COUNT(DISTINCT em.memory_id) AS memory_count
-                FROM community_summaries cs
-                JOIN entities e ON e.community_id = cs.community_id
-                JOIN entity_memories em ON em.entity_id = e.id
-                WHERE cs.embedding IS NOT NULL
-                GROUP BY cs.community_id, cs.title, cs.summary,
-                         cs.key_topics, cs.member_count, cs.updated_at, cs.embedding
-                HAVING COUNT(DISTINCT em.memory_id) > 0
-                ORDER BY cs.embedding <=> $1::vector
+                WITH entity_communities AS (
+                    SELECT e.community_id,
+                           COUNT(DISTINCT e.id) AS entity_count,
+                           COUNT(DISTINCT em.memory_id) AS memory_count,
+                           (SELECT string_agg(sub.n, ' · ' ORDER BY sub.mc DESC)
+                            FROM (SELECT DISTINCT e2.canonical_name AS n,
+                                         MAX(e2.mention_count) AS mc
+                                  FROM entities e2
+                                  WHERE e2.community_id = e.community_id
+                                    AND e2.canonical_name IS NOT NULL
+                                  GROUP BY e2.canonical_name
+                                  ORDER BY mc DESC LIMIT 3) sub) AS top_names
+                    FROM entities e
+                    JOIN entity_memories em ON em.entity_id = e.id
+                    WHERE e.community_id IS NOT NULL
+                    GROUP BY e.community_id
+                    HAVING COUNT(DISTINCT em.memory_id) > 0
+                )
+                SELECT ec.community_id,
+                       COALESCE(cs.title, ec.top_names) AS title,
+                       COALESCE(cs.summary, '') AS summary,
+                       COALESCE(cs.key_topics, ARRAY[]::text[]) AS key_topics,
+                       ec.entity_count AS member_count,
+                       cs.updated_at,
+                       ec.memory_count,
+                       CASE WHEN cs.embedding IS NOT NULL
+                           THEN 1 - (cs.embedding <=> $1::vector)
+                           ELSE NULL END AS score
+                FROM entity_communities ec
+                LEFT JOIN community_summaries cs ON cs.community_id = ec.community_id
+                ORDER BY
+                    CASE WHEN cs.embedding IS NOT NULL
+                         THEN cs.embedding <=> $1::vector ELSE 1.0 END ASC,
+                    ec.memory_count DESC
                 LIMIT $2
                 """,
                 str(embedding),
@@ -1511,17 +1535,35 @@ async def api_commonplace(request: Request) -> JSONResponse:
         else:
             rows = await conn.fetch(
                 """
-                SELECT cs.community_id, cs.title, cs.summary, cs.key_topics,
-                       cs.member_count, cs.updated_at,
-                       NULL::float AS score,
-                       COUNT(DISTINCT em.memory_id) AS memory_count
-                FROM community_summaries cs
-                JOIN entities e ON e.community_id = cs.community_id
-                JOIN entity_memories em ON em.entity_id = e.id
-                GROUP BY cs.community_id, cs.title, cs.summary,
-                         cs.key_topics, cs.member_count, cs.updated_at
-                HAVING COUNT(DISTINCT em.memory_id) > 0
-                ORDER BY COUNT(DISTINCT em.memory_id) DESC
+                WITH entity_communities AS (
+                    SELECT e.community_id,
+                           COUNT(DISTINCT e.id) AS entity_count,
+                           COUNT(DISTINCT em.memory_id) AS memory_count,
+                           (SELECT string_agg(sub.n, ' · ' ORDER BY sub.mc DESC)
+                            FROM (SELECT DISTINCT e2.canonical_name AS n,
+                                         MAX(e2.mention_count) AS mc
+                                  FROM entities e2
+                                  WHERE e2.community_id = e.community_id
+                                    AND e2.canonical_name IS NOT NULL
+                                  GROUP BY e2.canonical_name
+                                  ORDER BY mc DESC LIMIT 3) sub) AS top_names
+                    FROM entities e
+                    JOIN entity_memories em ON em.entity_id = e.id
+                    WHERE e.community_id IS NOT NULL
+                    GROUP BY e.community_id
+                    HAVING COUNT(DISTINCT em.memory_id) > 0
+                )
+                SELECT ec.community_id,
+                       COALESCE(cs.title, ec.top_names) AS title,
+                       COALESCE(cs.summary, '') AS summary,
+                       COALESCE(cs.key_topics, ARRAY[]::text[]) AS key_topics,
+                       ec.entity_count AS member_count,
+                       cs.updated_at,
+                       ec.memory_count,
+                       NULL::float AS score
+                FROM entity_communities ec
+                LEFT JOIN community_summaries cs ON cs.community_id = ec.community_id
+                ORDER BY ec.memory_count DESC
                 LIMIT $1
                 """,
                 limit,
