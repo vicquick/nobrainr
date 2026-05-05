@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     reranker_http_timeout_s: float = 30.0
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
     reranker_fallback_model: str = "ms-marco-MiniLM-L-12-v2"  # flashrank name
+    # Device for sentence-transformers cross-encoder. 'cuda' is 5x faster
+    # (200-500ms for 8 docs vs 1-2s on CPU) but competes with llama-server
+    # for VRAM. _get_st_reranker auto-falls-back to CPU if cuda load fails.
+    reranker_device: str = "cuda"
     # Cap concurrent cross-encoder runs. i5-13500 = 20 threads but a single
     # bge-reranker-v2-m3 call on 150 docs spins 10+ cores. Set to 2 so a
     # batch caller can't lock out interactive search. See incident

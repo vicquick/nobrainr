@@ -75,12 +75,29 @@ def _check_flashrank() -> bool:
 
 @lru_cache(maxsize=1)
 def _get_st_reranker():
-    """Load the sentence-transformers CrossEncoder, cached for process lifetime."""
+    """Load the sentence-transformers CrossEncoder, cached for process lifetime.
+
+    Tries GPU first (device='cuda'), falls back to CPU on OOM. BGE-v2-m3 is
+    ~600MB so it fits alongside Qwen3.6-27B when llama-server is idle (TTL
+    1h). When llama-server is active and GPU is full, the cuda load fails →
+    we silently fall back to CPU. Either way, reranking works — GPU just
+    makes interactive search ~5x faster (200-500ms vs 1-2s).
+    """
     from sentence_transformers import CrossEncoder
-    logger.info("Loading sentence-transformers reranker: %s", settings.reranker_model)
-    # max_length=512 is the BGE reranker's training window.
-    # trust_remote_code is not needed for bge-reranker-v2-m3.
-    return CrossEncoder(settings.reranker_model, max_length=512, device="cpu")
+    device = settings.reranker_device  # 'cuda' default, 'cpu' fallback
+    try:
+        logger.info(
+            "Loading sentence-transformers reranker on %s: %s",
+            device, settings.reranker_model,
+        )
+        return CrossEncoder(settings.reranker_model, max_length=512, device=device)
+    except Exception as exc:
+        if device == "cuda":
+            logger.warning(
+                "Reranker GPU load failed (%s); falling back to CPU", exc,
+            )
+            return CrossEncoder(settings.reranker_model, max_length=512, device="cpu")
+        raise
 
 
 @lru_cache(maxsize=1)

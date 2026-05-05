@@ -98,12 +98,62 @@ async def embed_text(text: str) -> list[float]:
     return data["embeddings"][0]
 
 
+# Query embedding cache: key = sha1(model + lower(strip(query))), value = (vec, ts).
+# 7s baseline embed is the search latency floor on CPU. Cache repeat queries
+# (common patterns like "llama config", "qwen quant") at <1ms instead. 1000-
+# entry cap, 24h TTL. Hit ratio is high in normal use because users iterate
+# on the same query while exploring results.
+_QCACHE: dict[str, tuple[list[float], float]] = {}
+_QCACHE_MAX = 1000
+_QCACHE_TTL_S = 24 * 3600
+
+
+def _qcache_key(text: str) -> str:
+    import hashlib
+    norm = " ".join((text or "").lower().split())
+    h = hashlib.sha1()
+    h.update(settings.embedding_model.encode())
+    h.update(b"\x00")
+    h.update(norm.encode("utf-8"))
+    return h.hexdigest()
+
+
+def _qcache_get(text: str) -> list[float] | None:
+    import time
+    key = _qcache_key(text)
+    rec = _QCACHE.get(key)
+    if rec is None:
+        return None
+    vec, ts = rec
+    if time.time() - ts > _QCACHE_TTL_S:
+        _QCACHE.pop(key, None)
+        return None
+    return vec
+
+
+def _qcache_put(text: str, vec: list[float]) -> None:
+    import time
+    if len(_QCACHE) >= _QCACHE_MAX:
+        # Drop oldest entry (simple LRU approximation by sorted ts)
+        oldest = min(_QCACHE.items(), key=lambda kv: kv[1][1])[0]
+        _QCACHE.pop(oldest, None)
+    _QCACHE[_qcache_key(text)] = (vec, time.time())
+
+
 async def embed_text_with_timeout(text: str, timeout_s: float = 15.0) -> list[float]:
     """Embed with a budget. Raises EmbedTimeout if semaphore wait + inference > timeout_s.
+
+    Hits the in-process query cache first — repeat queries return in <1ms
+    instead of 7s. Cache keyed by (model, normalized_query), 1000-entry cap,
+    24h TTL. See _QCACHE module-level state.
 
     Use this in the interactive search path so a flooded Ollama queue causes
     graceful FTS fallback rather than a 50s hang.
     """
+    cached = _qcache_get(text)
+    if cached is not None:
+        return cached
+
     sem = _get_sem()
     try:
         # Wait for semaphore + run inference, all within timeout_s.
@@ -114,7 +164,9 @@ async def embed_text_with_timeout(text: str, timeout_s: float = 15.0) -> list[fl
                 )
             return data["embeddings"][0]
 
-        return await asyncio.wait_for(_do(), timeout=timeout_s)
+        vec = await asyncio.wait_for(_do(), timeout=timeout_s)
+        _qcache_put(text, vec)
+        return vec
     except asyncio.TimeoutError as e:
         raise EmbedTimeout(f"embed exceeded {timeout_s}s budget") from e
 

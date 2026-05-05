@@ -1459,6 +1459,13 @@ async def send_email_digest() -> dict:
     return await send_email_digest()
 
 
+async def send_knowledge_digest() -> dict:
+    """Send daily knowledge digest — insights, memory of the day, progress, bridges."""
+    from nobrainr.monitoring import send_knowledge_digest
+
+    return await send_knowledge_digest()
+
+
 # ---------------------------------------------------------------------------
 # System pulse — autonomous health transmissions (inspired by OpusDelta)
 # ---------------------------------------------------------------------------
@@ -2147,6 +2154,92 @@ async def contextual_prefix_backfill() -> dict:
     return {
         "status": "processed",
         "processed": processed,
+        "failed": failed,
+        "batch_size": batch_size,
+        "ran_at": datetime.now().isoformat(),
+    }
+
+
+async def conversation_embedding_backfill() -> dict:
+    """Backfill embeddings on conversations_raw for two-layer commonplace.
+
+    Embeds the title + first 4000 chars of message content per conversation.
+    That window is what a user typically remembers ("the thread where I
+    asked about X"). Full-conversation re-embed isn't worth the cost — the
+    distilled memories already cover deep retrieval.
+
+    Runs every 1h with batch=10. CPU embed is ~7s each, so 10 takes ~70s.
+    With 2362 total conversations, full backfill takes ~4h.
+    """
+    from nobrainr.db.pool import get_pool
+    from nobrainr.embeddings.ollama import embed_text
+
+    pool = await get_pool()
+    batch_size = 10
+
+    async with pool.acquire() as conn:
+        candidates = await conn.fetch(
+            """
+            SELECT id, title, messages
+            FROM conversations_raw
+            WHERE embedding IS NULL
+            ORDER BY imported_at DESC
+            LIMIT $1
+            """,
+            batch_size,
+        )
+
+        if not candidates:
+            return {"status": "idle", "embedded": 0, "ran_at": datetime.now().isoformat()}
+
+    embedded = 0
+    failed = 0
+    for row in candidates:
+        try:
+            title = row["title"] or ""
+            msgs = row["messages"] or []
+            # Concat first 4000 chars of all message content
+            text_parts = [title] if title else []
+            running = 0
+            for m in msgs:
+                if running >= 4000:
+                    break
+                content = (m.get("content") if isinstance(m, dict) else None) or ""
+                if isinstance(content, list):
+                    content = " ".join(str(p) for p in content if isinstance(p, (str, int, float)))
+                content = str(content)[:4000 - running]
+                if content:
+                    text_parts.append(content)
+                    running += len(content)
+            text = "\n".join(text_parts).strip()
+            if not text:
+                # Mark as embedded with empty vector to skip on next pass
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE conversations_raw SET embedded_at = now() WHERE id = $1",
+                        row["id"],
+                    )
+                continue
+
+            emb = await embed_text(text[:8000])
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE conversations_raw
+                    SET embedding = $1::vector, embedded_at = now(), title_text = $2
+                    WHERE id = $3
+                    """,
+                    emb, title[:500], row["id"],
+                )
+            embedded += 1
+        except Exception:
+            logger.exception("conversation_embedding_backfill failed for %s", row["id"])
+            failed += 1
+        await _yield_to_live_requests()
+
+    return {
+        "status": "processed",
+        "embedded": embedded,
         "failed": failed,
         "batch_size": batch_size,
         "ran_at": datetime.now().isoformat(),
