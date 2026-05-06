@@ -171,6 +171,28 @@ CREATE INDEX IF NOT EXISTS idx_conversations_raw_source ON conversations_raw (so
 CREATE INDEX IF NOT EXISTS idx_conversations_raw_imported ON conversations_raw (imported_at DESC);
 
 -- ──────────────────────────────────────────────
+-- Observational Memory (Mastra-style, 2026-05-06)
+-- ──────────────────────────────────────────────
+-- Per-thread observation log: dense paraphrases of chat exchanges that
+-- the Observer agent writes after each turn. The Reflector job
+-- consolidates near-duplicates and ages out noise.
+-- See docs/proposals/MASTRA_OM_PROPOSAL.md for the full design.
+CREATE TABLE IF NOT EXISTS observation_logs (
+    id            uuid DEFAULT uuidv7() PRIMARY KEY,
+    thread_id     text NOT NULL,
+    body          text NOT NULL,
+    embedding     vector({settings.embedding_dimensions}),
+    created_at    timestamptz DEFAULT now(),
+    superseded_by uuid REFERENCES observation_logs(id),
+    metadata      jsonb DEFAULT '{{}}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS idx_observation_thread_active
+    ON observation_logs (thread_id, created_at DESC)
+    WHERE superseded_by IS NULL;
+CREATE INDEX IF NOT EXISTS idx_observation_created
+    ON observation_logs (created_at DESC);
+
+-- ──────────────────────────────────────────────
 -- Knowledge graph: entities
 -- ──────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS entities (
