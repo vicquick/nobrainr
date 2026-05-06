@@ -51,7 +51,10 @@
         </div>
         <div class="frontispiece-body">
           <p class="frontispiece-eyebrow">— Insight of the day —</p>
-          <p class="frontispiece-text">{{ trim(todayInsight.summary || todayInsight.content, 600) }}</p>
+          <p v-if="todayInsight.summary && todayInsight.summary.length < 80" class="frontispiece-kicker">
+            {{ todayInsight.summary.replace(/^Synthesis:\s*/i, '') }}
+          </p>
+          <p class="frontispiece-text">{{ trim(todayInsight.content || todayInsight.summary, 600) }}</p>
           <div class="frontispiece-meta">
             <span v-if="todayInsight.created_at">{{ formatDate(todayInsight.created_at) }}</span>
             <span v-if="todayInsight.confidence" class="dot">·</span>
@@ -80,7 +83,10 @@
         >
           <div class="entry-numeral">{{ toRoman(idx + 1) }}.</div>
           <div class="entry-body">
-            <p class="entry-text">{{ trim(ins.summary || ins.content, 500) }}</p>
+            <p v-if="ins.summary && ins.summary.length < 80" class="entry-kicker">
+              {{ ins.summary.replace(/^Synthesis:\s*/i, '') }}
+            </p>
+            <p class="entry-text">{{ trim(ins.content || ins.summary, 500) }}</p>
             <div class="entry-meta">
               <span>{{ formatDate(ins.created_at) }}</span>
               <span v-if="ins.confidence" class="dot">·</span>
@@ -498,6 +504,15 @@ onMounted(() => {
   margin: 0 0 10px;
   font-style: italic;
 }
+.frontispiece-kicker {
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  color: var(--cp-gold);
+  margin: 0 0 8px;
+  text-transform: lowercase;
+}
 .frontispiece-text {
   font-size: 17px;
   line-height: 1.65;
@@ -552,6 +567,15 @@ onMounted(() => {
   padding-top: 2px;
   font-weight: 400;
   letter-spacing: 0.05em;
+}
+.entry-kicker {
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--cp-gold);
+  margin: 0 0 4px;
+  text-transform: lowercase;
 }
 .entry-text {
   font-size: 15px;

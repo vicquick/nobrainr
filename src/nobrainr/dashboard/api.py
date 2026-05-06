@@ -1392,8 +1392,7 @@ async def api_insight_of_the_day(request: Request) -> JSONResponse:
               AND category != '_archived'
               AND superseded_by IS NULL
               AND created_at > NOW() - INTERVAL '30 days'
-              AND length(COALESCE(summary, content, '')) > 60
-              AND length(COALESCE(summary, '')) > 24
+              AND length(COALESCE(content, '')) > 80
             ORDER BY
               -- recency multiplier
               CASE
