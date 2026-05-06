@@ -68,8 +68,17 @@ class Settings(BaseSettings):
     # if routing differs per deploy.
     reranker_url: str = "http://reranker:80"
     reranker_http_timeout_s: float = 30.0
-    reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    # 2026-05-06 default swap: Qwen3-Reranker-0.6B (Apr 2026) beats
+    # BGE-reranker-v2-m3 on every MTEB benchmark category — 65.80 vs
+    # 57.03 on MTEB-R, 73.42 vs 41.38 on MTEB-Code. Drop-in compatible
+    # via sentence-transformers v3.4+. Override via NOBRAINR_RERANKER_MODEL
+    # env var to roll back if needed.
+    reranker_model: str = "Qwen/Qwen3-Reranker-0.6B"
     reranker_fallback_model: str = "ms-marco-MiniLM-L-12-v2"  # flashrank name
+    # Sigmoid-normalise reranker scores to [0,1] so threshold semantics
+    # (auto_negative_low_rerank_threshold) remain stable across model
+    # swaps. Both BGE and Qwen3 emit raw logits in similar ranges.
+    reranker_apply_sigmoid: bool = True
     # Device for sentence-transformers cross-encoder. 'cuda' is 5x faster
     # (200-500ms for 8 docs vs 1-2s on CPU) but competes with llama-server
     # for VRAM. _get_st_reranker auto-falls-back to CPU if cuda load fails.
