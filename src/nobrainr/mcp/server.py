@@ -3442,6 +3442,88 @@ async def fact_demote(
 
 
 # ──────────────────────────────────────────────
+# Observational Memory MCP tools (Mastra-style, 2026-05-06)
+# ──────────────────────────────────────────────
+
+@mcp.tool()
+async def record_observation(
+    thread_id: str,
+    observation: str,
+    metadata: dict | None = None,
+) -> dict:
+    """Append a dense observation to a thread's observation log.
+
+    Use after each chat turn to record what the user said + what was
+    answered, in <=120 tokens of paraphrase. The observation should
+    capture facts the user might ask about later. The Reflector job
+    consolidates near-duplicates every 30min.
+
+    Args:
+        thread_id: Stable thread identifier (the chat session id).
+        observation: <=120 tokens dense paraphrase. Drop pleasantries.
+        metadata: Optional context (timestamps, agent_id, source url).
+
+    Returns:
+        {observation_id, thread_id}
+    """
+    from nobrainr.embeddings.ollama import embed_text
+    body = (observation or "").strip()
+    if not body:
+        return {"error": "observation is empty"}
+    if not thread_id:
+        return {"error": "thread_id required"}
+    try:
+        emb = await embed_text(body[:4000])
+    except Exception:
+        emb = None
+    obs_id = await queries.store_observation(
+        thread_id=thread_id, body=body[:8000],
+        embedding=emb, metadata=metadata or {},
+    )
+    return {"observation_id": obs_id, "thread_id": thread_id}
+
+
+@mcp.tool()
+async def chat_recall(
+    thread_id: str,
+    query: str | None = None,
+    limit: int = 10,
+) -> dict:
+    """Recall a thread's observation log — the cache-stable chat memory.
+
+    Returns the active (non-superseded) observations for the thread. If
+    a query is given, also returns top-K observations across ALL threads
+    that semantically match — useful when the user references something
+    from a different conversation.
+
+    Args:
+        thread_id: The thread whose log to load.
+        query: Optional semantic search across all observation logs.
+        limit: Max hits per scope (default 10).
+
+    Returns:
+        {thread_log: [...], cross_thread_hits: [...]}
+    """
+    from nobrainr.embeddings.ollama import embed_text
+    thread_log = await queries.fetch_observation_log(thread_id, limit=50)
+    cross_thread_hits: list[dict] = []
+    if query and len(query.strip()) > 2:
+        try:
+            emb = await embed_text(query.strip()[:4000])
+            cross_thread_hits = await queries.search_observations(
+                emb, thread_id=None, limit=limit,
+            )
+            cross_thread_hits = [h for h in cross_thread_hits if h["thread_id"] != thread_id]
+        except Exception:
+            cross_thread_hits = []
+    return {
+        "thread_id": thread_id,
+        "thread_log": thread_log,
+        "cross_thread_hits": cross_thread_hits,
+    }
+
+
+# ──────────────────────────────────────────────
 # Entry points
 # ──────────────────────────────────────────────
 

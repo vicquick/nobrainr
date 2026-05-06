@@ -2376,3 +2376,83 @@ async def conversation_embedding_backfill() -> dict:
         "batch_size": batch_size,
         "ran_at": datetime.now().isoformat(),
     }
+
+
+# ──────────────────────────────────────────────
+# Observational Memory · Reflector job (Mastra-style)
+# ──────────────────────────────────────────────
+
+OBSERVATION_MERGE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "merged_observation": {
+            "type": "string",
+            "description": "Single dense paraphrase combining the unique facts from the inputs",
+        },
+        "should_merge": {
+            "type": "boolean",
+            "description": "Whether the inputs are near-duplicates worth merging",
+        },
+    },
+    "required": ["should_merge", "merged_observation"],
+}
+
+
+async def observation_consolidate() -> dict:
+    """Reflector: consolidate near-duplicate observations per thread.
+
+    For each thread with 5+ fresh observations, asks the LLM to merge the
+    last batch into a single denser observation, marks the originals as
+    superseded. Keeps the observation log compact and prefix-cacheable.
+    See docs/proposals/MASTRA_OM_PROPOSAL.md.
+    """
+    model = settings.scheduler_llm_model
+    threads = await queries.get_threads_with_fresh_observations(min_count=5)
+    if not threads:
+        return {"status": "idle", "ran_at": datetime.now().isoformat()}
+
+    consolidated_threads = 0
+    superseded_total = 0
+    for t in threads:
+        thread_id = t["thread_id"]
+        try:
+            log = await queries.fetch_observation_log(thread_id, limit=20)
+            if len(log) < 5:
+                continue
+            joined = "\n".join(f"- {o['body']}" for o in log[:10])
+            result = await ollama_chat(
+                system=(
+                    "You are a knowledge consolidator. Given a list of "
+                    "observations from a single conversation thread, write a "
+                    "single dense paraphrase (≤120 tokens) that captures all "
+                    "unique facts, preferences, and goals. Drop redundant or "
+                    "trivial observations. Do not invent details."
+                ),
+                user=f"Observations to consolidate:\n{joined}",
+                schema=OBSERVATION_MERGE_SCHEMA,
+                model=model,
+                timeout=180.0,
+                think=False,
+            )
+            if result.get("should_merge") and result.get("merged_observation"):
+                merged = result["merged_observation"]
+                emb = await embed_text(merged)
+                parent_id = await queries.store_observation(
+                    thread_id, merged, embedding=emb,
+                    metadata={"reflector": True, "merged_from": len(log[:10])},
+                )
+                n = await queries.supersede_observations(
+                    parent_id, [o["id"] for o in log[:10]],
+                )
+                superseded_total += n
+                consolidated_threads += 1
+            await _yield_to_live_requests()
+        except Exception:
+            logger.exception("observation_consolidate failed for thread %s", thread_id[:8])
+
+    return {
+        "consolidated_threads": consolidated_threads,
+        "superseded": superseded_total,
+        "candidates": len(threads),
+        "ran_at": datetime.now().isoformat(),
+    }
