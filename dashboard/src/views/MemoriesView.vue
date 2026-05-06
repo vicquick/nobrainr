@@ -61,6 +61,16 @@
               :selected="selectedMemory?.id === m.id"
               @click="selectMemory(m.id)"
             />
+            <div v-if="hasMore" class="load-more-row">
+              <button class="folio-button" :disabled="loadingMore" @click="loadMore">
+                <span v-if="loadingMore" class="dotty">·  ·  ·</span>
+                <span v-else>turn the page</span>
+              </button>
+            </div>
+            <div v-else-if="memories.length >= 50" class="end-of-list">
+              <span class="ornament-sm">⸻</span>
+              <p>— end of the gathering —</p>
+            </div>
           </template>
           <div v-else class="index-empty">
             <span class="empty-mark">❦</span>
@@ -111,6 +121,8 @@ const {
   selectedEntities,
   selectedFacts,
   loading,
+  loadingMore,
+  hasMore,
   detailLoading,
   searchQuery,
   categoryFilter,
@@ -119,6 +131,7 @@ const {
   categories,
   machines,
   fetchMemories,
+  loadMore,
   fetchMemoryDetail,
   updateMemory,
   deleteMemory,
@@ -431,6 +444,45 @@ onMounted(async () => {
   margin: 0;
   font-size: 14px;
 }
+
+/* LOAD MORE */
+.load-more-row {
+  text-align: center;
+  padding: 18px 0 24px;
+}
+.folio-button {
+  background: transparent;
+  border: 1px solid var(--cp-gold-soft);
+  color: var(--cp-gold);
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  padding: 8px 24px;
+  cursor: pointer;
+  transition: all 200ms;
+}
+.folio-button:hover:not(:disabled) {
+  background: rgba(200, 169, 110, 0.08);
+  border-color: var(--cp-gold);
+}
+.folio-button:disabled { opacity: 0.6; cursor: wait; }
+.dotty { letter-spacing: 0.5em; color: var(--cp-gold-soft); }
+.end-of-list {
+  text-align: center;
+  padding: 24px 0 32px;
+  color: var(--cp-ink-mute);
+  font-style: italic;
+  font-family: Georgia, serif;
+  font-size: 13px;
+}
+.end-of-list .ornament-sm {
+  display: block;
+  font-size: 18px;
+  color: var(--cp-gold-soft);
+  margin-bottom: 8px;
+}
+.end-of-list p { margin: 0; }
 
 /* MOBILE — single column. Both panes flow in document order so body
    scroll reveals everything; no internal-overflow trap. */

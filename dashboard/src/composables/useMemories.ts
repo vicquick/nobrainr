@@ -3,12 +3,16 @@ import api from '@/api/client'
 import type { Memory, Entity, Fact } from '@/types'
 import { useStatsStore } from '@/stores/stats'
 
+const PAGE_SIZE = 50
+
 export function useMemories() {
   const memories = ref<Memory[]>([])
   const selectedMemory = ref<Memory | null>(null)
   const selectedEntities = ref<Entity[]>([])
   const selectedFacts = ref<Fact[]>([])
   const loading = ref(true)
+  const loadingMore = ref(false)
+  const hasMore = ref(false)
   const detailLoading = ref(false)
   const searchQuery = ref('')
   const categoryFilter = ref('')
@@ -16,14 +20,37 @@ export function useMemories() {
   const qualityFilter = ref(0)
   const categories = ref<string[]>([])
   const machines = ref<string[]>([])
+  const lastParams = ref<Record<string, string | number>>({})
 
   async function fetchMemories(params?: Record<string, string | number>) {
     loading.value = true
+    lastParams.value = params || {}
     try {
-      const { data } = await api.get<Memory[]>('/api/memories', { params })
+      const { data } = await api.get<Memory[]>('/api/memories', {
+        params: { ...params, limit: PAGE_SIZE, offset: 0 },
+      })
       memories.value = data
+      hasMore.value = data.length === PAGE_SIZE
     } finally {
       loading.value = false
+    }
+  }
+
+  async function loadMore() {
+    if (loadingMore.value || !hasMore.value) return
+    loadingMore.value = true
+    try {
+      const { data } = await api.get<Memory[]>('/api/memories', {
+        params: {
+          ...lastParams.value,
+          limit: PAGE_SIZE,
+          offset: memories.value.length,
+        },
+      })
+      memories.value = [...memories.value, ...data]
+      hasMore.value = data.length === PAGE_SIZE
+    } finally {
+      loadingMore.value = false
     }
   }
 
@@ -75,6 +102,8 @@ export function useMemories() {
     selectedEntities,
     selectedFacts,
     loading,
+    loadingMore,
+    hasMore,
     detailLoading,
     searchQuery,
     categoryFilter,
@@ -83,6 +112,7 @@ export function useMemories() {
     categories,
     machines,
     fetchMemories,
+    loadMore,
     fetchMemoryDetail,
     updateMemory,
     deleteMemory,

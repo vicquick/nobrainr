@@ -886,8 +886,16 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+/* Graph view chrome dressed in parchment palette. Sigma canvas itself
+   keeps its dark fill — the graph nodes/edges are coloured per entity
+   type by the renderer, not by CSS. */
 .graph-area {
   --panel-width: 420px;
+  --cp-gold: #c8a96e;
+  --cp-gold-soft: rgba(200, 169, 110, 0.45);
+  --cp-gold-faint: rgba(200, 169, 110, 0.18);
+  --cp-ink: rgba(238, 224, 196, 0.94);
+  --cp-ink-mute: rgba(238, 224, 196, 0.55);
   flex: 1;
   width: 100%;
   position: relative;
@@ -902,7 +910,7 @@ onUnmounted(() => {
 .sigma-canvas {
   width: 100%;
   height: 100%;
-  background: #101016;
+  background: #0e0b06;
 }
 .loading-overlay {
   position: absolute;
@@ -910,19 +918,24 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #101016;
+  background: rgba(14, 11, 6, 0.95);
   z-index: 10;
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
+  font-style: italic;
+  color: rgba(238, 224, 196, 0.65);
 }
+.loading-overlay :deep(.v-progress-circular) { color: #c8a96e !important; }
 .entity-panel {
   position: absolute;
   right: 0;
   top: 0;
   bottom: 0;
   width: var(--panel-width);
-  background: #12121a;
-  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, #14110a 0%, #0e0b06 100%);
+  border-left: 1px solid rgba(200, 169, 110, 0.18);
   overflow-y: auto;
   z-index: 5;
+  font-family: Georgia, serif;
 }
 /* Tablet: narrower panel */
 @media (min-width: 600px) and (max-width: 960px) {
@@ -940,18 +953,44 @@ onUnmounted(() => {
 .mobile-entity-sheet {
   max-height: 70vh;
   overflow-y: auto;
+  background: linear-gradient(180deg, #14110a 0%, #0e0b06 100%) !important;
 }
 .sheet-handle {
-  width: 36px;
-  height: 4px;
+  width: 40px;
+  height: 3px;
   border-radius: 2px;
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(200, 169, 110, 0.45);
   margin: 8px auto 0;
 }
 .toolbar {
   width: 100%;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-  background: rgba(16, 16, 22, 0.6);
+  border-bottom: 1px solid rgba(200, 169, 110, 0.18);
+  background: rgba(20, 17, 10, 0.7);
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
+  backdrop-filter: blur(6px);
+}
+.toolbar :deep(.v-btn-toggle) {
+  border: 1px solid rgba(200, 169, 110, 0.25) !important;
+  border-radius: 0 !important;
+}
+.toolbar :deep(.v-btn) {
+  font-family: Georgia, serif !important;
+  font-style: italic;
+  letter-spacing: 0.04em;
+  color: rgba(238, 224, 196, 0.7) !important;
+}
+.toolbar :deep(.v-btn-toggle .v-btn--active) {
+  color: #c8a96e !important;
+  background: rgba(200, 169, 110, 0.1) !important;
+}
+.toolbar :deep(.v-text-field input) {
+  font-family: Georgia, serif !important;
+  font-style: italic;
+  color: rgba(238, 224, 196, 0.94) !important;
+}
+.toolbar :deep(.v-text-field input::placeholder) {
+  color: rgba(238, 224, 196, 0.45) !important;
+  font-style: italic;
 }
 .pills-scroll {
   display: flex;
@@ -963,55 +1002,54 @@ onUnmounted(() => {
   flex-shrink: 1;
   min-width: 0;
 }
-.pills-scroll::-webkit-scrollbar {
-  display: none;
-}
+.pills-scroll::-webkit-scrollbar { display: none; }
 .status-bar {
   width: 100%;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
-  background: rgba(16, 16, 22, 0.4);
-  min-height: 20px;
+  border-bottom: 1px solid rgba(200, 169, 110, 0.1);
+  background: rgba(20, 17, 10, 0.5);
+  min-height: 22px;
+  font-family: Georgia, serif;
+  font-style: italic;
+  color: rgba(238, 224, 196, 0.55);
+}
+.status-bar :deep(.text-caption) {
+  font-family: Georgia, serif !important;
+  font-style: italic;
 }
 .type-pill {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   padding: 3px 10px;
-  border-radius: 4px;
+  font-family: Georgia, serif;
   font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  background: rgba(255, 255, 255, 0.02);
-  color: rgba(255, 255, 255, 0.35);
+  font-style: italic;
+  letter-spacing: 0.04em;
+  border: 1px solid rgba(200, 169, 110, 0.18);
+  background: transparent;
+  color: rgba(238, 224, 196, 0.55);
   cursor: pointer;
   transition: all 150ms ease;
-  font-family: inherit;
   flex-shrink: 0;
 }
 .type-pill.active {
-  color: color-mix(in srgb, var(--pill-color) 85%, white);
-  border-color: color-mix(in srgb, var(--pill-color) 25%, transparent);
-  background: color-mix(in srgb, var(--pill-color) 10%, transparent);
+  color: color-mix(in srgb, var(--pill-color) 75%, #c8a96e);
+  border-color: color-mix(in srgb, var(--pill-color) 35%, rgba(200, 169, 110, 0.35));
+  background: color-mix(in srgb, var(--pill-color) 12%, transparent);
 }
 .type-pill:hover {
-  border-color: rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(200, 169, 110, 0.4);
+  color: rgba(238, 224, 196, 0.92);
 }
 .type-dot {
   width: 6px;
   height: 6px;
-  border-radius: 2px;
   background: var(--pill-color);
-  opacity: 0.25;
+  opacity: 0.45;
   transition: opacity 150ms ease;
 }
-.type-pill.active .type-dot {
-  opacity: 0.9;
-}
-.view-toggle {
-  flex-shrink: 0;
-}
+.type-pill.active .type-dot { opacity: 0.95; }
+.view-toggle { flex-shrink: 0; }
 .view-toggle :deep(.v-btn) {
   font-size: 11px !important;
   text-transform: none !important;

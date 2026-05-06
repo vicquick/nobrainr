@@ -31,8 +31,13 @@ export function useScheduler() {
     }
   }
 
-  async function fetchScheduler() {
-    loading.value = true
+  async function fetchScheduler(opts: { silent?: boolean } = {}) {
+    // Only show the loading skeleton on the very first fetch (when we
+    // have no data yet) or when the caller explicitly asks. Subsequent
+    // refreshes (SSE events, manual refresh) swap the data silently so
+    // the page doesn't flash blank between updates.
+    const isInitial = status.value === null && events.value.length === 0
+    if (!opts.silent && isInitial) loading.value = true
     try {
       const { data } = await api.get<{
         scheduler_running: boolean
