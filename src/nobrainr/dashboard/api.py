@@ -1375,8 +1375,10 @@ async def api_insights(request: Request) -> JSONResponse:
 async def api_insight_of_the_day(request: Request) -> JSONResponse:
     """GET /api/insights/today — single insight card for dashboard home.
 
-    Picks one quality-scored synthesis from the last 30 days, biased toward
-    highest quality but with a small random shuffle so it changes day-to-day.
+    Strong recency bias: 24h candidates score 3x, 7d 1.5x, 30d 1.0x, older
+    excluded. Filters out trivial synthesis summaries (length<=24 chars).
+    Daily-stable shuffle: same insight stays for the calendar day so the
+    card doesn't refresh-flicker, but changes naturally the next day.
     """
     from nobrainr.db.pool import get_pool
     pool = await get_pool()
@@ -1390,8 +1392,23 @@ async def api_insight_of_the_day(request: Request) -> JSONResponse:
               AND category != '_archived'
               AND superseded_by IS NULL
               AND created_at > NOW() - INTERVAL '30 days'
-              AND quality_score IS NOT NULL
-            ORDER BY (quality_score * (0.7 + 0.3 * random())) DESC
+              AND length(COALESCE(summary, content, '')) > 60
+              AND length(COALESCE(summary, '')) > 24
+            ORDER BY
+              -- recency multiplier
+              CASE
+                WHEN created_at > NOW() - INTERVAL '24 hours' THEN 3.0
+                WHEN created_at > NOW() - INTERVAL '7 days'   THEN 1.5
+                ELSE 1.0
+              END
+              -- score blend: confidence (0.7-1.0 for synth) + quality if scored
+              * (COALESCE(confidence, 0.7) + COALESCE(quality_score, 0.3))
+              -- daily-stable hash → same pick across the calendar day, changes next day
+              * (1.0 + 0.4 * (
+                  abs(hashtext(id::text || to_char(now() at time zone 'utc', 'YYYY-MM-DD')))
+                  % 1000
+                ) / 1000.0)
+              DESC
             LIMIT 1
             """
         )
