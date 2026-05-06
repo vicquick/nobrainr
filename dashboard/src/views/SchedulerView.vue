@@ -243,7 +243,7 @@ function formatCadence(hours: number): string {
 
 useSSE((evt) => {
   if (['agent_event', 'feedback_added'].includes(evt.type)) {
-    fetchScheduler()
+    fetchScheduler({ silent: true })
   }
 })
 
