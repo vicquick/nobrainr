@@ -196,6 +196,8 @@ class Scheduler:
             {"name": "cooccurrence_linking", "interval_hours": settings.cooccurrence_interval_hours, "type": "llm"},
             {"name": "contextual_prefix_backfill", "interval_hours": 2.0, "type": "llm"},
             {"name": "lesson_classifier", "interval_hours": settings.lesson_classifier_interval_hours, "type": "llm"},
+            {"name": "conversation_embedding_backfill", "interval_hours": 1.0, "type": "llm"},
+            {"name": "observation_consolidate", "interval_hours": 0.5, "type": "llm"},
         ]
         # github_sync is classified as "external" — it's network IO + embeddings only
         # (commit import uses skip_dedup=True, and extraction is fire-and-forget async).
