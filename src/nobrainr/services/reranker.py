@@ -78,19 +78,34 @@ def _get_st_reranker():
     """Load the sentence-transformers CrossEncoder, cached for process lifetime.
 
     Tries GPU first (device='cuda'), falls back to CPU on OOM. BGE-v2-m3 is
-    ~600MB so it fits alongside Qwen3.6-27B when llama-server is idle (TTL
-    1h). When llama-server is active and GPU is full, the cuda load fails →
-    we silently fall back to CPU. Either way, reranking works — GPU just
-    makes interactive search ~5x faster (200-500ms vs 1-2s).
+    ~600MB; Qwen3-Reranker-0.6B is ~1.2GB at fp16. Both fit alongside
+    Qwen3.6-27B when llama-server is idle (TTL 1h). When VRAM is full the
+    cuda load fails → silent fall back to CPU.
+
+    Qwen3-Reranker-0.6B (Apr 2026) is a drop-in for BGE-v2-m3 — the model
+    card explicitly demonstrates `CrossEncoder("Qwen/Qwen3-Reranker-0.6B")`.
+    It outputs raw logit differences (range ~-12 to +8) instead of [0,1]
+    probabilities, so reranker_apply_sigmoid normalises to [0,1] keeping
+    the auto_negative_low_rerank_threshold semantics consistent.
     """
     from sentence_transformers import CrossEncoder
-    device = settings.reranker_device  # 'cuda' default, 'cpu' fallback
+    device = settings.reranker_device
+    kwargs = {"max_length": 512, "device": device}
+    # Qwen3-Reranker is 0.6B params — load in fp16 on GPU to fit alongside
+    # the 19GB-resident llama-server. fp32 would be ~2.4GB and OOM on the
+    # 20GB RTX 4000 SFF Ada when llama-server is active.
+    if device == "cuda":
+        try:
+            import torch
+            kwargs["model_kwargs"] = {"torch_dtype": torch.float16}
+        except Exception:
+            pass
     try:
         logger.info(
             "Loading sentence-transformers reranker on %s: %s",
             device, settings.reranker_model,
         )
-        return CrossEncoder(settings.reranker_model, max_length=512, device=device)
+        return CrossEncoder(settings.reranker_model, **kwargs)
     except Exception as exc:
         if device == "cuda":
             logger.warning(
@@ -139,6 +154,14 @@ async def _rerank_sentence_transformers(
         None,
         lambda: model.predict(pairs, batch_size=16, show_progress_bar=False, convert_to_numpy=True),
     )
+
+    # Optionally normalise to [0,1]. Qwen3-Reranker outputs raw logits
+    # roughly [-12, +8]; BGE-v2-m3 outputs raw logits in similar range.
+    # Sigmoid keeps thresholds (auto_negative_low_rerank_threshold) stable
+    # across reranker swaps so the feedback loop semantics don't drift.
+    if settings.reranker_apply_sigmoid:
+        import math
+        scores = [1.0 / (1.0 + math.exp(-float(s))) for s in scores]
 
     scored = list(zip(scores, passages))
     scored.sort(key=lambda s: float(s[0]), reverse=True)
