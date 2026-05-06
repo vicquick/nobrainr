@@ -94,6 +94,9 @@ LLM_JOB_DELAYS = {
     # so the Threads tab can search them. ~4h to backfill 2362 conversations
     # at 10/run × 1h interval × 7s/embed.
     "conversation_embedding_backfill": 9 * 60,
+    # Mastra-style Reflector: consolidate near-duplicate observations per
+    # thread. Cheap (one LLM call per active thread) so 5min initial delay.
+    "observation_consolidate": 5 * 60,
 }
 
 # Per-job timeout for LLM operations
@@ -367,6 +370,8 @@ class Scheduler:
              settings.lesson_classifier_interval_hours * 3600),
             ("conversation_embedding_backfill", scheduler_jobs.conversation_embedding_backfill,
              1.0 * 3600),  # every 1h; 10 conv/run, ~4h to drain 2362 backlog
+            ("observation_consolidate", scheduler_jobs.observation_consolidate,
+             0.5 * 3600),  # every 30min; auto-idles when no thread has 5+ fresh obs
         ]
 
         for name, job_func, interval in llm_jobs:

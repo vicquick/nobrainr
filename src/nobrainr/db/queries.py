@@ -845,6 +845,133 @@ async def get_conversation_raw(conv_id: str) -> dict | None:
         return d
 
 
+# ──────────────────────────────────────────────
+# Observational Memory (Mastra-style, 2026-05-06)
+# See docs/proposals/MASTRA_OM_PROPOSAL.md
+# ──────────────────────────────────────────────
+
+async def store_observation(
+    thread_id: str,
+    body: str,
+    embedding: list[float] | None = None,
+    metadata: dict | None = None,
+) -> str:
+    """Append an observation to a thread's log. Returns the new row id."""
+    pool = await get_pool()
+    import json as _json
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO observation_logs (thread_id, body, embedding, metadata)
+            VALUES ($1, $2, $3, $4::jsonb)
+            RETURNING id
+            """,
+            thread_id, body[:8000],
+            embedding,
+            _json.dumps(metadata or {}),
+        )
+        return str(row["id"])
+
+
+async def fetch_observation_log(
+    thread_id: str, limit: int = 50,
+) -> list[dict]:
+    """Return active (non-superseded) observations for a thread, oldest first."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, body, created_at, metadata
+            FROM observation_logs
+            WHERE thread_id = $1 AND superseded_by IS NULL
+            ORDER BY created_at ASC
+            LIMIT $2
+            """,
+            thread_id, limit,
+        )
+    return [
+        {"id": str(r["id"]), "body": r["body"], "created_at": r["created_at"],
+         "metadata": r["metadata"]}
+        for r in rows
+    ]
+
+
+async def search_observations(
+    embedding: list[float], thread_id: str | None = None, limit: int = 10,
+) -> list[dict]:
+    """Vector-search the observation log; thread_id optional for scoping."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if thread_id:
+            rows = await conn.fetch(
+                f"""
+                SELECT id, thread_id, body, created_at, metadata,
+                       1 - (embedding::{_HV} <=> $1::{_HV}) AS similarity
+                FROM observation_logs
+                WHERE embedding IS NOT NULL
+                  AND superseded_by IS NULL
+                  AND thread_id = $2
+                ORDER BY embedding::{_HV} <=> $1::{_HV}
+                LIMIT $3
+                """,
+                embedding, thread_id, limit,
+            )
+        else:
+            rows = await conn.fetch(
+                f"""
+                SELECT id, thread_id, body, created_at, metadata,
+                       1 - (embedding::{_HV} <=> $1::{_HV}) AS similarity
+                FROM observation_logs
+                WHERE embedding IS NOT NULL AND superseded_by IS NULL
+                ORDER BY embedding::{_HV} <=> $1::{_HV}
+                LIMIT $2
+                """,
+                embedding, limit,
+            )
+    return [
+        {"id": str(r["id"]), "thread_id": r["thread_id"], "body": r["body"],
+         "created_at": r["created_at"], "similarity": float(r["similarity"]),
+         "metadata": r["metadata"]}
+        for r in rows
+    ]
+
+
+async def supersede_observations(parent_id: str, child_ids: list[str]) -> int:
+    """Mark child observations as superseded by parent (after Reflector merge)."""
+    if not child_ids:
+        return 0
+    from uuid import UUID
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE observation_logs SET superseded_by = $1::uuid
+            WHERE id = ANY($2::uuid[])
+            """,
+            UUID(parent_id), [UUID(c) for c in child_ids],
+        )
+        return int(result.split()[-1]) if result else 0
+
+
+async def get_threads_with_fresh_observations(min_count: int = 5) -> list[dict]:
+    """Find thread_ids with N+ active observations — Reflector consolidation candidates."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT thread_id, COUNT(*) AS fresh
+            FROM observation_logs
+            WHERE superseded_by IS NULL
+            GROUP BY thread_id
+            HAVING COUNT(*) >= $1
+            ORDER BY fresh DESC
+            LIMIT 20
+            """,
+            min_count,
+        )
+    return [{"thread_id": r["thread_id"], "fresh": int(r["fresh"])} for r in rows]
+
+
 async def get_memory(memory_id: str) -> dict | None:
     pool = await get_pool()
     async with pool.acquire() as conn:
