@@ -46,9 +46,15 @@ html, body, #app {
 }
 .v-main { background: transparent !important; }
 
-/* Page transition — slow folio fade */
-.folio-fade-enter-active, .folio-fade-leave-active {
-  transition: opacity 200ms cubic-bezier(0.22, 1, 0.36, 1);
+/* Page transition — opacity-only fade with codex motion tokens.
+   Asymmetric in/out: enter uses decel ease, leave uses accel — matches
+   how a real reader turns a page (the new page settles, the old page
+   exits briskly). Falls back to 200ms if tokens haven't loaded. */
+.folio-fade-enter-active {
+  transition: opacity var(--cp-dur-route, 180ms) var(--cp-ease-decel, cubic-bezier(0, 0, 0.2, 1));
+}
+.folio-fade-leave-active {
+  transition: opacity var(--cp-dur-out, 150ms) var(--cp-ease-accel, cubic-bezier(0.4, 0, 1, 1));
 }
 .folio-fade-enter-from, .folio-fade-leave-to {
   opacity: 0;

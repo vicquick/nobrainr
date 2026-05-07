@@ -40,18 +40,18 @@
             <span class="quire-title">Vitae · the corpus</span>
           </div>
 
-          <div class="ledger-figures">
-            <article class="ledger-line">
+          <div class="ledger-figures cp-stagger">
+            <article class="ledger-line" :style="staggerStyle(0)">
               <span class="ledger-key">Memories scribed</span>
-              <span class="ledger-fig">{{ health.total_memories?.toLocaleString() }}</span>
+              <span class="ledger-fig">{{ memoriesScribed.toLocaleString() }}</span>
             </article>
-            <article class="ledger-line">
+            <article class="ledger-line" :style="staggerStyle(1)">
               <span class="ledger-key">Entities catalogued</span>
-              <span class="ledger-fig">{{ health.total_entities?.toLocaleString() }}</span>
+              <span class="ledger-fig">{{ entitiesCatalogued.toLocaleString() }}</span>
             </article>
-            <article class="ledger-line">
+            <article class="ledger-line" :style="staggerStyle(2)">
               <span class="ledger-key">Relations drawn</span>
-              <span class="ledger-fig">{{ health.total_relations?.toLocaleString() }}</span>
+              <span class="ledger-fig">{{ relationsDrawn.toLocaleString() }}</span>
             </article>
           </div>
 
@@ -60,7 +60,7 @@
             <div class="progress-head">
               <span class="progress-label"><em>Entity extraction</em></span>
               <span class="progress-fig" :class="{ done: extractionPct >= 90 }">
-                {{ health.extraction_done?.toLocaleString() }} <em>of</em>
+                {{ extractionDone.toLocaleString() }} <em>of</em>
                 {{ (health.extraction_done + health.extraction_pending)?.toLocaleString() }}
                 · {{ extractionPct }}<span class="pct">%</span>
               </span>
@@ -78,7 +78,7 @@
             <div class="progress-head">
               <span class="progress-label"><em>Quality scoring</em></span>
               <span class="progress-fig" :class="{ done: qualityPct >= 90 }">
-                {{ health.quality_scored?.toLocaleString() }} <em>of</em>
+                {{ qualityScored.toLocaleString() }} <em>of</em>
                 {{ (health.quality_scored + health.quality_unscored)?.toLocaleString() }}
                 · {{ qualityPct }}<span class="pct">%</span>
               </span>
@@ -127,8 +127,13 @@
                 <th>Times</th>
               </tr>
             </thead>
-            <tbody>
-              <tr v-for="task in status.tasks" :key="task.name" class="office-row">
+            <tbody class="cp-stagger">
+              <tr
+                v-for="(task, i) in status.tasks"
+                :key="task.name"
+                class="office-row"
+                :style="staggerStyle(i)"
+              >
                 <td>
                   <span class="task-name">{{ task.name }}</span>
                   <span v-if="task.type" class="task-type" :class="`type-${task.type}`">
@@ -151,18 +156,18 @@
             <span class="quire-title">Of feedback received</span>
           </div>
 
-          <div class="feedback-figures">
-            <article class="ledger-line">
+          <div class="feedback-figures cp-stagger">
+            <article class="ledger-line" :style="staggerStyle(0)">
               <span class="ledger-key">Total responses</span>
-              <span class="ledger-fig">{{ feedbackStats.total.toLocaleString() }}</span>
+              <span class="ledger-fig">{{ fbTotal.toLocaleString() }}</span>
             </article>
-            <article class="ledger-line">
+            <article class="ledger-line" :style="staggerStyle(1)">
               <span class="ledger-key">Helpful · positive</span>
-              <span class="ledger-fig accent-good">{{ feedbackStats.positive.toLocaleString() }}</span>
+              <span class="ledger-fig accent-good">{{ fbPositive.toLocaleString() }}</span>
             </article>
-            <article class="ledger-line">
+            <article class="ledger-line" :style="staggerStyle(2)">
               <span class="ledger-key">Unhelpful · negative</span>
-              <span class="ledger-fig accent-bad">{{ feedbackStats.negative.toLocaleString() }}</span>
+              <span class="ledger-fig accent-bad">{{ fbNegative.toLocaleString() }}</span>
             </article>
           </div>
 
@@ -190,8 +195,8 @@
             <span class="quire-flag">{{ events.length }} entries</span>
           </div>
 
-          <ul class="events-list">
-            <li v-for="evt in events" :key="evt.id" class="event-line">
+          <ul class="events-list cp-stagger">
+            <li v-for="(evt, i) in events" :key="evt.id" class="event-line" :style="staggerStyle(i)">
               <span class="event-type">{{ evt.event_type }}</span>
               <span class="event-source">{{ evt.source || '—' }}</span>
               <span class="event-data">{{ JSON.stringify(evt.event_data).slice(0, 90) }}</span>
@@ -210,9 +215,21 @@ import { computed, onMounted } from 'vue'
 import { useScheduler } from '@/composables/useScheduler'
 import { useSSE } from '@/composables/useSSE'
 import FolioSkeleton from '@/components/FolioSkeleton.vue'
+import { useCountUp } from '@/composables/useCountUp'
+import { staggerStyle } from '@/composables/useStaggerIndex'
 
 const { status, events, feedbackStats, health, loading, actionLoading,
         fetchScheduler, pauseScheduler, resumeScheduler } = useScheduler()
+
+// Vitae · the corpus — count-up tickers on first paint only.
+const memoriesScribed   = useCountUp(computed(() => health.value?.total_memories  ?? 0))
+const entitiesCatalogued = useCountUp(computed(() => health.value?.total_entities ?? 0))
+const relationsDrawn    = useCountUp(computed(() => health.value?.total_relations ?? 0))
+const extractionDone    = useCountUp(computed(() => health.value?.extraction_done ?? 0))
+const qualityScored     = useCountUp(computed(() => health.value?.quality_scored  ?? 0))
+const fbTotal    = useCountUp(computed(() => feedbackStats.value?.total    ?? 0))
+const fbPositive = useCountUp(computed(() => feedbackStats.value?.positive ?? 0))
+const fbNegative = useCountUp(computed(() => feedbackStats.value?.negative ?? 0))
 
 const extractionPct = computed(() => {
   if (!health.value) return 0
