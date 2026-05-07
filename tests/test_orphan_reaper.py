@@ -216,10 +216,17 @@ def test_scheduler_calls_reset_stale_processing_on_worker_startup():
     assert "reset_stale_processing" in src, \
         "_memory_write_worker must call write_queue.reset_stale_processing on startup"
 
-    # The call must come BEFORE the `while self._running:` loop —
-    # otherwise it runs every iteration, not once at startup.
+    # The call must come BEFORE the worker's main loop — otherwise it
+    # runs every iteration, not once at startup. The flag was renamed
+    # from `_running` to `_write_queue_running` in the 2026-04-20 pause
+    # decoupling (so /api/scheduler/pause doesn't silently kill the
+    # write-queue worker), so accept either as the loop signal.
     reset_idx = src.find("reset_stale_processing")
-    while_idx = src.find("while self._running:")
-    assert reset_idx > 0 and while_idx > 0
+    while_idx = max(
+        src.find("while self._write_queue_running:"),
+        src.find("while self._running:"),
+    )
+    assert reset_idx > 0 and while_idx > 0, \
+        "expected both a reset_stale_processing call and a `while self._...running:` loop"
     assert reset_idx < while_idx, \
         "reset_stale_processing must be called BEFORE the while loop (once at startup, not every iteration)"

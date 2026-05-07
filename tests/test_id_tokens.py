@@ -84,8 +84,20 @@ def test_deduplicates():
 
 
 def test_multiple_tokens():
-    q = "PR 147 introduces commit a1b2c3d and fixes #42"
+    # Two-digit numbers ("#42") are dropped by extract_id_tokens — the
+    # bare digit sequence would trigger a full-table ILIKE scan and
+    # match "1042"/"4200"/etc. So this query bumps the issue number to
+    # three digits ("#423") and the test asserts the three high-signal
+    # anchors that survive the >= 3-char filter.
+    q = "PR 147 introduces commit a1b2c3d and fixes #423"
     tokens = extract_id_tokens(q)
     assert "a1b2c3d" in tokens
     assert "147" in tokens
-    assert "42" in tokens
+    assert "423" in tokens
+
+
+def test_two_digit_numbers_dropped():
+    """Bare 2-digit issue numbers are intentionally not extracted —
+    they're too noisy as literal-branch anchors. See module docstring."""
+    assert extract_id_tokens("fixes #42") == []
+    assert extract_id_tokens("issue 9") == []
