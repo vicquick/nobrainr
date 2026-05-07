@@ -1,0 +1,161 @@
+/* ---------------------------------------------------------------
+   nobrainr — global motion primitives.
+
+   Conventions:
+   - Animate ONLY transform + opacity. No width/height/margin.
+   - Default easing: --cp-ease (standard out-in for clicks).
+   - Hover-in 200ms, hover-out 150ms (asymmetric).
+   - Reduced-motion gate at the bottom flattens everything.
+--------------------------------------------------------------- */
+
+/* ============== DOTTY — flickering scribal pulse ============== */
+
+.dotty {
+  letter-spacing: 0.5em;
+  color: var(--cp-gold-soft);
+  font-variant-numeric: tabular-nums;
+  display: inline-flex;
+  gap: 0.05em;
+}
+.dotty > span {
+  display: inline-block;
+  opacity: 0.25;
+  animation: dotty-pulse var(--cp-dur-pulse) ease-in-out infinite;
+  will-change: opacity, transform;
+}
+.dotty > span:nth-child(1) { animation-delay: 0ms; }
+.dotty > span:nth-child(2) { animation-delay: 180ms; }
+.dotty > span:nth-child(3) { animation-delay: 360ms; }
+
+@keyframes dotty-pulse {
+  0%, 80%, 100% { opacity: 0.22; transform: translateY(0) scale(1); }
+  40%           { opacity: 1;    transform: translateY(-1px) scale(1.05); }
+}
+
+/* ============== FOLIO SKELETON — gold-tinted shimmer ============== */
+
+.folio-skel {
+  position: relative;
+  display: block;
+  background:
+    linear-gradient(
+      100deg,
+      rgba(200, 169, 110, 0.04) 0%,
+      rgba(200, 169, 110, 0.04) 35%,
+      rgba(200, 169, 110, 0.12) 50%,
+      rgba(200, 169, 110, 0.04) 65%,
+      rgba(200, 169, 110, 0.04) 100%
+    );
+  background-size: 250% 100%;
+  background-repeat: no-repeat;
+  background-position: 100% 0;
+  animation: folio-shimmer var(--cp-dur-skel) ease-in-out infinite;
+  border-radius: 2px;
+  will-change: background-position;
+}
+
+@keyframes folio-shimmer {
+  0%   { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
+/* ============== STAGGER REVEAL (CSS-only) ==============
+   Apply class .cp-stagger to a list parent. Children opt-in
+   via data-cp-i attribute or simple :nth-child cascade.
+
+   Example:
+     <ul class="cp-stagger">
+       <li v-for="(x,i) in xs" :style="{ '--i': i }">
+   ------------------------------------------------------------ */
+
+.cp-stagger > * {
+  opacity: 0;
+  transform: translateY(6px);
+  animation: cp-stagger-in 320ms var(--cp-ease-decel) forwards;
+  animation-delay: calc(var(--i, 0) * 60ms);
+  will-change: opacity, transform;
+}
+
+@keyframes cp-stagger-in {
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ============== ROUTE FADE (already in App.vue, mirrored here for parity) ============== */
+
+.folio-fade-enter-active,
+.folio-fade-leave-active {
+  transition: opacity var(--cp-dur-route) var(--cp-ease-decel);
+}
+.folio-fade-enter-from,
+.folio-fade-leave-to { opacity: 0; }
+
+/* ============== CLICKABLE AFFORDANCE (utility) ==============
+   Apply to any element whose hover should imply "click reveals more".
+   Standardized: 1px lift, gold border tint, 200ms.
+   ------------------------------------------------------------ */
+
+.cp-clickable {
+  cursor: pointer;
+  transition:
+    border-color var(--cp-dur-hover) var(--cp-ease),
+    background   var(--cp-dur-hover) var(--cp-ease),
+    transform    var(--cp-dur-hover) var(--cp-ease),
+    box-shadow   var(--cp-dur-hover) var(--cp-ease);
+}
+.cp-clickable:hover {
+  transform: translateY(-1px);
+}
+
+/* ============== MARGINALIA — hover hint tooltip ==============
+   Codex-styled tooltip that surfaces on hover for inert-looking
+   cells, signalling "more lives behind this". Uses pure CSS so
+   it works without any JS. Position: top-center by default.
+   ------------------------------------------------------------ */
+
+.cp-marginalia {
+  position: relative;
+}
+.cp-marginalia::after {
+  content: attr(data-margin);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translate(-50%, 4px);
+  padding: 4px 8px;
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
+  font-style: italic;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--cp-ink);
+  background: var(--cp-paper);
+  border: 1px solid var(--cp-rule);
+  border-radius: 2px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition:
+    opacity var(--cp-dur-hover) var(--cp-ease) 200ms,
+    transform var(--cp-dur-hover) var(--cp-ease) 200ms;
+  z-index: 50;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+.cp-marginalia:hover::after,
+.cp-marginalia:focus-visible::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  transition-delay: 0ms;
+}
+
+/* ============== REDUCED MOTION FLOOR ============== */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+  .dotty > span { opacity: 0.6; }
+}

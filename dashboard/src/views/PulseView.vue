@@ -22,7 +22,7 @@
       <!-- LOADING STATE -->
       <template v-if="!stats">
         <div class="loading-folio">
-          <span class="dotty">·  ·  ·</span>
+          <Dotty />
           <p class="loading-text">consulting the registry</p>
         </div>
       </template>
@@ -257,7 +257,7 @@
 
               <p class="page-eyebrow">Content</p>
               <p v-if="loadingQueueContent" class="page-loading">
-                <span class="dotty">·  ·  ·</span>
+                <Dotty />
               </p>
               <p v-else class="page-pre">{{ queueFullContent || detailQueue.content_preview }}</p>
 
@@ -286,6 +286,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import api from '@/api/client'
 import type { Stats } from '@/types'
+import Dotty from '@/components/Dotty.vue'
 
 const stats = ref<Stats | null>(null)
 const pulsing = ref(false)

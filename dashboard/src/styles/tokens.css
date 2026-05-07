@@ -1,0 +1,53 @@
+/* ---------------------------------------------------------------
+   nobrainr — codex palette + motion tokens (global :root floor)
+
+   Per-view scoped styles still declare these locally for clarity;
+   that's intentional. Globals here exist so cross-view components
+   (Dotty, FolioSkeleton, drawers, etc.) get the right palette
+   without inheriting from a particular page.
+--------------------------------------------------------------- */
+
+:root {
+  /* Codex palette */
+  --cp-gold:        #c8a96e;
+  --cp-gold-bright: #e2c98a;
+  --cp-gold-soft:   rgba(200, 169, 110, 0.45);
+  --cp-gold-faint:  rgba(200, 169, 110, 0.18);
+  --cp-gold-trace:  rgba(200, 169, 110, 0.06);
+
+  --cp-ink:         rgba(238, 224, 196, 0.94);
+  --cp-ink-mute:    rgba(238, 224, 196, 0.55);
+  --cp-ink-faint:   rgba(238, 224, 196, 0.30);
+
+  --cp-paper:       #14110a;
+  --cp-paper-deep:  #0e0b06;
+  --cp-rule:        rgba(200, 169, 110, 0.16);
+
+  /* Motion tokens — Linear/Material standard, codex-tuned */
+  --cp-ease:        cubic-bezier(0.2, 0, 0, 1);          /* standard */
+  --cp-ease-decel:  cubic-bezier(0, 0, 0.2, 1);          /* enter */
+  --cp-ease-accel:  cubic-bezier(0.4, 0, 1, 1);          /* leave */
+  --cp-ease-emph:   cubic-bezier(0.3, 0, 0, 1);          /* emphasized */
+
+  --cp-dur-hover:   200ms;
+  --cp-dur-out:     150ms;
+  --cp-dur-panel:   250ms;
+  --cp-dur-route:   180ms;
+  --cp-dur-tick:    600ms;
+  --cp-dur-skel:    1600ms;
+  --cp-dur-pulse:   1400ms;
+
+  /* Focus ring — gold, accessible, 3:1 against parchment */
+  --cp-focus-ring:  0 0 0 2px rgba(20, 17, 10, 1),
+                    0 0 0 4px rgba(200, 169, 110, 0.55);
+}
+
+/* Universal focus-visible affordance for keyboard users.
+   Mouse users do not see it (browsers gate :focus-visible
+   to keyboard / programmatic focus only). */
+:focus { outline: none; }
+:focus-visible {
+  outline: none;
+  box-shadow: var(--cp-focus-ring);
+  border-radius: 3px;
+}
