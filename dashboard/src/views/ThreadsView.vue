@@ -52,11 +52,12 @@
         <span class="ornament">❦</span>
         <p>{{ query ? '— no thread answers to this seeking —' : '— recent threads will appear here —' }}</p>
       </div>
-      <ul v-else class="threads-list">
+      <ul v-else class="threads-list cp-stagger">
         <li
           v-for="(t, i) in threads"
           :key="t.id"
           class="thread-line"
+          :style="staggerStyle(i)"
           @click="openThread(t.id)"
         >
           <span class="thread-numeral">{{ toRoman(i + 1) }}.</span>
@@ -82,6 +83,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import Dotty from '@/components/Dotty.vue'
+import { staggerStyle } from '@/composables/useStaggerIndex'
 
 interface Thread {
   id: string
