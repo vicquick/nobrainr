@@ -128,9 +128,17 @@ async def test_signal_pending_outside_loop_does_not_raise():
 # ──────────────────────────────────────────────
 
 async def test_enqueue_returns_queue_id_and_wakes_worker():
+    """enqueue_memory_write now does TWO dedup probes (queue + memories)
+    before the INSERT. Provide three sequential fetchrow returns:
+    None (no queue dup), None (no memory dup), insert-row.
+    """
     pool = _FakePool()
     fake_id = uuid4()
-    pool.conn.fetchrow.return_value = {"id": fake_id, "enqueued_at": _now_utc()}
+    pool.conn.fetchrow.side_effect = [
+        None,
+        None,
+        {"id": fake_id, "enqueued_at": _now_utc()},
+    ]
 
     # Reset event so we can observe the signal
     write_queue._write_pending_event = None
@@ -150,9 +158,9 @@ async def test_enqueue_returns_queue_id_and_wakes_worker():
     assert out["queue_id"] == str(fake_id)
     assert "enqueued_at" in out
 
-    # The INSERT received the payload in the right shape
-    call = pool.conn.fetchrow.await_args
-    sql, *args = call.args
+    # The INSERT (third fetchrow call) received the payload in the right shape.
+    insert_call = pool.conn.fetchrow.await_args_list[-1]
+    sql, *args = insert_call.args
     assert "INSERT INTO memory_write_queue" in sql
     assert args[0] == "hello world"
     assert args[1] == "short"
@@ -167,14 +175,21 @@ async def test_enqueue_returns_queue_id_and_wakes_worker():
 
 
 async def test_enqueue_handles_none_metadata():
+    """Same dedup-probe sequence as above; metadata=None survives the JSON
+    wrap as a literal NULL."""
     pool = _FakePool()
-    pool.conn.fetchrow.return_value = {"id": uuid4(), "enqueued_at": _now_utc()}
+    pool.conn.fetchrow.side_effect = [
+        None,
+        None,
+        {"id": uuid4(), "enqueued_at": _now_utc()},
+    ]
 
     with patch.object(write_queue, "get_pool", AsyncMock(return_value=pool)):
         await write_queue.enqueue_memory_write(content="x", metadata=None)
 
-    args = pool.conn.fetchrow.await_args.args
-    assert args[9] is None  # metadata arg
+    insert_call = pool.conn.fetchrow.await_args_list[-1]
+    args = insert_call.args[1:]
+    assert args[8] is None  # metadata arg (9th positional after sql)
 
 
 # ──────────────────────────────────────────────
@@ -453,16 +468,28 @@ async def test_worker_happy_path_claims_processes_and_marks_done():
         "contextual_prefix": None,
         "attempts": 1,
         "max_attempts": 3,
+        "enqueued_at": _now_utc(),
     }
 
     async def _stop_scheduler(*args, **kwargs):
         scheduler._running = False
         return False
 
+    # Worker uses a dedicated lifecycle flag (renamed 2026-04-20) so a
+    # /api/scheduler/pause doesn't silently kill the queue.
+    scheduler._write_queue_running = True
+
+    async def _stop_via_write_queue_flag(*args, **kwargs):
+        scheduler._write_queue_running = False
+        return False
+
     claim_mock = AsyncMock(side_effect=[row, None])  # 1st returns row, 2nd stops loop
     mark_done_mock = AsyncMock()
     mark_failed_mock = AsyncMock()
-    wait_mock = AsyncMock(side_effect=_stop_scheduler)
+    wait_mock = AsyncMock(side_effect=_stop_via_write_queue_flag)
+    # Worker startup runs an orphan reset (Phase G, 2026-04-12) before the
+    # main loop. Mocked so no real DB is required.
+    reset_stale_mock = AsyncMock(return_value=0)
     store_mock = AsyncMock(return_value={
         "status": "stored",
         "id": "bbbb2222-3333-4444-5555-666677778888",
@@ -473,6 +500,7 @@ async def test_worker_happy_path_claims_processes_and_marks_done():
         patch("nobrainr.db.write_queue.mark_done", mark_done_mock),
         patch("nobrainr.db.write_queue.mark_failed", mark_failed_mock),
         patch("nobrainr.db.write_queue.wait_for_pending", wait_mock),
+        patch("nobrainr.db.write_queue.reset_stale_processing", reset_stale_mock),
         patch("nobrainr.services.memory.store_memory_with_extraction", store_mock),
     ):
         await asyncio.wait_for(scheduler._memory_write_worker(), timeout=5.0)
@@ -517,16 +545,20 @@ async def test_worker_failure_path_calls_mark_failed_with_retry():
         "contextual_prefix": None,
         "attempts": 1,
         "max_attempts": 3,
+        "enqueued_at": _now_utc(),
     }
 
-    async def _stop_scheduler(timeout):
-        scheduler._running = False
+    scheduler._write_queue_running = True
+
+    async def _stop_via_write_queue_flag(timeout):
+        scheduler._write_queue_running = False
         return False
 
     claim_mock = AsyncMock(side_effect=[row, None])
     mark_done_mock = AsyncMock()
     mark_failed_mock = AsyncMock(return_value="pending")
-    wait_mock = AsyncMock(side_effect=_stop_scheduler)
+    wait_mock = AsyncMock(side_effect=_stop_via_write_queue_flag)
+    reset_stale_mock = AsyncMock(return_value=0)
     store_mock = AsyncMock(side_effect=RuntimeError("llama-server down"))
 
     with (
@@ -534,6 +566,7 @@ async def test_worker_failure_path_calls_mark_failed_with_retry():
         patch("nobrainr.db.write_queue.mark_done", mark_done_mock),
         patch("nobrainr.db.write_queue.mark_failed", mark_failed_mock),
         patch("nobrainr.db.write_queue.wait_for_pending", wait_mock),
+        patch("nobrainr.db.write_queue.reset_stale_processing", reset_stale_mock),
         patch("nobrainr.services.memory.store_memory_with_extraction", store_mock),
     ):
         await asyncio.wait_for(scheduler._memory_write_worker(), timeout=5.0)

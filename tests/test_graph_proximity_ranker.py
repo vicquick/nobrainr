@@ -31,19 +31,36 @@ from nobrainr.db import queries as db_queries
 
 async def _capture_execute_sql() -> str:
     """Run recompute_importance() against a mock pool and return the SQL
-    string passed to conn.execute()."""
+    string of the Phase-1 compute SELECT (where every CTE lives).
+
+    Phase 1 reads with conn.fetch; if any row's new_importance differs
+    from old_importance, Phase 2 fires conn.execute in batches against
+    a transaction. We mock both so recompute_importance returns a real
+    row count and the SQL captured is the SELECT (the test target).
+    """
     captured = {}
 
-    async def fake_execute(sql, *args):
+    fake_row = {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "new_importance": 0.42,
+        "old_importance": 0.10,
+    }
+
+    async def fake_fetch(sql, *args):
         captured["sql"] = sql
-        # Return a string that matches "UPDATE <n>" so recompute_importance
-        # can split()[-1] it into an int count.
+        return [fake_row]
+
+    async def fake_execute(sql, *args):
         return "UPDATE 42"
 
     mock_conn = AsyncMock()
+    mock_conn.fetch = AsyncMock(side_effect=fake_fetch)
     mock_conn.execute = AsyncMock(side_effect=fake_execute)
-    # The `async with pool.acquire() as conn:` pattern needs an async context
-    # manager that yields conn.
+    txn_ctx = MagicMock()
+    txn_ctx.__aenter__ = AsyncMock(return_value=None)
+    txn_ctx.__aexit__ = AsyncMock(return_value=None)
+    mock_conn.transaction = MagicMock(return_value=txn_ctx)
+
     acquire_ctx = MagicMock()
     acquire_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
     acquire_ctx.__aexit__ = AsyncMock(return_value=None)
@@ -93,9 +110,9 @@ async def test_recompute_importance_weights_sum_to_one():
     # New weights
     assert "(0.3 * LEAST(1.0, COALESCE((" in sql, \
         "entity connectivity should be at 30% (down from 40%)"
-    assert "(0.3 * COALESCE(quality_score, 0.5))" in sql, \
+    assert "(0.3 * COALESCE(m.quality_score, 0.5))" in sql, \
         "quality weight should remain at 30%"
-    assert "(0.2 * COALESCE(confidence, 0.7))" in sql, \
+    assert "(0.2 * COALESCE(m.confidence, 0.7))" in sql, \
         "confidence should drop to 20% (down from 30%)"
     # Graph proximity term — the new one
     assert "0.2 * LEAST(1.0, COALESCE((" in sql, \
@@ -123,10 +140,13 @@ async def test_recompute_importance_old_weights_not_present():
 
 @pytest.mark.asyncio
 async def test_recompute_importance_preserves_embedding_filter():
-    """Must keep the 'WHERE embedding IS NOT NULL' guard — we never score
-    memories that haven't been embedded yet, because they can't be searched."""
+    """Must keep the 'WHERE m.embedding IS NOT NULL' guard — we never score
+    memories that haven't been embedded yet, because they can't be searched.
+    Column qualified with `m.` alias since the v6.13 split into compute +
+    apply phases (compute SELECTs from `memories m`).
+    """
     sql = await _capture_execute_sql()
-    assert "WHERE embedding IS NOT NULL" in sql, \
+    assert "WHERE m.embedding IS NOT NULL" in sql, \
         "safety guard: don't compute importance on pre-embedding rows"
 
 
@@ -145,15 +165,25 @@ async def test_recompute_importance_least_1_cap():
     assert sql.count("LEAST(1.0,") >= 3, \
         "LEAST(1.0, ...) guards should cap each sub-term and the overall sum"
     # Phase J outer wrap: GREATEST(0.0, LEAST(1.0, ...)) so the penalty
-    # can subtract without making importance negative.
-    assert "UPDATE memories m SET importance = GREATEST(0.0, LEAST(1.0," in sql, \
+    # can subtract without making importance negative. Since the v6.13
+    # split into compute + apply phases, the cap lives on the new_importance
+    # SELECT expression rather than the old single-shot UPDATE.
+    assert "GREATEST(0.0, LEAST(1.0," in sql, \
         "outer cap must be GREATEST(0.0, LEAST(1.0, ...)) so Phase J's penalty can't push importance below zero"
 
 
 @pytest.mark.asyncio
 async def test_recompute_importance_returns_row_count():
-    """The function should parse the UPDATE count from the 'UPDATE N' status."""
-    # _capture_execute_sql already asserts n == 42; this is a smoke re-test
+    """The function should parse the UPDATE count from the 'UPDATE N' status.
+
+    _capture_execute_sql already asserts n == 42 by mocking both Phase 1
+    (conn.fetch) and Phase 2 (conn.execute returning 'UPDATE 42'); the
+    captured sql here is the Phase 1 SELECT, which is the contract this
+    suite locks in. The Phase 2 batched UPDATE is verified by the
+    assert n == 42 inside the helper.
+    """
     sql = await _capture_execute_sql()
-    # Just make sure the UPDATE statement is there
-    assert "UPDATE memories" in sql
+    # Phase 1 SELECT signature — picks rows from `memories m` and reads
+    # current importance for the no-op-skip pre-filter.
+    assert "FROM memories m" in sql
+    assert "m.importance AS old_importance" in sql
