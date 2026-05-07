@@ -7,6 +7,11 @@ const SENTENCE_RE = /[.!?]\s+|[.!?]$/
 
 export const useChatStore = defineStore('chat', () => {
   const isOpen = ref(false)
+  // Latched flag that App.vue uses to keep the lazy ChatPanel mounted
+  // once it has been opened the first time. Toggling .isOpen alone
+  // hides/shows the panel; remounting on every toggle would discard
+  // chat history and re-incur the dynamic-import cost.
+  const everOpened = ref(false)
   const messages = ref<ChatMessage[]>([])
   const isStreaming = ref(false)
   const isThinking = ref(false)
@@ -22,8 +27,14 @@ export const useChatStore = defineStore('chat', () => {
   let currentAudio: HTMLAudioElement | null = null
   let ttsAborted = false
 
-  function toggle() { isOpen.value = !isOpen.value }
-  function open() { isOpen.value = true }
+  function toggle() {
+    isOpen.value = !isOpen.value
+    if (isOpen.value) everOpened.value = true
+  }
+  function open() {
+    isOpen.value = true
+    everOpened.value = true
+  }
   function close() { isOpen.value = false }
 
   function clearSources() { currentSources.value = null }
@@ -240,7 +251,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   return {
-    isOpen, messages, isStreaming, isThinking, thinkingStatus, isSpeaking, voiceMode,
+    isOpen, everOpened, messages, isStreaming, isThinking, thinkingStatus, isSpeaking, voiceMode,
     currentSources, focusEntityId,
     toggle, open, close, clearSources, focusEntity, clearFocus,
     toggleVoiceMode, stopSpeaking, speakText,
