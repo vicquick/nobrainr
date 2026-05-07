@@ -34,14 +34,42 @@ from nobrainr.db import queries as db_queries
 
 
 async def _capture_recompute_sql() -> str:
+    """Capture the SELECT SQL the v6.13 compute phase issues, and verify
+    the apply phase tallies row counts from batched UPDATEs.
+
+    Mocks both conn.fetch (Phase 1: read-only compute, where every CTE
+    lives) and conn.execute (Phase 2: batched apply). One synthetic row
+    flows through so the apply phase fires and `recompute_importance`
+    actually returns a row count, exercising the full happy path.
+    """
     captured = {}
 
-    async def fake_execute(sql, *args):
+    # Phase 1 returns one synthetic row whose new_importance differs from
+    # old_importance — that's the only way Phase 2 fires.
+    fake_row = {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "new_importance": 0.42,
+        "old_importance": 0.10,
+    }
+
+    async def fake_fetch(sql, *args):
         captured["sql"] = sql
+        return [fake_row]
+
+    async def fake_execute(sql, *args):
+        # Phase 2 batched UPDATE — emulate "UPDATE 42" so the helper's
+        # historical 42 sentinel is preserved across the v6.13 refactor.
         return "UPDATE 42"
 
     mock_conn = AsyncMock()
+    mock_conn.fetch = AsyncMock(side_effect=fake_fetch)
     mock_conn.execute = AsyncMock(side_effect=fake_execute)
+    # asyncpg-style: conn.transaction() is itself an async context manager.
+    txn_ctx = MagicMock()
+    txn_ctx.__aenter__ = AsyncMock(return_value=None)
+    txn_ctx.__aexit__ = AsyncMock(return_value=None)
+    mock_conn.transaction = MagicMock(return_value=txn_ctx)
+
     acquire_ctx = MagicMock()
     acquire_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
     acquire_ctx.__aexit__ = AsyncMock(return_value=None)
@@ -160,9 +188,9 @@ async def test_phase_b_g1_positive_terms_still_present():
            "0.3 * LEAST(1.0, COALESCE((" in sql, \
         "Phase J must preserve the 30% entity connectivity term from Phase B G1"
     # Quality 30%
-    assert "(0.3 * COALESCE(quality_score, 0.5))" in sql
+    assert "(0.3 * COALESCE(m.quality_score, 0.5))" in sql
     # Confidence 20%
-    assert "(0.2 * COALESCE(confidence, 0.7))" in sql
+    assert "(0.2 * COALESCE(m.confidence, 0.7))" in sql
     # Graph proximity 20%
     assert "hot_entity_count::real / 10.0" in sql, \
         "Phase B G1 graph-proximity term (hot_entity_count/10.0) must still be present"
