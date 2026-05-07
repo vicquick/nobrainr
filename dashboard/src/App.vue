@@ -8,13 +8,20 @@
         </transition>
       </router-view>
     </v-main>
-    <ChatPanel />
+    <!-- ChatPanel is heavy (687 lines, voice/TTS deps) and only used
+         when the chat toggle is active. Render it on-demand so the
+         initial route paint isn't blocked on its parse + mount. -->
+    <ChatPanel v-if="chatStore.isOpen || chatStore.everOpened" />
   </v-app>
 </template>
 
 <script setup lang="ts">
+import { defineAsyncComponent } from 'vue'
 import AppBar from '@/components/AppBar.vue'
-import ChatPanel from '@/components/ChatPanel.vue'
+import { useChatStore } from '@/stores/chat'
+
+const chatStore = useChatStore()
+const ChatPanel = defineAsyncComponent(() => import('@/components/ChatPanel.vue'))
 </script>
 
 <style>
