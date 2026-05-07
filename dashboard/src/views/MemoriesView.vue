@@ -63,7 +63,7 @@
             />
             <div v-if="hasMore" class="load-more-row">
               <button class="folio-button" :disabled="loadingMore" @click="loadMore">
-                <span v-if="loadingMore" class="dotty">·  ·  ·</span>
+                <Dotty v-if="loadingMore" />
                 <span v-else>turn the page</span>
               </button>
             </div>
@@ -83,7 +83,7 @@
       <main class="florilegium-page-right">
         <template v-if="detailLoading">
           <div class="page-loading">
-            <span class="dotty">·  ·  ·</span>
+            <Dotty />
             <p class="loading-text">opening the page</p>
           </div>
         </template>
@@ -113,6 +113,7 @@ import { useStatsStore } from '@/stores/stats'
 import { useSSE } from '@/composables/useSSE'
 import MemoryCard from '@/components/MemoryCard.vue'
 import MemoryDetail from '@/components/MemoryDetail.vue'
+import Dotty from '@/components/Dotty.vue'
 
 const statsStore = useStatsStore()
 const {

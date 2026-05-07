@@ -40,7 +40,7 @@
 
       <!-- LOADING -->
       <div v-if="loading" class="annals-loading">
-        <span class="dotty">·  ·  ·</span>
+        <Dotty />
         <p class="loading-text">consulting the chronicle</p>
       </div>
 
@@ -166,7 +166,7 @@
 
       <div v-if="hasMore && !loading" class="load-more">
         <button class="folio-button" :disabled="loadingMore" @click="loadMore">
-          <span v-if="loadingMore" class="dotty">·  ·  ·</span>
+          <Dotty v-if="loadingMore" />
           <span v-else>turn the page</span>
         </button>
       </div>
@@ -180,6 +180,7 @@ import { useTimeline } from '@/composables/useTimeline'
 import { useStatsStore } from '@/stores/stats'
 import { useSSE } from '@/composables/useSSE'
 import type { Memory } from '@/types'
+import Dotty from '@/components/Dotty.vue'
 
 const statsStore = useStatsStore()
 const {

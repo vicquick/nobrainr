@@ -38,14 +38,14 @@
           <option value="claude_web">Claude</option>
         </select>
         <button class="folio-button" :disabled="loading" @click="search">
-          <span v-if="loading" class="dotty">·  ·  ·</span>
+          <Dotty v-if="loading" />
           <span v-else>seek</span>
         </button>
       </div>
 
       <!-- LIST -->
       <div v-if="loading" class="threads-loading">
-        <span class="dotty">·  ·  ·</span>
+        <Dotty />
         <p class="loading-text">opening the codex</p>
       </div>
       <div v-else-if="!threads.length" class="threads-empty">
@@ -81,6 +81,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import Dotty from '@/components/Dotty.vue'
 
 interface Thread {
   id: string

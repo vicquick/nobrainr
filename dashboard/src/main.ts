@@ -5,6 +5,8 @@ import router from '@/router'
 import App from '@/App.vue'
 
 import '@mdi/font/css/materialdesignicons.css'
+import '@/styles/tokens.css'
+import '@/styles/motion.css'
 
 createApp(App)
   .use(vuetify)

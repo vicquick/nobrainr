@@ -22,10 +22,13 @@
       </header>
 
       <template v-if="loading">
-        <div class="horarium-loading">
-          <span class="dotty">·  ·  ·</span>
-          <p class="loading-text">consulting the rule</p>
-        </div>
+        <section class="quire quire-skel">
+          <div class="quire-head">
+            <span class="quire-numeral">I.</span>
+            <span class="quire-title">Vitae · the corpus</span>
+          </div>
+          <FolioSkeleton :lines="3" :bars="2" caption="consulting the rule" />
+        </section>
       </template>
 
       <template v-else>
@@ -206,6 +209,7 @@
 import { computed, onMounted } from 'vue'
 import { useScheduler } from '@/composables/useScheduler'
 import { useSSE } from '@/composables/useSSE'
+import FolioSkeleton from '@/components/FolioSkeleton.vue'
 
 const { status, events, feedbackStats, health, loading, actionLoading,
         fetchScheduler, pauseScheduler, resumeScheduler } = useScheduler()
