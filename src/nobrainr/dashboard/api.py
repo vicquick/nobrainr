@@ -806,6 +806,38 @@ async def api_scheduler_resume(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "message": "Scheduler LLM jobs resumed"})
 
 
+async def api_scheduler_task_runs(request: Request) -> JSONResponse:
+    """Return the last N scheduler_runs rows for one task — backs the
+    dashboard's task drawer (sparkline + status tally + last error tail).
+
+    Path param: task_name (URL-encoded).
+    Query params: limit (1..200, default 50).
+    """
+    name = request.path_params.get("task_name", "").strip()
+    if not name:
+        return JSONResponse({"error": "task_name required"}, status_code=400)
+    try:
+        limit = int(request.query_params.get("limit", "50"))
+    except ValueError:
+        limit = 50
+    runs = await queries.list_scheduler_runs(name, limit=limit)
+    # Friendly tally for the drawer header. Counted server-side so the
+    # client doesn't have to walk the whole list.
+    tally = {"ok": 0, "failed": 0, "timeout": 0, "running": 0}
+    for r in runs:
+        tally[r["status"]] = tally.get(r["status"], 0) + 1
+    last_error = next(
+        (r for r in runs if r["status"] in ("failed", "timeout") and r["error_msg"]),
+        None,
+    )
+    return JSONResponse({
+        "task_name": name,
+        "runs": runs,
+        "tally": tally,
+        "last_error": last_error,
+    })
+
+
 async def api_recall(request: Request) -> JSONResponse:
     """Fast text-only memory search (PostgreSQL full-text, no embedding call).
 
@@ -2401,6 +2433,7 @@ api_routes = [
     Route("/api/scheduler", api_scheduler),
     Route("/api/scheduler/pause", api_scheduler_pause, methods=["POST"]),
     Route("/api/scheduler/resume", api_scheduler_resume, methods=["POST"]),
+    Route("/api/scheduler/task/{task_name}", api_scheduler_task_runs, methods=["GET"]),
     Route("/api/recall", api_recall),
     Route("/api/smart-recall", api_smart_recall),
     Route("/api/entities", api_entities),
