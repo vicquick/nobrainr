@@ -70,7 +70,11 @@
         <Dotty />
       </div>
       <div v-else-if="!insights.length" class="ins-empty">
-        — Nothing yet for this window —
+        <p>— No insights distilled in this window —</p>
+        <p class="empty-hint">
+          The synthesizer scribe runs every four hours and writes new lessons from the graph.
+          Come back later, or widen the window above.
+        </p>
       </div>
 
       <!-- Folio entry list -->
