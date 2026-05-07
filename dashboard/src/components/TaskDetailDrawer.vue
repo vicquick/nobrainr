@@ -180,11 +180,53 @@ watch(
   { immediate: true },
 )
 
-// Restrict ESC to the drawer instance for keyboard users who never click
-// into the panel — the keydown listener on the panel only fires when it
-// has focus, so a global window listener catches the rest.
+// Keyboard handling: ESC closes; Tab is constrained to focusable
+// descendants of the drawer so screen-reader / keyboard users can't
+// accidentally tab back into the (visually backgrounded) page below.
+// Standard focus-trap pattern: on Tab, find the first/last focusable,
+// loop the cursor.
+const FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',')
+
+function focusables(): HTMLElement[] {
+  if (!rootEl.value) return []
+  return Array.from(
+    rootEl.value.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
+  ).filter((el) => !el.hasAttribute('disabled') && el.offsetParent !== null)
+}
+
 function onKey(e: KeyboardEvent) {
-  if (e.key === 'Escape' && props.taskName) emit('close')
+  if (!props.taskName) return
+  if (e.key === 'Escape') {
+    emit('close')
+    return
+  }
+  if (e.key !== 'Tab') return
+  const list = focusables()
+  if (list.length === 0) return
+  const first = list[0]
+  const last = list[list.length - 1]
+  const active = document.activeElement as HTMLElement | null
+  // Cursor outside the drawer (e.g. user just opened it and focus was
+  // never moved into a focusable child) — pull it to first/last.
+  if (!active || !rootEl.value?.contains(active)) {
+    e.preventDefault()
+    ;(e.shiftKey ? last : first).focus()
+    return
+  }
+  if (e.shiftKey && active === first) {
+    e.preventDefault()
+    last.focus()
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault()
+    first.focus()
+  }
 }
 onMounted(() => window.addEventListener('keydown', onKey))
 onUnmounted(() => window.removeEventListener('keydown', onKey))

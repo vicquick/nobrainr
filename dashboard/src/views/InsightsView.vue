@@ -111,7 +111,7 @@
           <div class="page-header">
             <span class="ornament-sm">❦</span>
             <span class="page-kicker">From the commonplace</span>
-            <button class="page-close" @click="showDetail = false">×</button>
+            <button class="page-close" aria-label="Close insight" @click="showDetail = false">×</button>
           </div>
 
           <div class="page-content">
