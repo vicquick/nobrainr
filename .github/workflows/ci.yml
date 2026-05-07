@@ -1,14 +1,30 @@
 name: CI
 
+# Trigger only on PR review and feature-branch development.
+# Direct pushes to `main` skip CI by design — Coolify auto-deploys main,
+# so anything that reaches main has already been gated by a PR run.
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+  push:
+    branches-ignore: [main]
+
+permissions:
+  contents: read
+
+# All jobs run on the dedicated self-hosted runner registered to this
+# repo (`bimavo-nobrainr-1`). The `if:` guard below makes fork PRs skip
+# every job — required because the runner has access to bimavo's host
+# (Docker socket, Coolify, GPU). Same-repo PRs (collaborators pushing
+# to this repository's branches) run normally.
+#
+# To CI an outside contribution: pull their branch into this repo or
+# add them as a collaborator.
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, bimavo, nobrainr]
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
@@ -17,8 +33,42 @@ jobs:
       - run: uv sync --extra dev
       - run: uv run ruff check src/
 
+  frontend:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, bimavo, nobrainr]
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+      - run: npx vue-tsc --noEmit
+      - run: npx vite build
+
   test:
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, bimavo, nobrainr]
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_USER: ci
+          POSTGRES_DB: nobrainr_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci -d nobrainr_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      NOBRAINR_DATABASE_URL: postgresql://ci:ci@localhost:5432/nobrainr_test
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
