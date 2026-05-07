@@ -41,18 +41,33 @@
           </div>
 
           <div class="ledger-figures cp-stagger">
-            <article class="ledger-line" :style="staggerStyle(0)">
+            <RouterLink
+              to="/memories"
+              class="ledger-line ledger-link cp-clickable cp-marginalia"
+              data-margin="[click] open the gathering"
+              :style="staggerStyle(0)"
+            >
               <span class="ledger-key">Memories scribed</span>
               <span class="ledger-fig">{{ memoriesScribed.toLocaleString() }}</span>
-            </article>
-            <article class="ledger-line" :style="staggerStyle(1)">
+            </RouterLink>
+            <RouterLink
+              to="/graph"
+              class="ledger-line ledger-link cp-clickable cp-marginalia"
+              data-margin="[click] consult the dramatis personae"
+              :style="staggerStyle(1)"
+            >
               <span class="ledger-key">Entities catalogued</span>
               <span class="ledger-fig">{{ entitiesCatalogued.toLocaleString() }}</span>
-            </article>
-            <article class="ledger-line" :style="staggerStyle(2)">
+            </RouterLink>
+            <RouterLink
+              to="/graph"
+              class="ledger-line ledger-link cp-clickable cp-marginalia"
+              data-margin="[click] follow the marginalia"
+              :style="staggerStyle(2)"
+            >
               <span class="ledger-key">Relations drawn</span>
               <span class="ledger-fig">{{ relationsDrawn.toLocaleString() }}</span>
-            </article>
+            </RouterLink>
           </div>
 
           <!-- Extraction -->
@@ -121,17 +136,18 @@
           <table v-if="status?.tasks.length" class="office-table">
             <thead>
               <tr>
-                <th>Discipline</th>
-                <th>Cadence</th>
-                <th>Last observed</th>
-                <th>Times</th>
+                <th class="cp-marginalia" data-margin="the office's name in the rule">Discipline</th>
+                <th class="cp-marginalia" data-margin="how often the keepers attend to it">Cadence</th>
+                <th class="cp-marginalia" data-margin="when the office was last observed">Last observed</th>
+                <th class="cp-marginalia" data-margin="how often this discipline has been kept">Times</th>
               </tr>
             </thead>
             <tbody class="cp-stagger">
               <tr
                 v-for="(task, i) in status.tasks"
                 :key="task.name"
-                class="office-row"
+                class="office-row cp-marginalia"
+                data-margin="[click] read this discipline's recent observances"
                 :style="staggerStyle(i)"
               >
                 <td>
@@ -157,15 +173,27 @@
           </div>
 
           <div class="feedback-figures cp-stagger">
-            <article class="ledger-line" :style="staggerStyle(0)">
+            <article
+              class="ledger-line cp-marginalia"
+              data-margin="every approval and rebuke recorded by the agent"
+              :style="staggerStyle(0)"
+            >
               <span class="ledger-key">Total responses</span>
               <span class="ledger-fig">{{ fbTotal.toLocaleString() }}</span>
             </article>
-            <article class="ledger-line" :style="staggerStyle(1)">
+            <article
+              class="ledger-line cp-marginalia"
+              data-margin="answers the agent praised"
+              :style="staggerStyle(1)"
+            >
               <span class="ledger-key">Helpful · positive</span>
               <span class="ledger-fig accent-good">{{ fbPositive.toLocaleString() }}</span>
             </article>
-            <article class="ledger-line" :style="staggerStyle(2)">
+            <article
+              class="ledger-line cp-marginalia"
+              data-margin="answers the agent set aside"
+              :style="staggerStyle(2)"
+            >
               <span class="ledger-key">Unhelpful · negative</span>
               <span class="ledger-fig accent-bad">{{ fbNegative.toLocaleString() }}</span>
             </article>
@@ -407,6 +435,20 @@ onMounted(() => {
 }
 .ledger-fig.accent-good { color: var(--cp-good); }
 .ledger-fig.accent-bad { color: var(--cp-bad); }
+
+/* Ledger lines that route somewhere — cleanly inherit link color so
+   the gold-on-parchment palette holds, and reinforce the clickable
+   intent on hover (border-color shift, subtle lift via cp-clickable). */
+.ledger-link {
+  color: inherit;
+  text-decoration: none;
+}
+.ledger-link:hover .ledger-key {
+  color: var(--cp-gold-bright);
+}
+.ledger-link:hover .ledger-fig {
+  color: var(--cp-gold-bright);
+}
 
 /* PROGRESS */
 .progress-block { margin: 0 64px 24px; }
