@@ -54,13 +54,16 @@
             <div v-for="n in 6" :key="n" class="card-skeleton" />
           </template>
           <template v-else-if="memories.length">
-            <MemoryCard
-              v-for="m in memories"
-              :key="m.id"
-              :memory="m"
-              :selected="selectedMemory?.id === m.id"
-              @click="selectMemory(m.id)"
-            />
+            <div class="memories-stagger cp-stagger" style="display:contents">
+              <MemoryCard
+                v-for="(m, i) in memories"
+                :key="m.id"
+                :memory="m"
+                :selected="selectedMemory?.id === m.id"
+                :style="staggerStyle(i)"
+                @click="selectMemory(m.id)"
+              />
+            </div>
             <div v-if="hasMore" class="load-more-row">
               <button class="folio-button" :disabled="loadingMore" @click="loadMore">
                 <Dotty v-if="loadingMore" />
@@ -114,6 +117,7 @@ import { useSSE } from '@/composables/useSSE'
 import MemoryCard from '@/components/MemoryCard.vue'
 import MemoryDetail from '@/components/MemoryDetail.vue'
 import Dotty from '@/components/Dotty.vue'
+import { staggerStyle } from '@/composables/useStaggerIndex'
 
 const statsStore = useStatsStore()
 const {

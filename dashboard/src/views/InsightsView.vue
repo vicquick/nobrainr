@@ -74,11 +74,12 @@
       </div>
 
       <!-- Folio entry list -->
-      <div v-else class="folio-entries">
+      <div v-else class="folio-entries cp-stagger">
         <article
           v-for="(ins, idx) in insights"
           :key="ins.id"
           class="folio-entry"
+          :style="staggerStyle(idx)"
           @click="openInsight(ins)"
         >
           <div class="entry-numeral">{{ toRoman(idx + 1) }}.</div>
@@ -181,6 +182,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue'
 import Dotty from '@/components/Dotty.vue'
+import { staggerStyle } from '@/composables/useStaggerIndex'
 
 interface Insight {
   id: string
