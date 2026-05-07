@@ -202,6 +202,7 @@ const BorderedNodeProgram = createNodeBorderProgram({
 
 let focusedNode: string | null = null
 let hoveredNode: string | null = null
+const hoveredNeighbors = new Set<string>()
 const focusedNeighbors = new Set<string>()
 const searchMatches = new Set<string>()
 const hubNodes = new Set<string>()
@@ -483,6 +484,19 @@ function initSigma() {
         return res
       }
 
+      // Hover (with no active selection): light up edges touching
+      // the hovered node so the local subgraph reads as a unit.
+      // Other edges fall through to the hub-only filter below.
+      if (hoveredNode) {
+        const [src, tgt] = graph!.extremities(edge)
+        if (src === hoveredNode || tgt === hoveredNode) {
+          res.color = '#5c5c8a'
+          res.size = 1.5
+          res.zIndex = 1
+          return res
+        }
+      }
+
       // Default overview: only show edges between hub nodes
       const [src, tgt] = graph!.extremities(edge)
       if (!hubNodes.has(src) || !hubNodes.has(tgt)) {
@@ -496,11 +510,14 @@ function initSigma() {
   // Hover events
   renderer.on('enterNode', ({ node }) => {
     hoveredNode = node
+    hoveredNeighbors.clear()
+    if (graph) graph.forEachNeighbor(node, (n) => hoveredNeighbors.add(n))
     sigmaContainer.value!.style.cursor = 'pointer'
     renderer?.refresh()
   })
   renderer.on('leaveNode', () => {
     hoveredNode = null
+    hoveredNeighbors.clear()
     sigmaContainer.value!.style.cursor = 'default'
     renderer?.refresh()
   })
@@ -591,11 +608,24 @@ function initCommunitySigma() {
 
     nodeReducer(node, data) {
       const res = { ...data }
-      if (hoveredNode === node) {
-        res.forceLabel = true
-        res.labelColor = '#000000'
-        res.labelBgColor = 'rgba(255, 255, 255, 0.92)'
-        res.size = (res.size as number) * 1.15
+      // Hover takes precedence in the community overview — when nothing
+      // is selected, hovering a community should pop it forward and
+      // gently quiet the rest of the field.
+      if (hoveredNode) {
+        if (hoveredNode === node) {
+          res.zIndex = 2
+          res.size = (res.size as number) * 1.18
+          res.forceLabel = true
+          res.labelColor = '#000000'
+          res.labelBgColor = 'rgba(255, 255, 255, 0.95)'
+        } else if (hoveredNeighbors.has(node)) {
+          res.zIndex = 1
+          res.forceLabel = true
+          res.labelColor = 'rgba(255, 255, 255, 0.92)'
+        } else {
+          res.color = 'rgba(60, 60, 70, 0.30)'
+          res.label = ''
+        }
       }
       // Search filter
       if (searchMatches.size > 0) {
@@ -625,11 +655,14 @@ function initCommunitySigma() {
 
   renderer.on('enterNode', ({ node }) => {
     hoveredNode = node
+    hoveredNeighbors.clear()
+    if (graph) graph.forEachNeighbor(node, (n) => hoveredNeighbors.add(n))
     sigmaContainer.value!.style.cursor = 'pointer'
     renderer?.refresh()
   })
   renderer.on('leaveNode', () => {
     hoveredNode = null
+    hoveredNeighbors.clear()
     sigmaContainer.value!.style.cursor = 'default'
     renderer?.refresh()
   })
