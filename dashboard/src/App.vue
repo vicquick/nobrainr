@@ -12,6 +12,10 @@
          when the chat toggle is active. Render it on-demand so the
          initial route paint isn't blocked on its parse + mount. -->
     <ChatPanel v-if="chatStore.isOpen || chatStore.everOpened" />
+    <!-- First-visit onboarding (3 codex-voiced cards) — mounts itself,
+         self-decides whether to show via localStorage. Lazy because
+         99% of mounts are returning users where this never renders. -->
+    <FirstVisitOnboarding />
   </v-app>
 </template>
 
@@ -22,6 +26,7 @@ import { useChatStore } from '@/stores/chat'
 
 const chatStore = useChatStore()
 const ChatPanel = defineAsyncComponent(() => import('@/components/ChatPanel.vue'))
+const FirstVisitOnboarding = defineAsyncComponent(() => import('@/components/FirstVisitOnboarding.vue'))
 </script>
 
 <style>
