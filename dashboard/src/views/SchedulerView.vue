@@ -146,9 +146,15 @@
               <tr
                 v-for="(task, i) in status.tasks"
                 :key="task.name"
-                class="office-row cp-marginalia"
+                class="office-row office-row-clickable cp-marginalia"
                 data-margin="[click] read this discipline's recent observances"
                 :style="staggerStyle(i)"
+                tabindex="0"
+                role="button"
+                :aria-label="`Open observances for ${task.name}`"
+                @click="openTask(task.name)"
+                @keydown.enter.prevent="openTask(task.name)"
+                @keydown.space.prevent="openTask(task.name)"
               >
                 <td>
                   <span class="task-name">{{ task.name }}</span>
@@ -235,16 +241,24 @@
 
       </template>
     </div>
+
+    <TaskDetailDrawer :task-name="drawerTask" @close="drawerTask = null" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useScheduler } from '@/composables/useScheduler'
 import { useSSE } from '@/composables/useSSE'
 import FolioSkeleton from '@/components/FolioSkeleton.vue'
+import TaskDetailDrawer from '@/components/TaskDetailDrawer.vue'
 import { useCountUp } from '@/composables/useCountUp'
 import { staggerStyle } from '@/composables/useStaggerIndex'
+
+const drawerTask = ref<string | null>(null)
+function openTask(name: string) {
+  drawerTask.value = name
+}
 
 const { status, events, feedbackStats, health, loading, actionLoading,
         fetchScheduler, pauseScheduler, resumeScheduler } = useScheduler()
@@ -522,9 +536,22 @@ onMounted(() => {
 }
 .office-table thead th:last-child { text-align: right; }
 .office-row {
-  transition: background 150ms;
+  transition:
+    background var(--cp-dur-hover) var(--cp-ease),
+    box-shadow var(--cp-dur-hover) var(--cp-ease);
 }
-.office-row:hover { background: rgba(200, 169, 110, 0.03); }
+.office-row:hover { background: rgba(200, 169, 110, 0.04); }
+.office-row-clickable { cursor: pointer; }
+.office-row-clickable:hover {
+  background: rgba(200, 169, 110, 0.06);
+  box-shadow: inset 2px 0 0 var(--cp-gold-soft);
+}
+.office-row-clickable:focus-visible {
+  outline: none;
+  box-shadow:
+    inset 2px 0 0 var(--cp-gold-bright),
+    0 0 0 2px rgba(200, 169, 110, 0.45);
+}
 .office-row td {
   padding: 12px;
   border-bottom: 1px dotted var(--cp-gold-faint);
