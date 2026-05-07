@@ -67,7 +67,7 @@
       </article>
 
       <div v-if="loading" class="ins-loading">
-        <span class="dotty">·  ·  ·</span>
+        <Dotty />
       </div>
       <div v-else-if="!insights.length" class="ins-empty">
         — Nothing yet for this window —
@@ -145,7 +145,7 @@
             <h3 class="page-section-title">Marginalia · related memories</h3>
 
             <div v-if="loadingRelated" class="related-loading">
-              <span class="dotty">·  ·  ·</span>
+              <Dotty />
             </div>
             <p v-else-if="!related.length" class="related-empty">
               — None close enough to cite —
@@ -180,6 +180,7 @@
 
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue'
+import Dotty from '@/components/Dotty.vue'
 
 interface Insight {
   id: string
