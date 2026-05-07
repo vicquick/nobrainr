@@ -24,9 +24,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
 
-from nobrainr.config import settings
 from nobrainr.db.pool import get_pool
 from nobrainr.extraction.llm import ollama_chat
 
