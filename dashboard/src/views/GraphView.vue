@@ -977,10 +977,25 @@ onUnmounted(() => {
 @media (max-width: 960px) {
   .graph-area { transition: none; }
 }
-/* Small mobile: hide search field, show only pills + buttons */
+/* Small mobile: hide search field, let pills-scroll claim all spare
+   horizontal space, and tighten everything around it. The default
+   v-spacer steals flex-grow:1 and crushes the pills strip — so we
+   hide it at this viewport and give pills-scroll the grow instead. */
 @media (max-width: 480px) {
   .toolbar :deep(.v-text-field) { display: none; }
+  .toolbar :deep(.v-spacer) { display: none; }
+  .pills-scroll {
+    flex: 1 1 0;
+    /* Soft fade on the trailing edge hints there's more to scroll. */
+    -webkit-mask-image:
+      linear-gradient(90deg, #000 0, #000 calc(100% - 24px), transparent 100%);
+            mask-image:
+      linear-gradient(90deg, #000 0, #000 calc(100% - 24px), transparent 100%);
+  }
   .type-pill { padding: 2px 6px; font-size: 10px; }
+  /* The view-toggle is already two short labels but takes too much room
+     when paired with zoom buttons on a 375px viewport. Make it tighter. */
+  .toolbar :deep(.view-toggle .v-btn) { padding: 0 6px !important; min-width: 0 !important; }
 }
 /* Mobile bottom sheet entity panel */
 .mobile-entity-sheet {
