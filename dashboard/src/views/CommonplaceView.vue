@@ -51,7 +51,16 @@
             </div>
             <div v-if="searchError" class="text-center pa-6 text-caption" style="color: rgba(200,80,80,0.7);">{{ searchError }}</div>
             <div v-else-if="!chapters.length" class="text-center pa-6 text-medium-emphasis text-caption">
-              {{ searchMode ? 'No results found' : 'No chapters' }}
+              <template v-if="searchMode">
+                <p style="margin: 0 0 4px;">— this seeking returns no chapter —</p>
+                <p style="margin: 0; font-style: italic; opacity: 0.7;">try fewer constraints, or read the gathering directly.</p>
+              </template>
+              <template v-else>
+                <p style="margin: 0 0 4px;">— the book has no chapters yet —</p>
+                <p style="margin: 0; font-style: italic; opacity: 0.7;">
+                  the community-detection scribe runs every twelve hours; chapters appear once it has woven them.
+                </p>
+              </template>
             </div>
           </template>
         </div>
