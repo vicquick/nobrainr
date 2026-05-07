@@ -10,7 +10,7 @@
       </header>
 
       <div v-if="loading" class="thread-loading">
-        <span class="dotty">·  ·  ·</span>
+        <Dotty />
         <p class="loading-text">opening the thread</p>
       </div>
       <div v-else-if="!conv" class="thread-empty">
@@ -51,6 +51,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
+import Dotty from '@/components/Dotty.vue'
 
 const route = useRoute()
 const conv = ref<any>(null)
