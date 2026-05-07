@@ -51,3 +51,20 @@
   box-shadow: var(--cp-focus-ring);
   border-radius: 3px;
 }
+
+/* ── Empty-state hint (codex aesthetic) ─────────────────────────
+   Used by views' "— nothing here yet —" blocks to render the
+   actionable next-step line beneath the headline message. Keeps
+   the explanation italic + soft so the eye doesn't read it as
+   primary content; readers who need the hint find it.
+*/
+.empty-hint {
+  margin: 4px auto 0;
+  font-style: italic;
+  font-size: 13px;
+  color: var(--cp-ink-mute);
+  letter-spacing: 0.02em;
+  max-width: 56ch;
+  line-height: 1.5;
+}
+.empty-hint em { color: var(--cp-gold-soft); font-style: italic; }

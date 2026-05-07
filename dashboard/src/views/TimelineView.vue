@@ -161,7 +161,8 @@
 
       <div v-else class="annals-empty">
         <span class="ornament">❦</span>
-        <p>No memories in this window of the chronicle.</p>
+        <p>— this window of the chronicle is empty —</p>
+        <p class="empty-hint">Widen the date range, or clear the category filter to see more.</p>
       </div>
 
       <div v-if="hasMore && !loading" class="load-more">

@@ -77,7 +77,8 @@
           </template>
           <div v-else class="index-empty">
             <span class="empty-mark">❦</span>
-            <p>— nothing answers to this query —</p>
+            <p>— this query finds no entry —</p>
+            <p class="empty-hint">Try fewer constraints, or clear a filter to broaden the gathering.</p>
           </div>
         </div>
       </aside>
