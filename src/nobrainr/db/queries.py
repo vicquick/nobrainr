@@ -1894,6 +1894,66 @@ async def log_scheduler_event(job_name: str, result: dict) -> None:
     )
 
 
+# ──────────────────────────────────────────────
+# Scheduler runs (2026-05-08) — observability rows for each job
+# tick. Backs the dashboard's task drawer (last 50 runs sparkline +
+# error tail). Independent of agent_events so we keep this table
+# small and indexed for quick "last N runs of task X" queries.
+# ──────────────────────────────────────────────
+
+async def scheduler_run_start(task_name: str) -> int:
+    """Insert an in-flight scheduler_runs row and return its id."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "INSERT INTO scheduler_runs (task_name, status) "
+            "VALUES ($1, 'running') RETURNING id",
+            task_name,
+        )
+
+
+async def scheduler_run_end(
+    run_id: int, status: str, duration_ms: int, error_msg: str | None,
+) -> None:
+    """Mark a scheduler_runs row finished. error_msg truncated to 500 chars."""
+    if error_msg is not None:
+        error_msg = error_msg[:500]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE scheduler_runs "
+            "   SET finished_at = now(), status = $1, "
+            "       duration_ms = $2, error_msg = $3 "
+            " WHERE id = $4",
+            status, duration_ms, error_msg, run_id,
+        )
+
+
+async def list_scheduler_runs(task_name: str, limit: int = 50) -> list[dict]:
+    """Last N runs for a given task, newest first."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, started_at, finished_at, status, duration_ms, error_msg "
+            "  FROM scheduler_runs "
+            " WHERE task_name = $1 "
+            " ORDER BY started_at DESC "
+            " LIMIT $2",
+            task_name, max(1, min(limit, 200)),
+        )
+        return [
+            {
+                "id": r["id"],
+                "started_at": r["started_at"].isoformat() if r["started_at"] else None,
+                "finished_at": r["finished_at"].isoformat() if r["finished_at"] else None,
+                "status": r["status"],
+                "duration_ms": r["duration_ms"],
+                "error_msg": r["error_msg"],
+            }
+            for r in rows
+        ]
+
+
 async def get_unsummarized_memories(limit: int = 10) -> list[dict]:
     """Get memories with no summary and content longer than 50 chars."""
     pool = await get_pool()
