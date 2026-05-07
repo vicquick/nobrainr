@@ -168,7 +168,13 @@
               </tr>
             </tbody>
           </table>
-          <p v-else class="empty-line">— no offices scheduled —</p>
+          <div v-else class="empty-line">
+            <p>— no offices in the rule —</p>
+            <p class="empty-hint">
+              The horarium is at rest until the scheduler resumes its disciplines.
+              Use <em>resume</em> above to wake it.
+            </p>
+          </div>
         </section>
 
         <!-- III — FEEDBACK -->

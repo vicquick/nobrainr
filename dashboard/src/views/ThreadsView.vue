@@ -50,7 +50,14 @@
       </div>
       <div v-else-if="!threads.length" class="threads-empty">
         <span class="ornament">❦</span>
-        <p>{{ query ? '— no thread answers to this seeking —' : '— recent threads will appear here —' }}</p>
+        <template v-if="query">
+          <p>— this seeking returns nothing —</p>
+          <p class="empty-hint">The codex may not yet hold what you ask. Try fewer constraints or a different source.</p>
+        </template>
+        <template v-else>
+          <p>— the codex of conversations is unwritten —</p>
+          <p class="empty-hint">Import a ChatGPT export or a Claude conversation thread to begin filling these pages.</p>
+        </template>
       </div>
       <ul v-else class="threads-list cp-stagger">
         <li
