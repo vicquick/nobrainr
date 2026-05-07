@@ -600,7 +600,7 @@ async def _hybrid_search_rrf(
                      ORDER BY community_sim DESC, importance DESC NULLS LAST
                      LIMIT $3
                     """,
-                    vec, _cfg.community_branch_top_k_communities, overfetch,
+                    embedding, _cfg.community_branch_top_k_communities, overfetch,
                 )
             except Exception as exc:
                 logger.debug("community-summary branch skipped: %s", exc)
@@ -4751,6 +4751,7 @@ def _affected(result: str) -> int:
 
 async def get_extraction_pending_count() -> int:
     """Fast count of memories awaiting entity extraction."""
+    pool = await get_pool()
     async with pool.acquire() as conn:
         return await conn.fetchval(
             "SELECT count(*) FROM memories WHERE extraction_status IS NULL OR extraction_status = 'failed'"

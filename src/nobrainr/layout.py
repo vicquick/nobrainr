@@ -18,9 +18,6 @@ Two-level approach:
 import logging
 import math
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
-from functools import lru_cache
-from typing import Any
 
 import networkx as nx
 from networkx.algorithms.community import louvain_communities

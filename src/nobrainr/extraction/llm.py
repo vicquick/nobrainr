@@ -39,6 +39,7 @@ Why the defaults below look the way they do:
 """
 
 import asyncio
+import collections as _collections
 import json
 import logging
 import random
@@ -103,7 +104,6 @@ class LiveLLMSkipped(Exception):
 # persistence — when the container restarts the buffer starts fresh.
 # Keeps the dashboard's "Live Pulse" honest: the queue depth alone
 # doesn't tell you whether the LLM is actively working or stalled.
-import collections as _collections
 _LLM_ACTIVITY_MAX = 30
 _llm_recent_calls: "_collections.deque[dict]" = _collections.deque(maxlen=_LLM_ACTIVITY_MAX)
 _llm_active_calls: int = 0
@@ -716,7 +716,6 @@ async def ollama_generate(
                     )
                     await asyncio.sleep(prev_sleep)
                     continue
-                _llm_finalize(call_record, call_start_ts, "error")
                 raise last_exc
             resp.raise_for_status()
             content = (
