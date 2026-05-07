@@ -238,7 +238,7 @@
               <template v-if="detailKind === 'queue'">Write queue · entry</template>
               <template v-else>{{ detailCall?.caller_kind || 'inquiry' }} · {{ detailCall?.status }}</template>
             </span>
-            <button class="page-close" @click="showDetail = false">×</button>
+            <button class="page-close" aria-label="Close detail" @click="showDetail = false">×</button>
           </div>
 
           <div class="page-content">

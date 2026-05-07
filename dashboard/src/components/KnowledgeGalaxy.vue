@@ -38,11 +38,19 @@
 
     <!-- Top-right controls -->
     <div class="galaxy-top-right" v-if="loaded">
-      <v-btn icon size="small" variant="text" @click="toggleAutoRotate"
-        :title="autoRotating ? 'Pause rotation' : 'Resume rotation'">
+      <v-btn
+        icon size="small" variant="text"
+        :aria-label="autoRotating ? 'Pause rotation' : 'Resume rotation'"
+        :title="autoRotating ? 'Pause rotation' : 'Resume rotation'"
+        @click="toggleAutoRotate"
+      >
         <v-icon :icon="autoRotating ? 'mdi-pause' : 'mdi-play'" />
       </v-btn>
-      <v-btn icon size="small" variant="text" @click="toggleFullscreen">
+      <v-btn
+        icon size="small" variant="text"
+        :aria-label="isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'"
+        @click="toggleFullscreen"
+      >
         <v-icon :icon="isFullscreen ? 'mdi-fullscreen-exit' : 'mdi-fullscreen'" />
       </v-btn>
     </div>
@@ -62,7 +70,7 @@
       <div v-if="selectedMemory" class="galaxy-detail-panel" @click.stop>
         <div class="galaxy-detail-header">
           <span class="text-body-1 font-weight-medium">Memory Detail</span>
-          <v-btn icon size="x-small" variant="text" @click="selectedMemory = null">
+          <v-btn icon size="x-small" variant="text" aria-label="Close memory detail" @click="selectedMemory = null">
             <v-icon icon="mdi-close" size="16" />
           </v-btn>
         </div>

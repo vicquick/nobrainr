@@ -50,10 +50,10 @@
         density="compact"
       />
       <div class="d-flex align-center ga-0">
-        <v-btn icon="mdi-minus" variant="text" size="x-small" @click="zoomOut" />
-        <v-btn icon="mdi-plus" variant="text" size="x-small" @click="zoomIn" />
-        <v-btn icon="mdi-fit-to-screen-outline" variant="text" size="x-small" @click="resetCamera" />
-        <v-btn icon="mdi-refresh" variant="text" size="x-small" @click="refreshGraph" />
+        <v-btn icon="mdi-minus" variant="text" size="x-small" aria-label="Zoom out" @click="zoomOut" />
+        <v-btn icon="mdi-plus" variant="text" size="x-small" aria-label="Zoom in" @click="zoomIn" />
+        <v-btn icon="mdi-fit-to-screen-outline" variant="text" size="x-small" aria-label="Fit graph to screen" @click="resetCamera" />
+        <v-btn icon="mdi-refresh" variant="text" size="x-small" aria-label="Refresh graph data" @click="refreshGraph" />
       </div>
     </div>
 
