@@ -146,6 +146,25 @@
   transition-delay: 0ms;
 }
 
+/* ============== SCROLL REVEAL (v-reveal directive) ==============
+   The directive flips data-reveal between "off" and "on". CSS
+   handles the visual transition. Once-only — the directive
+   disconnects after the first trigger so revisits don't re-animate.
+   ------------------------------------------------------------ */
+
+[data-reveal="off"] {
+  opacity: 0;
+  transform: translateY(8px);
+  transition:
+    opacity 280ms var(--cp-ease-decel),
+    transform 280ms var(--cp-ease-decel);
+  will-change: opacity, transform;
+}
+[data-reveal="on"] {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 /* ============== REDUCED MOTION FLOOR ============== */
 
 @media (prefers-reduced-motion: reduce) {
@@ -158,4 +177,10 @@
     scroll-behavior: auto !important;
   }
   .dotty > span { opacity: 0.6; }
+  /* Scroll-reveal: skip the off-state entirely so reduced-motion
+     readers never see hidden content waiting to fade in. */
+  [data-reveal="off"] {
+    opacity: 1;
+    transform: none;
+  }
 }

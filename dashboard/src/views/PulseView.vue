@@ -30,7 +30,7 @@
       <template v-else>
 
         <!-- I — EXTRACTION -->
-        <section class="quire">
+        <section v-reveal class="quire">
           <div class="quire-head">
             <span class="quire-numeral">I.</span>
             <span class="quire-title">Of memories scribed</span>
@@ -99,7 +99,7 @@
         </section>
 
         <!-- II — BREAKDOWN: SOURCES, CATEGORIES, INSTRUMENTS -->
-        <section class="quire-trio">
+        <section v-reveal class="quire-trio">
           <article class="trio-col">
             <div class="quire-head">
               <span class="quire-numeral">II.</span>
@@ -150,7 +150,7 @@
         </section>
 
         <!-- V — LATE LABOUR: LIVE LLM ACTIVITY -->
-        <section v-if="health" class="quire">
+        <section v-if="health" v-reveal class="quire">
           <div class="quire-head">
             <span class="quire-numeral">V.</span>
             <span class="quire-title">Of late labour</span>
