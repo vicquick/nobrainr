@@ -105,8 +105,12 @@ async def build_graph_cache() -> GraphCache:
         # Symmetric: walk works either direction. PageRank doesn't care
         # about edge direction for associative retrieval — the relationship
         # is "X relates to Y" in both senses.
-        rows.append(si); cols.append(di); data.append(float(r["w"]))
-        rows.append(di); cols.append(si); data.append(float(r["w"]))
+        rows.append(si)
+        cols.append(di)
+        data.append(float(r["w"]))
+        rows.append(di)
+        cols.append(si)
+        data.append(float(r["w"]))
 
     if not rows:
         # Empty graph — return identity-shaped matrix so PPR returns the

@@ -266,7 +266,7 @@ async def rerank(
     # caller; it only clamps total concurrency across the process.
     sem = _get_rerank_semaphore()
     try:
-        acquired = await asyncio.wait_for(
+        await asyncio.wait_for(
             sem.acquire(), timeout=settings.reranker_queue_timeout_s,
         )
     except asyncio.TimeoutError:
