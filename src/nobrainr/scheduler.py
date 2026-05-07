@@ -2,10 +2,53 @@
 
 import asyncio
 import logging
+import time
+from contextlib import asynccontextmanager
 from datetime import datetime
 
 from nobrainr.config import settings
 from nobrainr.db import queries
+
+
+@asynccontextmanager
+async def _scheduler_run_tracker(name: str):
+    """Insert a scheduler_runs row at start, update at end with status +
+    duration + truncated error message. Wraps every job invocation so
+    the dashboard's task drawer can render a sparkline of recent
+    durations and the last error tail.
+
+    Failures in the bookkeeping itself are swallowed — observability
+    must never block a real job from running."""
+    run_id: int | None = None
+    started = time.monotonic()
+    try:
+        run_id = await queries.scheduler_run_start(name)
+    except Exception:
+        logger.exception("scheduler_run_start failed for %s (continuing without tracking)", name)
+
+    status = "ok"
+    error_msg: str | None = None
+    try:
+        yield
+    except asyncio.TimeoutError:
+        status = "timeout"
+        raise
+    except asyncio.CancelledError:
+        # Don't classify cancellation as failure — it's a normal shutdown
+        # path. Skip the end-row update so we don't pollute the table.
+        run_id = None
+        raise
+    except Exception as exc:
+        status = "failed"
+        error_msg = repr(exc)
+        raise
+    finally:
+        if run_id is not None:
+            duration_ms = int((time.monotonic() - started) * 1000)
+            try:
+                await queries.scheduler_run_end(run_id, status, duration_ms, error_msg)
+            except Exception:
+                logger.exception("scheduler_run_end failed for %s", name)
 
 logger = logging.getLogger("nobrainr")
 
@@ -455,7 +498,8 @@ class Scheduler:
         while self._running:
             try:
                 logger.info("Running scheduled job: %s", name)
-                result = await job()
+                async with _scheduler_run_tracker(name):
+                    result = await job()
                 await queries.log_scheduler_event(name, result)
                 logger.info("Scheduled job '%s' completed: %s", name, result)
             except asyncio.CancelledError:
@@ -656,7 +700,8 @@ class Scheduler:
             try:
                 async with self._llm_semaphore:
                     logger.info("Running LLM job: %s", name)
-                    result = await asyncio.wait_for(job(), timeout=job_timeout)
+                    async with _scheduler_run_tracker(name):
+                        result = await asyncio.wait_for(job(), timeout=job_timeout)
                     await queries.log_scheduler_event(name, result)
                     logger.info("LLM job '%s' completed: %s", name, result)
             except asyncio.TimeoutError:
@@ -692,9 +737,10 @@ class Scheduler:
             try:
                 async with self._llm_semaphore:
                     logger.info("Running LLM job: fact_extraction")
-                    result = await asyncio.wait_for(
-                        scheduler_jobs.fact_extraction(), timeout=job_timeout
-                    )
+                    async with _scheduler_run_tracker("fact_extraction"):
+                        result = await asyncio.wait_for(
+                            scheduler_jobs.fact_extraction(), timeout=job_timeout
+                        )
                     await queries.log_scheduler_event("fact_extraction", result)
                     logger.info("LLM job 'fact_extraction' completed: %s", result)
             except asyncio.TimeoutError:

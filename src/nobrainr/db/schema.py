@@ -826,6 +826,39 @@ CREATE TABLE IF NOT EXISTS memory_tombstones (
 
 CREATE INDEX IF NOT EXISTS idx_memory_tombstones_created
     ON memory_tombstones (created_at DESC);
+
+-- ──────────────────────────────────────────────
+-- Scheduler runs (2026-05-08) — observability for the autonomous jobs.
+-- ──────────────────────────────────────────────
+-- Each scheduler tick inserts a row at job start and updates it at end.
+-- Backs the Scheduler dashboard's "[click] read this discipline's recent
+-- observances" drawer, which renders a sparkline of recent durations,
+-- a status tally, and the last error tail.
+--
+-- status: 'ok' | 'failed' | 'timeout' | 'running' (in-flight rows have
+-- finished_at NULL; orphan_reaper-style cleanup is intentionally NOT
+-- in v0 — if a process crashes mid-job, the row stays 'running' and
+-- the next start of that task simply leaves the orphan be. Acceptable
+-- noise for a v1 observability table.)
+--
+-- error_msg is truncated to 500 chars at insert time; the full traceback
+-- still lives in the application log. We just want enough context for
+-- "what went wrong last Tuesday at 03:14".
+CREATE TABLE IF NOT EXISTS scheduler_runs (
+    id            bigserial PRIMARY KEY,
+    task_name     text        NOT NULL,
+    started_at    timestamptz NOT NULL DEFAULT now(),
+    finished_at   timestamptz,
+    status        text        NOT NULL DEFAULT 'running',
+    duration_ms   integer,
+    error_msg     text,
+    created_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_scheduler_runs_task_recent
+    ON scheduler_runs (task_name, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_scheduler_runs_status
+    ON scheduler_runs (status) WHERE status <> 'ok';
 """
 
 
