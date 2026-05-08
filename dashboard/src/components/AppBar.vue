@@ -45,17 +45,17 @@
       <div class="bar-end">
         <div class="folio-stats" v-if="statsStore.stats">
           <span class="stat-line">
-            <span class="stat-num">{{ statsStore.stats.total_memories.toLocaleString() }}</span>
+            <span class="stat-num">{{ memoriesTicker.toLocaleString() }}</span>
             <span class="stat-label">mem.</span>
           </span>
           <span class="stat-divider">·</span>
           <span class="stat-line">
-            <span class="stat-num">{{ statsStore.stats.total_entities.toLocaleString() }}</span>
+            <span class="stat-num">{{ entitiesTicker.toLocaleString() }}</span>
             <span class="stat-label">ent.</span>
           </span>
           <span class="stat-divider">·</span>
           <span class="stat-line">
-            <span class="stat-num">{{ statsStore.stats.total_relations.toLocaleString() }}</span>
+            <span class="stat-num">{{ relationsTicker.toLocaleString() }}</span>
             <span class="stat-label">rel.</span>
           </span>
         </div>
@@ -97,39 +97,50 @@
         @click="drawer = false"
       />
     </v-list>
-    <v-divider class="my-2" />
-    <div class="px-4 py-2" v-if="statsStore.stats">
-      <div class="text-caption text-medium-emphasis mb-2">Knowledge Base</div>
-      <div class="d-flex flex-column ga-1">
-        <v-chip size="small" variant="tonal" color="primary" class="stat-chip">
-          <v-icon icon="mdi-brain" size="12" class="mr-1" />
-          {{ statsStore.stats.total_memories.toLocaleString() }} memories
-        </v-chip>
-        <v-chip size="small" variant="tonal" color="secondary" class="stat-chip">
-          <v-icon icon="mdi-shape-outline" size="12" class="mr-1" />
-          {{ statsStore.stats.total_entities.toLocaleString() }} entities
-        </v-chip>
-        <v-chip size="small" variant="tonal" color="success" class="stat-chip">
-          <v-icon icon="mdi-link-variant" size="12" class="mr-1" />
-          {{ statsStore.stats.total_relations.toLocaleString() }} relations
-        </v-chip>
-      </div>
+    <v-divider class="my-2 drawer-rule" />
+    <!-- Drawer stats: codex-styled to match the desktop bar voice
+         (italic small caps, gold ink) instead of Vuetify's chip chrome. -->
+    <div class="px-4 py-2 drawer-stats" v-if="statsStore.stats">
+      <p class="drawer-stats-eyebrow">Codex · vital signs</p>
+      <ul class="drawer-stats-list">
+        <li class="drawer-stat">
+          <span class="drawer-stat-num">{{ memoriesTicker.toLocaleString() }}</span>
+          <span class="drawer-stat-label">memories scribed</span>
+        </li>
+        <li class="drawer-stat">
+          <span class="drawer-stat-num">{{ entitiesTicker.toLocaleString() }}</span>
+          <span class="drawer-stat-label">entities catalogued</span>
+        </li>
+        <li class="drawer-stat">
+          <span class="drawer-stat-num">{{ relationsTicker.toLocaleString() }}</span>
+          <span class="drawer-stat-label">relations drawn</span>
+        </li>
+      </ul>
     </div>
   </v-navigation-drawer>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import { useDisplay } from 'vuetify'
 import { useStatsStore } from '@/stores/stats'
 import { useChatStore } from '@/stores/chat'
+import { useCountUp } from '@/composables/useCountUp'
 
 const route = useRoute()
 const { mobile, smAndDown } = useDisplay()
 const statsStore = useStatsStore()
 const chatStore = useChatStore()
 const drawer = ref(false)
+
+// Count-up tickers on first paint so the AppBar's vital-signs trio
+// behaves the same as Scheduler's Vitae quire — readers' eyes land
+// on a moving number, not a static one. useCountUp animates only the
+// first non-zero arrival; subsequent polls snap.
+const memoriesTicker  = useCountUp(computed(() => statsStore.stats?.total_memories  ?? 0))
+const entitiesTicker  = useCountUp(computed(() => statsStore.stats?.total_entities  ?? 0))
+const relationsTicker = useCountUp(computed(() => statsStore.stats?.total_relations ?? 0))
 
 const navLinks = [
   { to: '/commonplace', label: 'Commonplace', icon: 'mdi-book-open-page-variant' },
@@ -265,24 +276,39 @@ const navLinks = [
   color: rgba(238, 224, 196, 0.55);
   text-decoration: none;
   font-style: italic;
-  border-bottom: 1px solid transparent;
-  transition: all 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition:
+    color var(--cp-dur-hover) var(--cp-ease),
+    font-style var(--cp-dur-hover) var(--cp-ease);
   position: relative;
   white-space: nowrap;
 }
 .folio-link:hover { color: rgba(238, 224, 196, 0.92); }
 .folio-link.active {
-  color: #c8a96e;
+  color: var(--cp-gold);
   font-style: normal;
 }
-.folio-link.active::after {
+/* Gold underline on every link, but invisible until .active. The
+   underline already exists on inactive links — toggling opacity (a
+   composite property) animates between routes instead of the
+   pseudo-element popping in. */
+.folio-link::after {
   content: '';
   position: absolute;
   bottom: -2px;
   left: 10px;
   right: 10px;
   height: 1px;
-  background: linear-gradient(90deg, transparent, #c8a96e 30%, #c8a96e 70%, transparent);
+  background: linear-gradient(90deg, transparent, var(--cp-gold) 30%, var(--cp-gold) 70%, transparent);
+  opacity: 0;
+  transform: scaleX(0.6);
+  transform-origin: 50% 50%;
+  transition:
+    opacity var(--cp-dur-panel) var(--cp-ease-decel),
+    transform var(--cp-dur-panel) var(--cp-ease-decel);
+}
+.folio-link.active::after {
+  opacity: 1;
+  transform: scaleX(1);
 }
 
 /* RIGHT: stats (≥1100px only — keeps the bar compact otherwise) + chat */
@@ -330,15 +356,58 @@ const navLinks = [
 
 /* Mobile drawer */
 .mobile-nav {
-  background: linear-gradient(180deg, #14110a, #0e0b06) !important;
-  border-right: 1px solid rgba(200, 169, 110, 0.18) !important;
+  background: linear-gradient(180deg, var(--cp-paper), var(--cp-paper-deep)) !important;
+  border-right: 1px solid var(--cp-rule) !important;
   font-family: Georgia, serif;
 }
 :deep(.mobile-nav .v-list-item) {
   font-family: Georgia, serif;
   font-style: italic;
   letter-spacing: 0.05em;
-  color: rgba(238, 224, 196, 0.7);
+  color: var(--cp-ink-mute);
 }
-:deep(.mobile-nav .v-list-item--active) { color: #c8a96e !important; }
+:deep(.mobile-nav .v-list-item--active) { color: var(--cp-gold) !important; }
+.drawer-rule :deep(hr),
+.drawer-rule {
+  border-color: var(--cp-gold-faint) !important;
+  opacity: 0.6;
+}
+
+/* Codex-styled drawer stats — replaces the previous Vuetify v-chip
+   stack with hand-drawn typographic vital signs that match the
+   desktop bar's tabular-num gold-ink language. */
+.drawer-stats { font-family: Georgia, serif; }
+.drawer-stats-eyebrow {
+  font-style: italic;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--cp-gold-soft);
+  margin: 0 0 8px;
+}
+.drawer-stats-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.drawer-stat {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  gap: 8px;
+}
+.drawer-stat-num {
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+  color: var(--cp-gold);
+}
+.drawer-stat-label {
+  font-style: italic;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--cp-ink-mute);
+}
 </style>
