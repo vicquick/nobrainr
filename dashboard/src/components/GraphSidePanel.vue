@@ -5,7 +5,7 @@
       <div class="d-flex align-center mb-2">
         <EntityBadge :type="node.entity.entity_type" />
         <v-spacer />
-        <v-btn icon="mdi-close" variant="text" size="x-small" @click="$emit('close')" />
+        <v-btn icon="mdi-close" variant="text" size="x-small" aria-label="Close panel" @click="$emit('close')" />
       </div>
       <div class="entity-name">
         {{ node.entity.canonical_name }}
@@ -27,66 +27,100 @@
 
     <!-- Content -->
     <div class="flex-grow-1 pa-4" style="overflow-y: auto;">
-      <!-- Connections -->
-      <div v-if="node.connections.length" class="mb-5">
-        <div class="section-header mb-3">
-          <v-icon icon="mdi-link-variant" size="15" />
-          <span>Connections</span>
-          <v-chip size="x-small" variant="tonal" color="primary" class="ml-2">{{ node.connections.length }}</v-chip>
-        </div>
-        <div class="connections-list">
-          <div
-            v-for="(conn, i) in node.connections"
-            :key="i"
-            class="connection-item d-flex align-center pa-2 rounded-lg clickable"
-            @click="$emit('navigate', conn.connected_id)"
-            title="Click to explore"
-          >
-            <v-icon
-              :icon="conn.direction === 'outgoing' ? 'mdi-arrow-right' : 'mdi-arrow-left'"
-              size="13"
-              :color="conn.direction === 'outgoing' ? '#7b8ec8' : '#6ba87a'"
-              class="mr-2 flex-shrink-0"
-            />
-            <div class="flex-grow-1" style="min-width: 0;">
-              <span class="conn-relation">{{ conn.relationship_type }}</span>
-              <span class="conn-target">{{ conn.connected_name }}</span>
-            </div>
-            <span class="conn-confidence">
-              {{ (conn.confidence * 100).toFixed(0) }}%
-            </span>
-          </div>
-        </div>
+      <!-- Loading shimmer (visible only when navigating to another entity
+           via connection click — keeps the panel from showing stale data
+           paired with a spinner-less reflow). -->
+      <div v-if="loading" class="panel-loading">
+        <span class="folio-skel skel-line" />
+        <span class="folio-skel skel-line short" />
+        <span class="folio-skel skel-line" />
       </div>
 
-      <!-- Related Memories -->
-      <div v-if="node.memories.length">
-        <div class="section-header mb-3">
-          <v-icon icon="mdi-brain" size="15" />
-          <span>Memories</span>
-          <v-chip size="x-small" variant="tonal" color="primary" class="ml-2">{{ node.memories.length }}</v-chip>
-        </div>
-        <div class="d-flex flex-column ga-2">
-          <div
-            v-for="mem in node.memories.slice(0, 15)"
-            :key="mem.id"
-            class="memory-item pa-3 rounded-lg"
-          >
-            <div class="memory-text mb-1">
-              {{ mem.summary || mem.content.slice(0, 120) + '...' }}
-            </div>
-            <div class="d-flex align-center ga-2">
-              <v-chip v-if="mem.category" size="x-small" variant="tonal" color="primary">
-                {{ mem.category }}
-              </v-chip>
-              <v-spacer />
-              <span class="memory-date">
-                {{ new Date(mem.created_at).toLocaleDateString() }}
+      <template v-else>
+        <!-- Connections -->
+        <div v-if="node.connections.length" class="mb-5">
+          <div class="section-header mb-3">
+            <v-icon icon="mdi-link-variant" size="15" />
+            <span>Connections</span>
+            <span class="section-count">· {{ node.connections.length }}</span>
+          </div>
+          <div class="connections-list cp-stagger">
+            <div
+              v-for="(conn, i) in node.connections"
+              :key="i"
+              class="connection-item clickable"
+              :style="staggerStyle(i)"
+              tabindex="0"
+              role="button"
+              :aria-label="`Navigate to ${conn.connected_name} via ${conn.relationship_type}`"
+              :title="`[click] explore ${conn.connected_name}`"
+              @click="$emit('navigate', conn.connected_id)"
+              @keydown.enter.prevent="$emit('navigate', conn.connected_id)"
+              @keydown.space.prevent="$emit('navigate', conn.connected_id)"
+            >
+              <v-icon
+                :icon="conn.direction === 'outgoing' ? 'mdi-arrow-right' : 'mdi-arrow-left'"
+                size="13"
+                :color="conn.direction === 'outgoing' ? '#7b8ec8' : '#6ba87a'"
+                class="conn-arrow"
+              />
+              <div class="flex-grow-1" style="min-width: 0;">
+                <span class="conn-relation">{{ conn.relationship_type }}</span>
+                <span class="conn-target">{{ conn.connected_name }}</span>
+              </div>
+              <span class="conn-confidence">
+                {{ (conn.confidence * 100).toFixed(0) }}%
               </span>
             </div>
           </div>
         </div>
-      </div>
+
+        <!-- Related Memories -->
+        <div v-if="node.memories.length">
+          <div class="section-header mb-3">
+            <v-icon icon="mdi-brain" size="15" />
+            <span>Memories</span>
+            <span class="section-count">· {{ node.memories.length }}</span>
+          </div>
+          <div class="d-flex flex-column ga-2 cp-stagger">
+            <div
+              v-for="(mem, i) in node.memories.slice(0, 15)"
+              :key="mem.id"
+              class="memory-item"
+              :style="staggerStyle(i)"
+            >
+              <div class="memory-text mb-1">
+                {{ mem.summary || trimContent(mem.content) }}
+              </div>
+              <div class="d-flex align-center ga-2">
+                <span v-if="mem.category" class="memory-cat">{{ mem.category }}</span>
+                <v-spacer />
+                <span class="memory-date">
+                  {{ new Date(mem.created_at).toLocaleDateString() }}
+                </span>
+              </div>
+            </div>
+          </div>
+          <p v-if="node.memories.length > 15" class="memory-overflow">
+            <em>+ {{ node.memories.length - 15 }} more in the gathering</em>
+          </p>
+        </div>
+
+        <!-- Empty: no connections, no memories. The entity exists but has
+             no marginalia or scribed entries — usually a freshly-extracted
+             entity awaiting cross-references. -->
+        <div
+          v-if="!node.connections.length && !node.memories.length"
+          class="panel-empty"
+        >
+          <p class="empty-headline">— this entry stands alone —</p>
+          <p class="empty-hint">
+            No connections drawn yet, no memories scribed against it.
+            Likely freshly extracted — the relationship-linker scribe may
+            yet weave it into the corpus.
+          </p>
+        </div>
+      </template>
     </div>
   </div>
 </template>
@@ -94,23 +128,31 @@
 <script setup lang="ts">
 import type { NodeDetail } from '@/types'
 import EntityBadge from './EntityBadge.vue'
+import { staggerStyle } from '@/composables/useStaggerIndex'
 
 defineProps<{
   node: NodeDetail | null
+  loading?: boolean
 }>()
 
 defineEmits<{
   close: []
   navigate: [entityId: string]
 }>()
+
+function trimContent(content: string): string {
+  if (!content) return ''
+  if (content.length <= 120) return content
+  return content.slice(0, 120).trimEnd() + '…'
+}
 </script>
 
 <style scoped>
 /* Graph side-panel rendered as folio marginalia — gold rules, italic
    serif throughout, no card chrome. */
 .panel-header {
-  border-bottom: 1px solid rgba(200, 169, 110, 0.25);
-  background: rgba(200, 169, 110, 0.04);
+  border-bottom: 1px solid var(--cp-rule);
+  background: var(--cp-gold-trace);
   font-family: Georgia, 'Palatino Linotype', Palatino, serif;
 }
 .entity-name {
@@ -135,9 +177,10 @@ defineEmits<{
   font-family: Georgia, serif;
   font-style: italic;
   font-size: 11px;
-  color: rgba(238, 224, 196, 0.55);
+  color: var(--cp-ink-mute);
   font-variant-numeric: tabular-nums;
 }
+
 .section-header {
   display: flex;
   align-items: center;
@@ -147,11 +190,22 @@ defineEmits<{
   font-size: 11px;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: #c8a96e;
+  color: var(--cp-gold);
   font-weight: 400;
   padding-bottom: 6px;
-  border-bottom: 1px solid rgba(200, 169, 110, 0.18);
+  border-bottom: 1px solid var(--cp-gold-faint);
 }
+.section-count {
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: none;
+  color: var(--cp-gold-soft);
+  font-variant-numeric: tabular-nums;
+  margin-left: 4px;
+}
+
 .connections-list {
   max-height: 320px;
   overflow-y: auto;
@@ -159,18 +213,23 @@ defineEmits<{
   flex-direction: column;
 }
 .connection-item {
-  border-bottom: 1px dotted rgba(200, 169, 110, 0.18);
+  border-bottom: 1px dotted var(--cp-gold-faint);
   padding: 8px 6px;
-  transition: all 150ms;
+  transition:
+    background var(--cp-dur-hover) var(--cp-ease),
+    transform var(--cp-dur-hover) var(--cp-ease);
   display: flex;
   align-items: baseline;
   font-family: Georgia, serif;
 }
-.connection-item:hover {
-  padding-left: 10px;
-  background: rgba(200, 169, 110, 0.04);
+.connection-item:hover,
+.connection-item:focus-visible {
+  background: var(--cp-gold-trace);
+  transform: translateX(2px);
 }
+.connection-item:focus-visible { outline: none; }
 .clickable { cursor: pointer; }
+.conn-arrow { margin-right: 8px; flex-shrink: 0; }
 .conn-relation {
   display: inline-block;
   font-family: Georgia, serif;
@@ -178,7 +237,7 @@ defineEmits<{
   font-size: 10px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: rgba(238, 224, 196, 0.55);
+  color: var(--cp-ink-mute);
   margin-right: 8px;
 }
 .conn-target {
@@ -191,22 +250,25 @@ defineEmits<{
   font-variant-numeric: tabular-nums;
   font-style: italic;
   font-size: 11px;
-  color: #c8a96e;
+  color: var(--cp-gold);
   white-space: nowrap;
   margin-left: auto;
   padding-left: 8px;
   flex-shrink: 0;
 }
+
 .memory-item {
-  background: rgba(200, 169, 110, 0.03);
-  border-left: 2px solid rgba(200, 169, 110, 0.25);
-  border-bottom: 1px dotted rgba(200, 169, 110, 0.18);
+  background: var(--cp-gold-trace);
+  border-left: 2px solid var(--cp-gold-faint);
+  border-bottom: 1px dotted var(--cp-gold-faint);
   padding: 10px 14px;
-  transition: all 150ms;
+  transition:
+    background var(--cp-dur-hover) var(--cp-ease),
+    border-left-color var(--cp-dur-hover) var(--cp-ease);
 }
 .memory-item:hover {
   background: rgba(200, 169, 110, 0.06);
-  border-left-color: #c8a96e;
+  border-left-color: var(--cp-gold);
 }
 .memory-text {
   font-family: Georgia, serif;
@@ -214,11 +276,68 @@ defineEmits<{
   color: rgba(238, 224, 196, 0.88);
   line-height: 1.6;
 }
+/* Codex inline category — italic small-caps lozenge instead of Vuetify
+   chip. Reads as a marginalia tag, not a UI control. */
+.memory-cat {
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--cp-gold-soft);
+  border: 1px solid var(--cp-gold-faint);
+  padding: 1px 6px;
+  border-radius: 2px;
+}
 .memory-date {
   font-family: Georgia, serif;
   font-style: italic;
   font-size: 11px;
-  color: rgba(238, 224, 196, 0.5);
+  color: var(--cp-ink-faint);
   font-variant-numeric: tabular-nums;
 }
+.memory-overflow {
+  margin: 12px 0 0;
+  text-align: center;
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 12px;
+  color: var(--cp-ink-mute);
+}
+
+.panel-empty {
+  text-align: center;
+  margin: 36px auto 0;
+  max-width: 36ch;
+}
+.empty-headline {
+  font-family: Georgia, serif;
+  font-style: italic;
+  color: var(--cp-ink-mute);
+  margin: 0 0 6px;
+}
+.empty-hint {
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 12px;
+  color: var(--cp-ink-faint);
+  line-height: 1.55;
+  margin: 0;
+}
+
+/* Loading shimmer — three skeleton lines using the global folio-skel
+   gradient (Batch A token). Width pattern reads as a paragraph
+   silhouette so the panel doesn't reflow when real data arrives. */
+.panel-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 4px;
+}
+.skel-line {
+  display: block;
+  height: 14px;
+  width: 100%;
+}
+.skel-line.short { width: 64%; }
 </style>
