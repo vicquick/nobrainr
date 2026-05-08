@@ -88,7 +88,7 @@
           </div>
 
           <div v-if="memory.category" class="mb-4">
-            <v-chip size="small" variant="tonal" color="primary" class="font-weight-medium">{{ memory.category }}</v-chip>
+            <span class="cp-cat-lozenge">{{ memory.category }}</span>
           </div>
 
           <div class="mb-5">
@@ -97,9 +97,9 @@
           </div>
 
           <div v-if="memory.tags.length" class="mb-5">
-            <div class="text-caption text-medium-emphasis mb-2 text-uppercase" style="letter-spacing: 0.5px;">Tags</div>
+            <div class="cp-detail-eyebrow">Tags</div>
             <div class="d-flex ga-1 flex-wrap">
-              <v-chip v-for="tag in memory.tags" :key="tag" size="small" variant="outlined">{{ tag }}</v-chip>
+              <span v-for="tag in memory.tags" :key="tag" class="cp-tag-pill">{{ tag }}</span>
             </div>
           </div>
 
@@ -188,14 +188,10 @@
                     <span v-if="msg.timestamp" class="ml-2" style="opacity: 0.4;">
                       {{ formatMsgTime(msg.timestamp) }}
                     </span>
-                    <v-chip
+                    <span
                       v-if="isInWindow(msg._globalIdx, origin.conversation)"
-                      size="x-small"
-                      color="amber-darken-2"
-                      variant="tonal"
-                      class="ml-2"
-                      style="font-size: 9px;"
-                    >distilled from here</v-chip>
+                      class="cp-this-memory-mark ml-2"
+                    >distilled from here</span>
                   </div>
                   <pre class="msg-content">{{ msg.content }}</pre>
                 </div>
@@ -240,7 +236,7 @@
               >
                 <div class="chunk-index-label text-caption">
                   <span>§ {{ chunk.chunk_index + 1 }}</span>
-                  <v-chip v-if="chunk.is_current" size="x-small" color="amber-darken-2" variant="tonal" class="ml-2" style="font-size: 9px;">this memory</v-chip>
+                  <span v-if="chunk.is_current" class="cp-this-memory-mark">this memory</span>
                 </div>
                 <pre class="chunk-content">{{ chunk.content }}</pre>
               </div>
@@ -264,9 +260,9 @@
             <div v-if="origin.self_metadata && Object.keys(origin.self_metadata).length" class="mb-3">
               <div class="d-flex flex-wrap ga-2">
                 <template v-for="(v, k) in origin.self_metadata" :key="k">
-                  <v-chip v-if="v" size="x-small" variant="outlined" style="font-size: 10px; opacity: 0.6;">
-                    {{ k }}: {{ v }}
-                  </v-chip>
+                  <span v-if="v" class="cp-meta-pill">
+                    <em>{{ k }}:</em> {{ v }}
+                  </span>
                 </template>
               </div>
             </div>
@@ -291,18 +287,20 @@
 
     <!-- Delete Dialog -->
     <v-dialog v-model="showDeleteDialog" max-width="380">
-      <v-card rounded="xl">
+      <v-card rounded="xl" class="cp-delete-card">
         <v-card-text class="pa-5">
-          <div class="d-flex align-center mb-3">
-            <v-icon icon="mdi-alert-circle-outline" color="error" size="24" class="mr-2" />
-            <span class="text-h6 font-weight-bold">Delete Memory?</span>
-          </div>
-          <p class="text-body-2 text-medium-emphasis">This action cannot be undone.</p>
+          <p class="cp-delete-eyebrow">Marginalia · erasure</p>
+          <p class="cp-delete-title">— Strike this entry from the codex? —</p>
+          <p class="cp-delete-tagline">
+            <em>The line is rewritten with a tombstone hash so the same content
+            cannot be re-ingested by the dedup classifier. The deletion is
+            durable; recovery means re-importing the source.</em>
+          </p>
         </v-card-text>
         <v-card-actions class="pa-4 pt-0">
           <v-spacer />
-          <v-btn variant="text" @click="showDeleteDialog = false">Cancel</v-btn>
-          <v-btn color="error" variant="flat" @click="handleDelete">Delete</v-btn>
+          <v-btn variant="text" @click="showDeleteDialog = false">Keep</v-btn>
+          <v-btn color="error" variant="flat" @click="handleDelete">Strike</v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
@@ -715,5 +713,122 @@ function handleDelete() {
 
 .chunk-current .chunk-content {
   color: rgba(238, 224, 196, 0.96);
+}
+
+/* ── Codex polish utilities (replacing Vuetify chip defaults) ─────
+   Each previously v-chip element gets a hand-drawn marginalia
+   alternative so the read pane voice matches the rest of the
+   dashboard. */
+
+/* Section header replacing `text-caption text-medium-emphasis text-uppercase`
+   sequences — italic small caps + 0.18em letter spacing, gold-soft. */
+.cp-detail-eyebrow {
+  font-style: italic;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--cp-gold-soft);
+  margin: 0 0 8px;
+}
+
+/* Category lozenge — replaces v-chip color="primary" tonal */
+.cp-cat-lozenge {
+  display: inline-block;
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
+  font-style: italic;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--cp-gold);
+  background: var(--cp-gold-trace);
+  border: 1px solid var(--cp-gold-faint);
+  padding: 3px 10px;
+  border-radius: 2px;
+}
+
+/* Tag pill — replaces v-chip variant="outlined" */
+.cp-tag-pill {
+  display: inline-flex;
+  align-items: center;
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--cp-ink-mute);
+  background: transparent;
+  border: 1px solid var(--cp-rule);
+  padding: 2px 8px;
+  border-radius: 2px;
+  transition:
+    color var(--cp-dur-hover) var(--cp-ease),
+    border-color var(--cp-dur-hover) var(--cp-ease);
+}
+.cp-tag-pill:hover { color: var(--cp-ink); border-color: var(--cp-gold-soft); }
+
+/* "this memory" / "distilled from here" marker — replaces v-chip
+   color="amber-darken-2" tonal. Reads as a marginal annotation. */
+.cp-this-memory-mark {
+  display: inline-block;
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--cp-gold-bright);
+  background: rgba(200, 169, 110, 0.10);
+  border: 1px solid var(--cp-gold-faint);
+  padding: 1px 7px;
+  border-radius: 2px;
+}
+
+/* Origin metadata k:v pill — replaces v-chip x-small outlined */
+.cp-meta-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-family: Georgia, serif;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--cp-ink-mute);
+  background: transparent;
+  border: 1px solid var(--cp-rule);
+  padding: 1px 8px;
+  border-radius: 2px;
+}
+.cp-meta-pill em {
+  font-style: italic;
+  color: var(--cp-gold-soft);
+}
+
+/* Delete confirmation dialog — codex voice replaces "Delete Memory?".
+   The v-dialog wrapper is left intact (Vuetify owns positioning +
+   focus trap there); only the card chrome is rewritten. */
+.cp-delete-card {
+  background:
+    radial-gradient(700px 400px at 50% 0%, rgba(196, 106, 106, 0.05), transparent 70%),
+    linear-gradient(180deg, var(--cp-paper) 0%, var(--cp-paper-deep) 100%) !important;
+  border: 1px solid var(--cp-rule) !important;
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
+}
+.cp-delete-eyebrow {
+  margin: 0 0 8px;
+  font-style: italic;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--cp-gold-soft);
+}
+.cp-delete-title {
+  margin: 0 0 8px;
+  font-size: 17px;
+  color: var(--cp-ink);
+  font-variant: small-caps;
+}
+.cp-delete-tagline {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--cp-ink-mute);
+  line-height: 1.55;
+  font-style: italic;
 }
 </style>
