@@ -16,6 +16,11 @@
          self-decides whether to show via localStorage. Lazy because
          99% of mounts are returning users where this never renders. -->
     <FirstVisitOnboarding />
+    <!-- Cmd-K / Ctrl-K command palette. Self-mounts on the global key
+         binding; the component is small (~9 KB gz) but ships motion-v
+         with it, so async-load means returning users who never press
+         the shortcut don't pay for it. -->
+    <CommandPalette />
   </v-app>
 </template>
 
@@ -27,6 +32,7 @@ import { useChatStore } from '@/stores/chat'
 const chatStore = useChatStore()
 const ChatPanel = defineAsyncComponent(() => import('@/components/ChatPanel.vue'))
 const FirstVisitOnboarding = defineAsyncComponent(() => import('@/components/FirstVisitOnboarding.vue'))
+const CommandPalette = defineAsyncComponent(() => import('@/components/CommandPalette.vue'))
 </script>
 
 <style>
