@@ -808,6 +808,7 @@ class Scheduler:
             "stability_decayed": decay_count,
             "audit_log_pruned": retention["audit_log_pruned"],
             "memory_versions_pruned": retention["memory_versions_pruned"],
+            "scheduler_runs_pruned": retention.get("scheduler_runs_pruned", 0),
             "ran_at": datetime.now().isoformat(),
         }
 
