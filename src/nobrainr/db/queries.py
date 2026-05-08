@@ -1687,7 +1687,7 @@ async def normalize_categories(category_map: dict[str, str]) -> int:
 
 
 async def analyze_tables() -> dict:
-    """Run ANALYZE on core tables + apply retention to audit_log and memory_versions.
+    """Run ANALYZE on core tables + apply retention to growth-prone tables.
 
     Returns counts of rows pruned so the scheduler can log them.
 
@@ -1697,6 +1697,11 @@ async def analyze_tables() -> dict:
       - memory_versions: keep the 5 most-recent versions per memory_id.
         Without this trimming, the table grows unbounded — observed 1496 versions
         for a single memory after the 2026-03-31 to 2026-04-07 backfill.
+      - scheduler_runs: 30 days. Each scheduler tick inserts a row; with
+        ~30 jobs ticking every few hours, the table reaches millions of
+        rows in weeks if left unpruned. 30 days is enough window for
+        the dashboard's task-detail drawer (last 50 runs sparkline) to
+        always have data while keeping the table tractable.
     """
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -1728,16 +1733,27 @@ async def analyze_tables() -> dict:
         )
         versions_pruned = int(versions_result.split()[-1]) if versions_result else 0
 
-        if audit_pruned or versions_pruned:
+        # scheduler_runs retention — 30 days (added 2026-05-08).
+        # Index idx_scheduler_runs_task_recent is on (task_name, started_at DESC)
+        # so this DELETE can range-scan started_at directly — no full table scan.
+        runs_result = await conn.execute(
+            "DELETE FROM scheduler_runs "
+            " WHERE started_at < NOW() - INTERVAL '30 days'"
+        )
+        scheduler_runs_pruned = int(runs_result.split()[-1]) if runs_result else 0
+
+        if audit_pruned or versions_pruned or scheduler_runs_pruned:
             import logging
             logging.getLogger("nobrainr").info(
-                "Retention: pruned %d audit_log rows (>7d) + %d memory_versions rows (keep-5)",
-                audit_pruned, versions_pruned,
+                "Retention: pruned %d audit_log (>7d) + %d memory_versions (keep-5) "
+                "+ %d scheduler_runs (>30d)",
+                audit_pruned, versions_pruned, scheduler_runs_pruned,
             )
 
         return {
             "audit_log_pruned": audit_pruned,
             "memory_versions_pruned": versions_pruned,
+            "scheduler_runs_pruned": scheduler_runs_pruned,
         }
 
 
