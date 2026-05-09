@@ -4,6 +4,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/youruser/nobrainr/ci.yml?label=CI)](https://github.com/youruser/nobrainr/actions)
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12+-green)](https://python.org)
 [![MCP](https://img.shields.io/badge/MCP-compatible-blue)](https://modelcontextprotocol.io)
+[![SafeSkill 89/100](https://img.shields.io/badge/SafeSkill-89%2F100_Passes%20with%20Notes-yellow)](https://safeskill.dev/scan/vicquick-nobrainr)
 
 **Your AI agents forget everything between sessions. nobrainr fixes that.**
 
