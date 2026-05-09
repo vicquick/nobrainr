@@ -113,6 +113,7 @@
 
 <script setup lang="ts">
 import { watch, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { useMemories } from '@/composables/useMemories'
 import { useStatsStore } from '@/stores/stats'
 import { useSSE } from '@/composables/useSSE'
@@ -120,6 +121,8 @@ import MemoryCard from '@/components/MemoryCard.vue'
 import MemoryDetail from '@/components/MemoryDetail.vue'
 import Dotty from '@/components/Dotty.vue'
 import { staggerStyle } from '@/composables/useStaggerIndex'
+
+const route = useRoute()
 
 const statsStore = useStatsStore()
 const {
@@ -193,7 +196,14 @@ onMounted(async () => {
   await statsStore.fetchStats()
   fetchCategories()
   fetchMachines()
-  fetchMemories()
+  // Pre-populate filters from route query — lets PulseView's trio
+  // (and any other view) link in with `?category=X` / `?machine=Y` /
+  // `?q=Z` and have the gathering open already filtered.
+  const q = route.query
+  if (typeof q.category === 'string') categoryFilter.value = q.category
+  if (typeof q.machine === 'string') machineFilter.value = q.machine
+  if (typeof q.q === 'string') searchQuery.value = q.q
+  fetchMemories(buildParams())
 })
 </script>
 

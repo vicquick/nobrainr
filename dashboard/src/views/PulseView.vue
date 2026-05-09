@@ -106,13 +106,29 @@
               <span class="quire-title">By source</span>
             </div>
             <ul class="bar-list">
-              <li v-for="src in topSources" :key="src.source_type">
-                <span class="bar-label">{{ src.source_type }}</span>
-                <span class="bar-track">
-                  <span class="bar-fill primary" :style="{ width: ((src.cnt / stats.total_memories) * 100) + '%' }" />
-                </span>
-                <span class="bar-num">{{ src.cnt.toLocaleString() }}</span>
-              </li>
+              <RouterLink
+                v-for="src in topSources"
+                :key="src.source_type"
+                :to="{ path: '/threads', query: { source: src.source_type } }"
+                custom
+                v-slot="{ navigate }"
+              >
+                <li
+                  class="bar-row clickable"
+                  tabindex="0"
+                  role="button"
+                  :aria-label="`Open threads from ${src.source_type}`"
+                  @click="navigate"
+                  @keydown.enter.prevent="navigate"
+                  @keydown.space.prevent="navigate"
+                >
+                  <span class="bar-label">{{ src.source_type }}</span>
+                  <span class="bar-track">
+                    <span class="bar-fill primary" :style="{ width: ((src.cnt / stats.total_memories) * 100) + '%' }" />
+                  </span>
+                  <span class="bar-num">{{ src.cnt.toLocaleString() }}</span>
+                </li>
+              </RouterLink>
             </ul>
           </article>
 
@@ -122,13 +138,29 @@
               <span class="quire-title">By category</span>
             </div>
             <ul class="bar-list">
-              <li v-for="cat in topCategories" :key="cat.category">
-                <span class="bar-label">{{ cat.category }}</span>
-                <span class="bar-track">
-                  <span class="bar-fill secondary" :style="{ width: ((cat.cnt / stats.total_memories) * 100) + '%' }" />
-                </span>
-                <span class="bar-num">{{ cat.cnt.toLocaleString() }}</span>
-              </li>
+              <RouterLink
+                v-for="cat in topCategories"
+                :key="cat.category"
+                :to="{ path: '/memories', query: { category: cat.category } }"
+                custom
+                v-slot="{ navigate }"
+              >
+                <li
+                  class="bar-row clickable"
+                  tabindex="0"
+                  role="button"
+                  :aria-label="`Open memories in category ${cat.category}`"
+                  @click="navigate"
+                  @keydown.enter.prevent="navigate"
+                  @keydown.space.prevent="navigate"
+                >
+                  <span class="bar-label">{{ cat.category }}</span>
+                  <span class="bar-track">
+                    <span class="bar-fill secondary" :style="{ width: ((cat.cnt / stats.total_memories) * 100) + '%' }" />
+                  </span>
+                  <span class="bar-num">{{ cat.cnt.toLocaleString() }}</span>
+                </li>
+              </RouterLink>
             </ul>
           </article>
 
@@ -138,13 +170,29 @@
               <span class="quire-title">By instrument</span>
             </div>
             <ul class="bar-list">
-              <li v-for="m in topMachines" :key="m.source_machine">
-                <span class="bar-label">{{ m.source_machine }}</span>
-                <span class="bar-track">
-                  <span class="bar-fill tertiary" :style="{ width: ((m.cnt / stats.total_memories) * 100) + '%' }" />
-                </span>
-                <span class="bar-num">{{ m.cnt.toLocaleString() }}</span>
-              </li>
+              <RouterLink
+                v-for="m in topMachines"
+                :key="m.source_machine"
+                :to="{ path: '/memories', query: { machine: m.source_machine } }"
+                custom
+                v-slot="{ navigate }"
+              >
+                <li
+                  class="bar-row clickable"
+                  tabindex="0"
+                  role="button"
+                  :aria-label="`Open memories from instrument ${m.source_machine}`"
+                  @click="navigate"
+                  @keydown.enter.prevent="navigate"
+                  @keydown.space.prevent="navigate"
+                >
+                  <span class="bar-label">{{ m.source_machine }}</span>
+                  <span class="bar-track">
+                    <span class="bar-fill tertiary" :style="{ width: ((m.cnt / stats.total_memories) * 100) + '%' }" />
+                  </span>
+                  <span class="bar-num">{{ m.cnt.toLocaleString() }}</span>
+                </li>
+              </RouterLink>
             </ul>
           </article>
         </section>
@@ -284,6 +332,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { RouterLink } from 'vue-router'
 import api from '@/api/client'
 import type { Stats } from '@/types'
 import Dotty from '@/components/Dotty.vue'
@@ -754,6 +803,21 @@ onUnmounted(() => {
   border-bottom: 1px dotted var(--cp-gold-faint);
 }
 .bar-list li:last-child { border-bottom: none; }
+.bar-list li.clickable {
+  cursor: pointer;
+  border-radius: 2px;
+  margin: 0 -6px;
+  padding: 6px 6px;
+  transition:
+    background var(--cp-dur-hover) var(--cp-ease),
+    transform var(--cp-dur-hover) var(--cp-ease);
+}
+.bar-list li.clickable:hover,
+.bar-list li.clickable:focus-visible {
+  background: var(--cp-gold-trace);
+  transform: translateX(2px);
+}
+.bar-list li.clickable:focus-visible { outline: none; }
 .bar-label {
   font-family: Georgia, serif;
   font-size: 12px;
