@@ -11,9 +11,12 @@
   "dependencies": {
     "@mdi/font": "^7.4.47",
     "@sigma/node-border": "^3.0.0",
+    "@types/dompurify": "^3.0.5",
     "axios": "^1.7.9",
+    "dompurify": "^3.4.2",
     "graphology": "^0.25.4",
     "graphology-layout-forceatlas2": "^0.10.1",
+    "marked": "^18.0.3",
     "motion-v": "^2.2.1",
     "pinia": "^2.3.0",
     "sigma": "^3.0.0",
