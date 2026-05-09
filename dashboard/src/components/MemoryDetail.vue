@@ -92,8 +92,11 @@
           </div>
 
           <div class="mb-5">
-            <div class="text-caption text-medium-emphasis mb-2 text-uppercase" style="letter-spacing: 0.5px;">Content</div>
-            <pre class="content-block">{{ memory.content }}</pre>
+            <div class="cp-detail-eyebrow">Content</div>
+            <!-- v-html is safe here: useMarkdown.ts pipes the content
+                 through marked → DOMPurify with a strict allowlist.
+                 Plain-text paths are escapeHtml'd instead. -->
+            <div class="cp-prose" v-html="renderedContent" />
           </div>
 
           <div v-if="memory.tags.length" class="mb-5">
@@ -266,7 +269,7 @@
                 </template>
               </div>
             </div>
-            <pre class="content-block">{{ origin.self_content }}</pre>
+            <div class="cp-prose" v-html="renderedSelfContent" />
           </template>
 
           <!-- ── No source ── -->
@@ -311,6 +314,7 @@
 import { ref, reactive, watch, computed, nextTick } from 'vue'
 import type { Memory, Entity, Fact } from '@/types'
 import EntityBadge from './EntityBadge.vue'
+import { renderMemoryMarkdown } from '@/composables/useMarkdown'
 
 interface ConvMessage {
   role: string
@@ -381,6 +385,15 @@ const originLoading = ref(false)
 const originError = ref('')
 const showAllMessages = ref(false)
 const threadEl = ref<HTMLElement | null>(null)
+
+// Render memory.content (and origin.self_content for derived/self
+// memories) as sanitised HTML so markdown — common in chatgpt
+// imports + claude exports + crawl chunks — actually formats.
+// useMarkdown.ts handles escape + parse + DOMPurify allowlist.
+const renderedContent = computed(() => renderMemoryMarkdown(props.memory.content))
+const renderedSelfContent = computed(() =>
+  renderMemoryMarkdown(origin.value?.self_content ?? ''),
+)
 
 const qualityColor = computed(() => {
   const q = props.memory.quality_score ?? 0
@@ -548,6 +561,128 @@ function handleDelete() {
   max-height: 500px;
   overflow-y: auto;
   color: rgba(238, 224, 196, 0.94);
+}
+
+/* Codex prose — rendered markdown body. Wrapper inherits the
+   parchment frame from .content-block (border + bg) and styles each
+   block-level element to match the codex voice instead of the
+   browser defaults. Headings stay small-caps gold; lists indent like
+   margin notes; code blocks read as raised paper; blockquotes get
+   a gold rule on the left edge.
+*/
+.cp-prose {
+  background: rgba(200, 169, 110, 0.04);
+  border: 1px solid var(--cp-rule);
+  border-left: 2px solid var(--cp-gold);
+  padding: 18px 22px;
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
+  font-size: 14px;
+  line-height: 1.7;
+  max-height: 500px;
+  overflow-y: auto;
+  color: var(--cp-ink);
+  word-break: break-word;
+}
+.cp-prose > :first-child { margin-top: 0; }
+.cp-prose > :last-child { margin-bottom: 0; }
+.cp-prose p { margin: 0 0 0.9em; }
+.cp-prose h1, .cp-prose h2, .cp-prose h3,
+.cp-prose h4, .cp-prose h5, .cp-prose h6 {
+  font-family: Georgia, serif;
+  font-weight: 400;
+  font-variant: small-caps;
+  letter-spacing: 0.02em;
+  color: var(--cp-gold);
+  margin: 1.2em 0 0.4em;
+  line-height: 1.25;
+}
+.cp-prose h1 { font-size: 18px; }
+.cp-prose h2 { font-size: 16px; }
+.cp-prose h3 { font-size: 14.5px; color: var(--cp-gold-bright); }
+.cp-prose h4, .cp-prose h5, .cp-prose h6 {
+  font-size: 13px;
+  font-style: italic;
+  color: var(--cp-gold-soft);
+  text-transform: none;
+  font-variant: normal;
+  letter-spacing: 0.06em;
+}
+.cp-prose strong { color: var(--cp-ink); font-weight: 600; }
+.cp-prose em { font-style: italic; color: var(--cp-ink); }
+.cp-prose a {
+  color: var(--cp-gold);
+  text-decoration: underline;
+  text-decoration-color: var(--cp-gold-faint);
+  text-underline-offset: 2px;
+  transition: text-decoration-color var(--cp-dur-hover) var(--cp-ease);
+}
+.cp-prose a:hover { text-decoration-color: var(--cp-gold); }
+.cp-prose ul, .cp-prose ol { margin: 0 0 0.9em; padding-left: 1.4em; }
+.cp-prose li { margin: 0.18em 0; }
+.cp-prose li::marker { color: var(--cp-gold-soft); }
+.cp-prose blockquote {
+  margin: 0.9em 0;
+  padding: 4px 14px;
+  border-left: 2px solid var(--cp-gold-faint);
+  font-style: italic;
+  color: var(--cp-ink-mute);
+}
+.cp-prose code {
+  font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  background: rgba(200, 169, 110, 0.08);
+  border: 1px solid var(--cp-gold-faint);
+  border-radius: 2px;
+  padding: 0 4px;
+  color: var(--cp-ink);
+}
+.cp-prose pre {
+  margin: 0.9em 0;
+  padding: 12px 14px;
+  background: rgba(8, 6, 2, 0.4);
+  border: 1px solid var(--cp-rule);
+  border-left: 2px solid var(--cp-gold-soft);
+  border-radius: 2px;
+  overflow-x: auto;
+  font-size: 12.5px;
+  line-height: 1.55;
+  max-height: 320px;
+}
+.cp-prose pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+}
+.cp-prose hr {
+  border: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--cp-gold-soft), transparent);
+  margin: 1.4em 0;
+}
+.cp-prose table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.9em 0;
+  font-size: 13px;
+}
+.cp-prose th, .cp-prose td {
+  border-bottom: 1px dotted var(--cp-gold-faint);
+  padding: 6px 10px;
+  text-align: left;
+}
+.cp-prose th {
+  font-style: italic;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--cp-gold-soft);
+}
+.cp-prose mark.cp-mark {
+  background: rgba(200, 169, 110, 0.18);
+  color: var(--cp-ink);
+  padding: 0 2px;
+  border-radius: 1px;
 }
 .stat-block {
   min-width: 100px;
