@@ -60,6 +60,7 @@
                 :key="m.id"
                 :memory="m"
                 :selected="selectedMemory?.id === m.id"
+                :highlight="searchQuery"
                 :style="staggerStyle(i)"
                 @click="selectMemory(m.id)"
               />

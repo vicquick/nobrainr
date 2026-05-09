@@ -10,7 +10,10 @@
     </div>
 
     <div class="card-body">
-      <p class="card-text">{{ displayText }}</p>
+      <!-- v-html is safe here: highlightMatches HTML-escapes both the
+           source text and the query before constructing the <mark>
+           wrappers. See composables/useHighlight.ts. -->
+      <p class="card-text" v-html="displayHtml" />
 
       <div class="card-meta">
         <span v-if="memory.category" class="meta-tag">{{ memory.category }}</span>
@@ -40,10 +43,19 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { Memory } from '@/types'
+import { highlightMatches } from '@/composables/useHighlight'
 
 const props = defineProps<{
   memory: Memory
   selected?: boolean
+  /**
+   * Optional active search query. When present, occurrences of each
+   * whitespace-separated token are wrapped in <mark class="cp-mark">.
+   * Both source text and query are HTML-escaped before the wrap, so
+   * v-html'ing the result is safe even when memory content contains
+   * tag-like substrings.
+   */
+  highlight?: string | null
 }>()
 
 defineEmits<{
@@ -56,6 +68,8 @@ const displayText = computed(() => {
     ? props.memory.content.slice(0, 140) + '…'
     : props.memory.content
 })
+
+const displayHtml = computed(() => highlightMatches(displayText.value, props.highlight))
 
 const formattedDate = computed(() => {
   return new Date(props.memory.created_at).toLocaleDateString('en-GB', {
