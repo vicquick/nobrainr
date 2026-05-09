@@ -793,6 +793,13 @@ watch(colorMode, () => {
   border-radius: 0;
 }
 
+/* The 3D scene itself stays Three's native color space (changing the
+   Bloom + node hues would require shader work and risk killing the
+   atmosphere). What we CAN do — and what this pass does — is align
+   every overlay control, tooltip, and detail panel with the codex
+   palette so the chrome reads as parchment marginalia hovering over
+   the constellation, not as a separate UI dialect. */
+
 .galaxy-top-right {
   position: absolute;
   top: 12px;
@@ -800,11 +807,11 @@ watch(colorMode, () => {
   z-index: 10;
   display: flex;
   gap: 2px;
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--cp-ink-mute);
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
 }
-
-.galaxy-top-right .v-btn { color: rgba(255, 255, 255, 0.6); }
-.galaxy-top-right .v-btn:hover { color: rgba(255, 255, 255, 0.9); }
+.galaxy-top-right .v-btn { color: var(--cp-ink-mute); }
+.galaxy-top-right .v-btn:hover { color: var(--cp-gold); }
 
 .galaxy-controls {
   position: absolute;
@@ -815,11 +822,15 @@ watch(colorMode, () => {
   flex-direction: column;
   align-items: flex-start;
   pointer-events: auto;
+  font-family: Georgia, serif;
 }
 
 .galaxy-point-count {
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.5);
+  font-style: italic;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--cp-ink-faint);
+  font-variant-numeric: tabular-nums;
 }
 
 .galaxy-legend {
@@ -834,20 +845,23 @@ watch(colorMode, () => {
   cursor: pointer;
   max-height: 300px;
   overflow-y: auto;
+  font-family: Georgia, serif;
 }
 
 .galaxy-legend-item {
   display: flex;
   align-items: center;
   gap: 6px;
+  font-style: italic;
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.7);
-  transition: opacity 0.2s;
+  letter-spacing: 0.04em;
+  color: var(--cp-ink-mute);
+  transition: color var(--cp-dur-hover) var(--cp-ease);
   user-select: none;
 }
 
-.galaxy-legend-item:hover { color: rgba(255, 255, 255, 0.9); }
-.galaxy-legend-hidden { opacity: 0.3; }
+.galaxy-legend-item:hover { color: var(--cp-ink); }
+.galaxy-legend-hidden { opacity: 0.35; }
 .galaxy-legend-dot {
   width: 8px;
   height: 8px;
@@ -855,35 +869,44 @@ watch(colorMode, () => {
   flex-shrink: 0;
 }
 .galaxy-legend-count {
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--cp-gold-soft);
   font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  font-style: normal;
 }
 
 .galaxy-tooltip {
   position: absolute;
   z-index: 20;
-  background: rgba(0, 0, 0, 0.85);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 8px;
+  background:
+    radial-gradient(400px 300px at 50% 0%, rgba(200, 169, 110, 0.06), transparent 70%),
+    linear-gradient(180deg, rgba(20, 17, 10, 0.94), rgba(14, 11, 6, 0.94));
+  border: 1px solid var(--cp-rule);
+  border-radius: 2px;
   padding: 8px 12px;
   pointer-events: none;
   max-width: 280px;
   backdrop-filter: blur(8px);
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
 }
 
 .galaxy-tooltip-cat {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.7);
+  font-style: italic;
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--cp-gold-soft);
   margin-bottom: 4px;
 }
 
 .galaxy-tooltip-text {
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.9);
-  line-height: 1.4;
+  font-size: 12.5px;
+  color: var(--cp-ink);
+  line-height: 1.5;
   overflow: hidden;
   text-overflow: ellipsis;
   display: -webkit-box;
@@ -896,14 +919,18 @@ watch(colorMode, () => {
   top: 12px;
   right: 12px;
   bottom: 12px;
-  width: 300px;
+  width: 320px;
   z-index: 15;
-  background: rgba(20, 20, 24, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 12px;
+  background:
+    radial-gradient(700px 500px at 50% 0%, rgba(200, 169, 110, 0.05), transparent 65%),
+    linear-gradient(180deg, var(--cp-paper) 0%, var(--cp-paper-deep) 100%);
+  border: 1px solid var(--cp-rule);
+  border-radius: 4px;
   padding: 16px;
   backdrop-filter: blur(12px);
   overflow-y: auto;
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
+  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.5);
 }
 
 .galaxy-detail-header {
@@ -911,7 +938,9 @@ watch(colorMode, () => {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 12px;
-  color: rgba(255, 255, 255, 0.9);
+  color: var(--cp-ink);
+  font-variant: small-caps;
+  letter-spacing: 0.02em;
 }
 
 .galaxy-detail-row {
@@ -919,13 +948,17 @@ watch(colorMode, () => {
   align-items: center;
   gap: 6px;
   margin-bottom: 8px;
-  color: rgba(255, 255, 255, 0.7);
+  font-style: italic;
+  font-size: 11px;
+  color: var(--cp-ink-mute);
+  letter-spacing: 0.04em;
 }
 
 .galaxy-detail-content {
+  font-family: Georgia, serif;
   font-size: 13px;
-  line-height: 1.5;
-  color: rgba(255, 255, 255, 0.8);
+  line-height: 1.55;
+  color: var(--cp-ink);
   margin: 12px 0;
   white-space: pre-wrap;
 }
@@ -937,13 +970,24 @@ watch(colorMode, () => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--cp-ink-mute);
   z-index: 5;
+  font-family: Georgia, serif;
+  font-style: italic;
+  letter-spacing: 0.05em;
 }
 
-/* Transitions */
-.galaxy-panel-enter-active { transition: all 0.3s ease; }
-.galaxy-panel-leave-active { transition: all 0.2s ease; }
+/* Transitions — slide+fade on the detail panel, codex tokens. */
+.galaxy-panel-enter-active {
+  transition:
+    opacity var(--cp-dur-panel) var(--cp-ease-decel),
+    transform var(--cp-dur-panel) var(--cp-ease-decel);
+}
+.galaxy-panel-leave-active {
+  transition:
+    opacity var(--cp-dur-out) var(--cp-ease-accel),
+    transform var(--cp-dur-out) var(--cp-ease-accel);
+}
 .galaxy-panel-enter-from { opacity: 0; transform: translateX(20px); }
 .galaxy-panel-leave-to { opacity: 0; transform: translateX(20px); }
 </style>
