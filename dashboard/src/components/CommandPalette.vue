@@ -90,7 +90,9 @@
                 @click="goMemory(m.id)"
               >
                 <span class="cp-row-glyph" aria-hidden="true">·</span>
-                <span class="cp-row-text">{{ shortPreview(m) }}</span>
+                <!-- v-html is safe: highlightMatches escapes both
+                     source + query before inserting <mark> tags. -->
+                <span class="cp-row-text" v-html="highlightedPreview(m)" />
                 <span v-if="m.category" class="cp-row-meta">{{ m.category }}</span>
               </button>
             </template>
@@ -135,6 +137,7 @@ import { useRouter } from 'vue-router'
 import { Motion, AnimatePresence } from 'motion-v'
 import api from '@/api/client'
 import Dotty from './Dotty.vue'
+import { highlightMatches } from '@/composables/useHighlight'
 
 interface RouteHit { to: string; label: string }
 interface MemoryHit {
@@ -247,6 +250,10 @@ function goMemory(id: string) {
 function shortPreview(m: MemoryHit): string {
   const text = m.summary || m.content || ''
   return text.length <= 100 ? text : text.slice(0, 100).trimEnd() + '…'
+}
+
+function highlightedPreview(m: MemoryHit): string {
+  return highlightMatches(shortPreview(m), query.value)
 }
 
 function openPalette() {

@@ -68,3 +68,17 @@
   line-height: 1.5;
 }
 .empty-hint em { color: var(--cp-gold-soft); font-style: italic; }
+
+/* ── Search highlight (.cp-mark) ─────────────────────────────────
+   Used by the highlightMatches composable to wrap query terms in
+   memory previews / command-palette hits. Gold-faint background +
+   ink color so matches read as gilded marginalia, not as a UI
+   annotation. */
+mark.cp-mark {
+  background: rgba(200, 169, 110, 0.18);
+  color: var(--cp-ink);
+  padding: 0 2px;
+  border-radius: 1px;
+  font-weight: inherit;
+  font-style: inherit;
+}
