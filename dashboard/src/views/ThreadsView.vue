@@ -88,7 +88,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import Dotty from '@/components/Dotty.vue'
 import { staggerStyle } from '@/composables/useStaggerIndex'
 
@@ -101,6 +101,7 @@ interface Thread {
 }
 
 const router = useRouter()
+const route = useRoute()
 const query = ref('')
 const sourceFilter = ref<string | null>(null)
 const threads = ref<Thread[]>([])
@@ -141,7 +142,17 @@ function toRoman(n: number): string {
   return out
 }
 
-onMounted(search)
+onMounted(() => {
+  // Pre-populate from route query so PulseView's "By source" trio can
+  // link in with `?source=X` and have the codex open already filtered.
+  if (typeof route.query.source === 'string') {
+    sourceFilter.value = route.query.source
+  }
+  if (typeof route.query.q === 'string') {
+    query.value = route.query.q
+  }
+  search()
+})
 </script>
 
 <style scoped>
