@@ -99,8 +99,10 @@
             <div class="cp-detail-eyebrow">Content</div>
             <!-- v-html is safe here: useMarkdown.ts pipes the content
                  through marked → DOMPurify with a strict allowlist.
-                 Plain-text paths are escapeHtml'd instead. -->
-            <div class="cp-prose" v-html="renderedContent" />
+                 linkifyEntities then wraps known entity canonical names
+                 in <a class="cp-entity-link"> elements — onProseClick
+                 delegates clicks to the router. -->
+            <div class="cp-prose" v-html="renderedContent" @click="onProseClick" />
           </div>
 
           <div v-if="memory.tags.length" class="mb-5">
@@ -273,7 +275,7 @@
                 </template>
               </div>
             </div>
-            <div class="cp-prose" v-html="renderedSelfContent" />
+            <div class="cp-prose" v-html="renderedSelfContent" @click="onProseClick" />
           </template>
 
           <!-- ── No source ── -->
@@ -434,9 +436,11 @@
 
 <script setup lang="ts">
 import { ref, reactive, watch, computed, nextTick } from 'vue'
+import { useRouter } from 'vue-router'
 import type { Memory, Entity, Fact } from '@/types'
 import EntityBadge from './EntityBadge.vue'
 import { renderMemoryMarkdown } from '@/composables/useMarkdown'
+import { linkifyEntities } from '@/composables/useEntityLinks'
 
 interface ConvMessage {
   role: string
@@ -549,14 +553,39 @@ const currentVersion = computed(() =>
   history.value.length > 0 ? Math.max(...history.value.map(v => v.version)) : -1,
 )
 
+const router = useRouter()
+
 // Render memory.content (and origin.self_content for derived/self
 // memories) as sanitised HTML so markdown — common in chatgpt
 // imports + claude exports + crawl chunks — actually formats.
 // useMarkdown.ts handles escape + parse + DOMPurify allowlist.
-const renderedContent = computed(() => renderMemoryMarkdown(props.memory.content))
-const renderedSelfContent = computed(() =>
-  renderMemoryMarkdown(origin.value?.self_content ?? ''),
+// After sanitization we run linkifyEntities to wrap occurrences of
+// known entity canonical names in <a class="cp-entity-link"> elements
+// — turns the rendered prose into a portal into the knowledge graph.
+const renderedContent = computed(() =>
+  linkifyEntities(renderMemoryMarkdown(props.memory.content), props.entities),
 )
+const renderedSelfContent = computed(() =>
+  linkifyEntities(renderMemoryMarkdown(origin.value?.self_content ?? ''), props.entities),
+)
+
+// Event delegation for entity links inside v-html'd .cp-prose. We
+// can't bind Vue handlers inside v-html, so we listen at the parent
+// and route programmatically. The href is set as a fallback (cmd-click
+// + middle-click open in a new tab natively).
+function onProseClick(event: MouseEvent) {
+  const target = event.target as HTMLElement | null
+  if (!target) return
+  const link = target.closest('a.cp-entity-link') as HTMLAnchorElement | null
+  if (!link) return
+  // Honour modifier keys + non-primary clicks — let the browser handle
+  // open-in-new-tab naturally via the href attribute.
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return
+  const id = link.getAttribute('data-entity-id')
+  if (!id) return
+  event.preventDefault()
+  router.push({ path: '/graph', query: { focus: id } })
+}
 
 const qualityColor = computed(() => {
   const q = props.memory.quality_score ?? 0
