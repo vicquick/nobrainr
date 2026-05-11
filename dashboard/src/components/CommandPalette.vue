@@ -440,7 +440,7 @@ onUnmounted(() => {
 }
 .cp-tagline {
   margin: 0;
-  font-size: 12px;
+  font-size: 13.5px;
   color: var(--cp-ink-mute);
   font-style: italic;
 }
@@ -465,7 +465,7 @@ onUnmounted(() => {
   border: none;
   color: var(--cp-ink);
   font-family: inherit;
-  font-size: 15px;
+  font-size: 17px;
   letter-spacing: 0.01em;
   outline: none;
   width: 100%;
@@ -569,21 +569,21 @@ onUnmounted(() => {
 .cp-row-glyph {
   color: var(--cp-gold-soft);
   font-style: italic;
-  font-size: 13px;
+  font-size: 14.5px;
 }
 .cp-row-label {
-  font-size: 14px;
+  font-size: 15.5px;
   letter-spacing: 0.04em;
 }
 .cp-row-path {
   font-style: italic;
-  font-size: 11px;
+  font-size: 12.5px;
   color: var(--cp-ink-faint);
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
 .cp-row-text {
-  font-size: 13px;
+  font-size: 14.5px;
   line-height: 1.45;
   color: var(--cp-ink);
   overflow: hidden;
@@ -594,7 +594,7 @@ onUnmounted(() => {
 }
 .cp-row-meta {
   font-style: italic;
-  font-size: 10px;
+  font-size: 11.5px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--cp-gold-soft);
@@ -612,7 +612,7 @@ onUnmounted(() => {
 .cp-empty-hint {
   margin: 0;
   font-style: italic;
-  font-size: 12px;
+  font-size: 13.5px;
   color: var(--cp-ink-faint);
   line-height: 1.5;
 }
@@ -633,7 +633,7 @@ onUnmounted(() => {
   border-top: 1px solid var(--cp-rule);
   background: rgba(8, 6, 2, 0.3);
   font-style: italic;
-  font-size: 11px;
+  font-size: 12.5px;
   color: var(--cp-ink-mute);
 }
 .cp-foot kbd {
