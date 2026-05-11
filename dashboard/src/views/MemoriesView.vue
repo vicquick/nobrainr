@@ -99,6 +99,7 @@
             :facts="selectedFacts"
             @update="handleUpdate"
             @delete="handleDelete"
+            @restored="handleRestored"
           />
         </template>
         <div v-else class="page-empty">
@@ -171,6 +172,15 @@ async function handleUpdate(body: Record<string, unknown>) {
 async function handleDelete() {
   if (!selectedMemory.value) return
   await deleteMemory(selectedMemory.value.id)
+  await fetchMemories(buildParams())
+}
+
+async function handleRestored() {
+  if (!selectedMemory.value) return
+  // Restore mutates the live memory directly. Refetch the detail so the
+  // open panel's content matches the restored folio, and the list so
+  // the card preview + updated_at reflect the change.
+  await fetchMemoryDetail(selectedMemory.value.id)
   await fetchMemories(buildParams())
 }
 
