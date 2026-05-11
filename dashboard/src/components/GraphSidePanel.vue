@@ -89,9 +89,9 @@
               class="memory-item"
               :style="staggerStyle(i)"
             >
-              <div class="memory-text mb-1">
-                {{ mem.summary || trimContent(mem.content) }}
-              </div>
+              <!-- v-html safe: highlightMatches escapes both source +
+                   query before inserting <mark> tags. -->
+              <div class="memory-text mb-1" v-html="memoryPreview(mem)" />
               <div class="d-flex align-center ga-2">
                 <span v-if="mem.category" class="memory-cat">{{ mem.category }}</span>
                 <v-spacer />
@@ -129,10 +129,19 @@
 import type { NodeDetail } from '@/types'
 import EntityBadge from './EntityBadge.vue'
 import { staggerStyle } from '@/composables/useStaggerIndex'
+import { highlightMatches } from '@/composables/useHighlight'
 
-defineProps<{
+const props = defineProps<{
   node: NodeDetail | null
   loading?: boolean
+  /**
+   * Optional active search query (driven by GraphView's toolbar
+   * search). When present, occurrences inside each memory snippet
+   * wrap in <mark class="cp-mark"> via the highlightMatches
+   * composable. Kept optional so other callers can mount the panel
+   * standalone without threading a search state through.
+   */
+  highlight?: string | null
 }>()
 
 defineEmits<{
@@ -144,6 +153,11 @@ function trimContent(content: string): string {
   if (!content) return ''
   if (content.length <= 120) return content
   return content.slice(0, 120).trimEnd() + '…'
+}
+
+function memoryPreview(mem: { summary?: string; content?: string }): string {
+  const text = mem.summary || trimContent(mem.content ?? '')
+  return highlightMatches(text, props.highlight)
 }
 </script>
 

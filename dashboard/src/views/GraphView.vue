@@ -87,7 +87,7 @@
         </div>
       </div>
       <div v-if="panelOpen" class="entity-panel">
-        <GraphSidePanel :node="selectedNode" :loading="nodeLoading" @close="handleClosePanel" @navigate="handleNavigateEntity" />
+        <GraphSidePanel :node="selectedNode" :loading="nodeLoading" :highlight="searchQuery" @close="handleClosePanel" @navigate="handleNavigateEntity" />
       </div>
     </div>
 
@@ -95,7 +95,7 @@
     <v-bottom-sheet v-if="mobile" v-model="showMobilePanel" :scrim="false">
       <v-card color="#12121a" class="mobile-entity-sheet" rounded="t-xl">
         <div class="sheet-handle" />
-        <GraphSidePanel :node="selectedNode" :loading="nodeLoading" @close="handleClosePanel" @navigate="handleNavigateEntity" />
+        <GraphSidePanel :node="selectedNode" :loading="nodeLoading" :highlight="searchQuery" @close="handleClosePanel" @navigate="handleNavigateEntity" />
       </v-card>
     </v-bottom-sheet>
   </v-container>
