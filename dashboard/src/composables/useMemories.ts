@@ -18,8 +18,10 @@ export function useMemories() {
   const categoryFilter = ref('')
   const machineFilter = ref('')
   const qualityFilter = ref(0)
+  const tagsFilter = ref<Set<string>>(new Set())
   const categories = ref<string[]>([])
   const machines = ref<string[]>([])
+  const tags = ref<{ tag: string; cnt: number }[]>([])
   const lastParams = ref<Record<string, string | number>>({})
 
   async function fetchMemories(params?: Record<string, string | number>) {
@@ -89,6 +91,11 @@ export function useMemories() {
     categories.value = data
   }
 
+  async function fetchTags() {
+    const { data } = await api.get<{ tag: string; cnt: number }[]>('/api/tags')
+    tags.value = data
+  }
+
   function fetchMachines() {
     const statsStore = useStatsStore()
     if (statsStore.stats) {
@@ -109,8 +116,10 @@ export function useMemories() {
     categoryFilter,
     machineFilter,
     qualityFilter,
+    tagsFilter,
     categories,
     machines,
+    tags,
     fetchMemories,
     loadMore,
     fetchMemoryDetail,
@@ -118,5 +127,6 @@ export function useMemories() {
     deleteMemory,
     fetchCategories,
     fetchMachines,
+    fetchTags,
   }
 }

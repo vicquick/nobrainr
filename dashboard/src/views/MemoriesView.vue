@@ -25,11 +25,11 @@
 
           <div class="filter-row">
             <select v-model="categoryFilter" class="folio-select">
-              <option :value="null">All categories</option>
+              <option :value="''">All categories</option>
               <option v-for="c in categories" :key="c" :value="c">{{ c }}</option>
             </select>
             <select v-model="machineFilter" class="folio-select">
-              <option :value="null">All machines</option>
+              <option :value="''">All machines</option>
               <option v-for="m in machines" :key="m" :value="m">{{ m }}</option>
             </select>
           </div>
@@ -44,6 +44,65 @@
             <span class="quality-value">
               {{ qualityFilter > 0 ? Math.round(qualityFilter * 100) + '%' : '—' }}
             </span>
+          </div>
+
+          <!-- Active filter chip bar — always visible when any facet is
+               active. Each chip × removes that single filter; the
+               "Clear all" link strips every facet at once. -->
+          <div v-if="hasActiveFilters" class="active-filter-bar">
+            <span class="active-filter-eyebrow">Filtering by</span>
+            <span v-if="searchQuery" class="active-filter-chip">
+              <em>q:</em> {{ searchQuery }}
+              <button class="active-filter-x" type="button" aria-label="Clear search" @click="searchQuery = ''">×</button>
+            </span>
+            <span v-if="categoryFilter" class="active-filter-chip">
+              <em>cat:</em> {{ categoryFilter }}
+              <button class="active-filter-x" type="button" aria-label="Clear category" @click="categoryFilter = ''">×</button>
+            </span>
+            <span v-if="machineFilter" class="active-filter-chip">
+              <em>machine:</em> {{ machineFilter }}
+              <button class="active-filter-x" type="button" aria-label="Clear machine" @click="machineFilter = ''">×</button>
+            </span>
+            <span v-if="qualityFilter > 0" class="active-filter-chip">
+              <em>q≥</em> {{ Math.round(qualityFilter * 100) }}%
+              <button class="active-filter-x" type="button" aria-label="Clear quality" @click="qualityFilter = 0">×</button>
+            </span>
+            <span v-for="t in Array.from(tagsFilter)" :key="t" class="active-filter-chip">
+              <em>#</em>{{ t }}
+              <button class="active-filter-x" type="button" :aria-label="`Remove tag ${t}`" @click="toggleTag(t)">×</button>
+            </span>
+            <button type="button" class="active-filter-clear" @click="clearAllFilters">clear all</button>
+          </div>
+
+          <!-- Tag facets — top-N popular tags, click to toggle.
+               Shows up to TAG_FACET_LIMIT; expands on demand. Click an
+               active tag to deactivate it. -->
+          <div v-if="tagFacets.length" class="tag-facets">
+            <p class="tag-facets-eyebrow">
+              <span aria-hidden="true">❦</span>
+              Tags
+            </p>
+            <div class="tag-facets-list">
+              <button
+                v-for="t in tagFacets"
+                :key="t.tag"
+                type="button"
+                class="tag-facet"
+                :class="{ 'tag-facet-active': tagsFilter.has(t.tag) }"
+                @click="toggleTag(t.tag)"
+              >
+                {{ t.tag }}
+                <em class="tag-facet-cnt">{{ t.cnt }}</em>
+              </button>
+              <button
+                v-if="tags.length > TAG_FACET_LIMIT && !showAllTags"
+                type="button"
+                class="tag-facet tag-facet-more"
+                @click="showAllTags = true"
+              >
+                + {{ tags.length - TAG_FACET_LIMIT }} more
+              </button>
+            </div>
           </div>
         </div>
 
@@ -113,8 +172,8 @@
 </template>
 
 <script setup lang="ts">
-import { watch, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { ref, watch, computed, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useMemories } from '@/composables/useMemories'
 import { useStatsStore } from '@/stores/stats'
 import { useSSE } from '@/composables/useSSE'
@@ -123,7 +182,11 @@ import MemoryDetail from '@/components/MemoryDetail.vue'
 import Dotty from '@/components/Dotty.vue'
 import { staggerStyle } from '@/composables/useStaggerIndex'
 
+const TAG_FACET_LIMIT = 18
+const showAllTags = ref(false)
+
 const route = useRoute()
+const router = useRouter()
 
 const statsStore = useStatsStore()
 const {
@@ -139,8 +202,10 @@ const {
   categoryFilter,
   machineFilter,
   qualityFilter,
+  tagsFilter,
   categories,
   machines,
+  tags,
   fetchMemories,
   loadMore,
   fetchMemoryDetail,
@@ -148,6 +213,7 @@ const {
   deleteMemory,
   fetchCategories,
   fetchMachines,
+  fetchTags,
 } = useMemories()
 
 function buildParams() {
@@ -156,7 +222,65 @@ function buildParams() {
   if (categoryFilter.value) params.category = categoryFilter.value
   if (machineFilter.value) params.source_machine = machineFilter.value
   if (qualityFilter.value > 0) params.min_quality = qualityFilter.value
+  if (tagsFilter.value.size > 0) {
+    params.tags = Array.from(tagsFilter.value).join(',')
+  }
   return params
+}
+
+const hasActiveFilters = computed(() =>
+  Boolean(searchQuery.value)
+    || Boolean(categoryFilter.value)
+    || Boolean(machineFilter.value)
+    || qualityFilter.value > 0
+    || tagsFilter.value.size > 0,
+)
+
+const tagFacets = computed(() => {
+  // Always pin currently-active tags to the top so a user can't lose
+  // their selected facet behind a scroll. Then fill with the remaining
+  // top-N by count up to TAG_FACET_LIMIT (or all tags when expanded).
+  const active = tags.value.filter(t => tagsFilter.value.has(t.tag))
+  const inactive = tags.value.filter(t => !tagsFilter.value.has(t.tag))
+  const limit = showAllTags.value ? tags.value.length : TAG_FACET_LIMIT
+  const inactiveSlots = Math.max(0, limit - active.length)
+  return [...active, ...inactive.slice(0, inactiveSlots)]
+})
+
+function toggleTag(tag: string) {
+  // Set in Vue 3 needs a re-assignment for reactivity to fire on
+  // membership change — copy + mutate + reassign.
+  const next = new Set(tagsFilter.value)
+  if (next.has(tag)) next.delete(tag)
+  else next.add(tag)
+  tagsFilter.value = next
+}
+
+function clearAllFilters() {
+  searchQuery.value = ''
+  categoryFilter.value = ''
+  machineFilter.value = ''
+  qualityFilter.value = 0
+  tagsFilter.value = new Set()
+}
+
+// URL-state synchronization. The URL is the source of truth — every
+// filter change writes to query params, every load reads from them.
+// router.replace (not push) so the browser back-button doesn't fill
+// with one entry per keystroke.
+function syncToUrl() {
+  const q: Record<string, string> = {}
+  if (searchQuery.value) q.q = searchQuery.value
+  if (categoryFilter.value) q.category = categoryFilter.value
+  if (machineFilter.value) q.machine = machineFilter.value
+  if (qualityFilter.value > 0) q.min_quality = String(qualityFilter.value)
+  if (tagsFilter.value.size > 0) q.tags = Array.from(tagsFilter.value).join(',')
+  // Avoid no-op replace storms (Vue Router would still push to history
+  // depending on settings; quick equality check first).
+  const cur = route.query
+  const sameKeys = Object.keys(q).length === Object.keys(cur).filter(k => cur[k]).length
+  if (sameKeys && Object.entries(q).every(([k, v]) => cur[k] === v)) return
+  router.replace({ path: '/memories', query: q })
 }
 
 async function selectMemory(id: string) {
@@ -187,12 +311,16 @@ async function handleRestored() {
 let searchTimeout: ReturnType<typeof setTimeout>
 watch(searchQuery, () => {
   clearTimeout(searchTimeout)
-  searchTimeout = setTimeout(() => fetchMemories(buildParams()), 300)
+  searchTimeout = setTimeout(() => {
+    fetchMemories(buildParams())
+    syncToUrl()
+  }, 300)
 })
 
-watch([categoryFilter, machineFilter, qualityFilter], () => {
+watch([categoryFilter, machineFilter, qualityFilter, tagsFilter], () => {
   fetchMemories(buildParams())
-})
+  syncToUrl()
+}, { deep: true })
 
 useSSE((evt) => {
   if (['memory_created', 'memory_updated', 'memory_deleted'].includes(evt.type)) {
@@ -206,13 +334,23 @@ onMounted(async () => {
   await statsStore.fetchStats()
   fetchCategories()
   fetchMachines()
-  // Pre-populate filters from route query — lets PulseView's trio
-  // (and any other view) link in with `?category=X` / `?machine=Y` /
-  // `?q=Z` and have the gathering open already filtered.
+  fetchTags()
+  // Restore every filter from the URL — refresh + share-link both work.
+  // Deep-link entry from PulseView's trio (?category=X / ?machine=Y /
+  // ?q=Z) keeps working; the new ?tags= and ?min_quality= are read
+  // here too. Type guards are explicit since route.query values can be
+  // string | string[] | undefined.
   const q = route.query
   if (typeof q.category === 'string') categoryFilter.value = q.category
   if (typeof q.machine === 'string') machineFilter.value = q.machine
   if (typeof q.q === 'string') searchQuery.value = q.q
+  if (typeof q.min_quality === 'string') {
+    const n = parseFloat(q.min_quality)
+    if (!Number.isNaN(n)) qualityFilter.value = Math.max(0, Math.min(1, n))
+  }
+  if (typeof q.tags === 'string' && q.tags) {
+    tagsFilter.value = new Set(q.tags.split(',').map(s => s.trim()).filter(Boolean))
+  }
   fetchMemories(buildParams())
 })
 </script>
@@ -384,6 +522,152 @@ onMounted(async () => {
   color: var(--cp-gold);
   min-width: 30px;
   text-align: right;
+}
+
+/* Active-filter chip bar */
+.active-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 14px 0 10px;
+  padding-top: 12px;
+  border-top: 1px dotted var(--cp-gold-faint);
+}
+.active-filter-eyebrow {
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 11.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--cp-gold-soft);
+  margin-right: 4px;
+}
+.active-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: Georgia, serif;
+  font-size: 12.5px;
+  color: var(--cp-ink);
+  background: rgba(200, 169, 110, 0.10);
+  border: 1px solid var(--cp-gold-faint);
+  border-left: 2px solid var(--cp-gold);
+  padding: 3px 4px 3px 8px;
+  border-radius: 2px;
+}
+.active-filter-chip em {
+  font-style: italic;
+  color: var(--cp-gold-soft);
+}
+.active-filter-x {
+  background: transparent;
+  border: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 2px;
+  color: var(--cp-ink-mute);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 150ms, background 150ms;
+}
+.active-filter-x:hover,
+.active-filter-x:focus-visible {
+  color: var(--cp-paper);
+  background: var(--cp-gold);
+}
+.active-filter-x:focus-visible { outline: none; }
+.active-filter-clear {
+  margin-left: auto;
+  background: transparent;
+  border: 0;
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--cp-gold);
+  cursor: pointer;
+  padding: 2px 4px;
+  text-decoration: underline;
+  text-decoration-color: var(--cp-gold-faint);
+  text-underline-offset: 3px;
+  transition: text-decoration-color 150ms;
+}
+.active-filter-clear:hover,
+.active-filter-clear:focus-visible { text-decoration-color: var(--cp-gold); }
+.active-filter-clear:focus-visible { outline: none; }
+
+/* Tag facets */
+.tag-facets { margin: 14px 0 10px; }
+.tag-facets-eyebrow {
+  margin: 0 0 8px;
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 11.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--cp-gold);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tag-facets-eyebrow span { color: var(--cp-gold); font-style: normal; }
+.tag-facets-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.tag-facet {
+  background: transparent;
+  border: 1px solid var(--cp-gold-faint);
+  border-radius: 2px;
+  padding: 2px 8px;
+  font-family: Georgia, serif;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--cp-ink-mute);
+  cursor: pointer;
+  letter-spacing: 0.02em;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  transition:
+    color 150ms,
+    background 150ms,
+    border-color 150ms;
+}
+.tag-facet:hover,
+.tag-facet:focus-visible {
+  color: var(--cp-ink);
+  border-color: var(--cp-gold-soft);
+  background: rgba(200, 169, 110, 0.04);
+}
+.tag-facet:focus-visible { outline: none; }
+.tag-facet-active {
+  color: var(--cp-paper);
+  background: var(--cp-gold);
+  border-color: var(--cp-gold);
+}
+.tag-facet-active:hover {
+  background: var(--cp-gold-bright);
+  border-color: var(--cp-gold-bright);
+  color: var(--cp-paper);
+}
+.tag-facet-cnt {
+  font-style: normal;
+  font-size: 10.5px;
+  color: var(--cp-gold-soft);
+  font-variant-numeric: tabular-nums;
+}
+.tag-facet-active .tag-facet-cnt { color: rgba(20, 17, 10, 0.6); }
+.tag-facet-more {
+  font-style: italic;
+  color: var(--cp-gold-soft);
+  border-style: dashed;
 }
 
 .index-rule {
