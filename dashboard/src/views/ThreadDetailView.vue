@@ -256,8 +256,9 @@ onMounted(load)
   border-left: 0;
   padding: 0;
   max-height: none;
-  font-size: 14px;
-  line-height: 1.7;
+  /* font-size + line-height inherited from global .cp-prose
+     (16px / 1.7 since PR #65) — local override removed to keep
+     thread bodies in lock-step with memory bodies. */
   color: rgba(238, 224, 196, 0.96);
 }
 .role-assistant .msg-content.cp-prose {
@@ -291,6 +292,6 @@ onMounted(load)
   }
   .msg-margin { padding-right: 8px; }
   .msg-numeral { font-size: 14px; }
-  .msg-content { font-size: 13px; }
+  .msg-content { font-size: 14.5px; }
 }
 </style>
