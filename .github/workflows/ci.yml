@@ -49,6 +49,28 @@ jobs:
       - run: npm ci
       - run: npx vue-tsc --noEmit
       - run: npx vite build
+      - name: Initial-bundle gz budget
+        # Fails the PR if the initial-route chunk grows past the
+        # current floor + a small headroom. Catches accidental
+        # Vuetify / motion-v / heavy-import regressions before they
+        # land. Floor is ~106 KB at the time of writing; 140 KB
+        # gives ~34 KB headroom — raise this number deliberately
+        # (with a comment) when a real new feature warrants it.
+        run: |
+          set -e
+          BUDGET_KB=140
+          INDEX=$(ls dist/assets/index-*.js 2>/dev/null | head -1)
+          if [ -z "$INDEX" ]; then
+            echo "::error::No dist/assets/index-*.js produced by vite build"
+            exit 1
+          fi
+          GZ_BYTES=$(gzip -c "$INDEX" | wc -c)
+          GZ_KB=$(( (GZ_BYTES + 1023) / 1024 ))
+          echo "initial chunk gz: ${GZ_KB} KB (budget ${BUDGET_KB} KB)"
+          if [ "$GZ_KB" -gt "$BUDGET_KB" ]; then
+            echo "::error::Initial chunk ${GZ_KB} KB exceeds ${BUDGET_KB} KB budget. Lazy-load new heavy imports (defineAsyncComponent / dynamic import) or raise BUDGET_KB intentionally with a comment explaining what new feature paid for it."
+            exit 1
+          fi
 
   test:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
