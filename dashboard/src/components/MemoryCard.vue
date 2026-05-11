@@ -125,7 +125,7 @@ const qualityClass = computed(() => {
 }
 .card-date {
   font-family: Georgia, serif;
-  font-size: 10px;
+  font-size: 11.5px;
   font-style: italic;
   color: rgba(238, 224, 196, 0.55);
   letter-spacing: 0.05em;
@@ -136,7 +136,7 @@ const qualityClass = computed(() => {
 .card-body { min-width: 0; }
 .card-text {
   font-family: Georgia, serif;
-  font-size: 13px;
+  font-size: 15px;
   line-height: 1.55;
   color: rgba(238, 224, 196, 0.94);
   margin: 0 0 6px;
@@ -153,14 +153,14 @@ const qualityClass = computed(() => {
   align-items: baseline;
   gap: 8px;
   font-family: Georgia, serif;
-  font-size: 11px;
+  font-size: 12.5px;
 }
 .meta-tag {
   font-style: italic;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: #c8a96e;
-  font-size: 10px;
+  font-size: 11.5px;
 }
 .meta-fig {
   font-style: italic;
@@ -171,12 +171,12 @@ const qualityClass = computed(() => {
 .meta-fig.accent-good { color: #8aa96e; }
 .meta-fig.accent-mid { color: #c89e6e; }
 .meta-fig.accent-low { color: rgba(238, 224, 196, 0.45); }
-.pct { font-size: 10px; }
+.pct { font-size: 11px; }
 
 .meta-tags {
   font-style: italic;
   color: rgba(238, 224, 196, 0.55);
-  font-size: 11px;
+  font-size: 12.5px;
   display: inline-flex;
   align-items: baseline;
   flex-wrap: wrap;

@@ -180,9 +180,9 @@ function memoryPreview(mem: { summary?: string; content?: string }): string {
 .entity-description {
   font-family: Georgia, serif;
   font-style: italic;
-  font-size: 13px;
+  font-size: 14.5px;
   color: rgba(238, 224, 196, 0.72);
-  line-height: 1.6;
+  line-height: 1.65;
 }
 .stat-item {
   display: flex;
@@ -256,7 +256,7 @@ function memoryPreview(mem: { summary?: string; content?: string }): string {
 }
 .conn-target {
   font-family: Georgia, serif;
-  font-size: 13px;
+  font-size: 15px;
   color: rgba(238, 224, 196, 0.92);
 }
 .conn-confidence {
@@ -286,7 +286,7 @@ function memoryPreview(mem: { summary?: string; content?: string }): string {
 }
 .memory-text {
   font-family: Georgia, serif;
-  font-size: 13px;
+  font-size: 15px;
   color: rgba(238, 224, 196, 0.88);
   line-height: 1.6;
 }
@@ -295,7 +295,7 @@ function memoryPreview(mem: { summary?: string; content?: string }): string {
 .memory-cat {
   font-family: Georgia, serif;
   font-style: italic;
-  font-size: 10px;
+  font-size: 11.5px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--cp-gold-soft);
@@ -306,7 +306,7 @@ function memoryPreview(mem: { summary?: string; content?: string }): string {
 .memory-date {
   font-family: Georgia, serif;
   font-style: italic;
-  font-size: 11px;
+  font-size: 12.5px;
   color: var(--cp-ink-faint);
   font-variant-numeric: tabular-nums;
 }
@@ -315,7 +315,7 @@ function memoryPreview(mem: { summary?: string; content?: string }): string {
   text-align: center;
   font-family: Georgia, serif;
   font-style: italic;
-  font-size: 12px;
+  font-size: 13.5px;
   color: var(--cp-ink-mute);
 }
 
@@ -333,7 +333,7 @@ function memoryPreview(mem: { summary?: string; content?: string }): string {
 .empty-hint {
   font-family: Georgia, serif;
   font-style: italic;
-  font-size: 12px;
+  font-size: 13.5px;
   color: var(--cp-ink-faint);
   line-height: 1.55;
   margin: 0;
