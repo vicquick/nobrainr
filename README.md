@@ -80,20 +80,21 @@ $EDITOR .env
 # Start everything
 docker compose up -d
 
-# Wait for Ollama to pull the embedding model (~270MB, first run only)
-docker compose logs -f ollama-init
+# Wait for llama-swap to load the model stack (one-time on first start)
+docker compose logs -f llama-swap
 
 # Verify
 curl -sf http://localhost:8420/api/stats | jq .total_memories
 ```
 
-The extraction model (`qwen3.5:9b`, ~6.6GB) is also pulled on first start. If you don't need automatic entity extraction (knowledge graph), set `NOBRAINR_EXTRACTION_ENABLED=false` in `.env` to skip it.
+The reference deployment runs `llama-swap` with three on-GPU `llama-server` processes:
+**Qwen3.6-27B-IQ4_XS** (main LLM, port 5803, 32K ctx), **Qwen3-Embedding-0.6B** (embeddings, port 5802, 1024-dim), and **bge-reranker-v2-m3** (reranker, port 5800). Fits in ~18 GB VRAM. See [Deployment](docs/deployment.md) for alternative single-GPU stacks and CPU-only fallbacks. If you don't need automatic entity extraction (knowledge graph), set `NOBRAINR_EXTRACTION_ENABLED=false` in `.env` to skip it.
 
 ### Local development
 
 ```bash
 # Start only the infrastructure
-docker compose up -d postgres ollama ollama-init
+docker compose up -d postgres llama-swap
 
 # Run the backend locally
 uv sync
@@ -301,7 +302,7 @@ src/nobrainr/
 │   ├── queries.py         # All database operations
 │   ├── schema.py          # DDL (auto-creates tables on startup)
 │   └── pool.py            # asyncpg connection pool
-├── embeddings/ollama.py   # Embedding client
+├── embeddings/ollama.py   # llama-server embedding client (name predates migration; routes to llama-swap)
 ├── extraction/
 │   ├── extractor.py       # Entity/relationship extraction via Ollama
 │   ├── pipeline.py        # Full pipeline: extract → dedup → store → link
