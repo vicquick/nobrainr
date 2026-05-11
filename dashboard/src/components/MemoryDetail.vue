@@ -556,9 +556,9 @@ function handleDelete() {
   white-space: pre-wrap;
   word-break: break-word;
   font-family: Georgia, 'Palatino Linotype', Palatino, serif;
-  font-size: 14px;
+  font-size: 16px;
   line-height: 1.75;
-  max-height: 500px;
+  max-height: 540px;
   overflow-y: auto;
   color: rgba(238, 224, 196, 0.94);
 }
@@ -580,7 +580,7 @@ function handleDelete() {
   border: 1px solid rgba(200, 169, 110, 0.18);
   border-left: 2px solid rgba(200, 169, 110, 0.55);
   font-family: Georgia, serif;
-  font-size: 13px;
+  font-size: 15px;
   line-height: 1.6;
   padding: 10px 14px;
 }
@@ -592,7 +592,7 @@ function handleDelete() {
   border: 1px solid rgba(200, 169, 110, 0.18);
   font-family: Georgia, serif;
   font-style: italic;
-  font-size: 12px;
+  font-size: 13.5px;
   color: rgba(238, 224, 196, 0.7);
 }
 .origin-prefix {
@@ -652,7 +652,7 @@ function handleDelete() {
   white-space: pre-wrap;
   word-break: break-word;
   font-family: Georgia, serif;
-  font-size: 13px;
+  font-size: 15px;
   line-height: 1.7;
   color: rgba(238, 224, 196, 0.92);
   margin: 0;
@@ -664,15 +664,15 @@ function handleDelete() {
   background: rgba(200, 169, 110, 0.02);
   font-family: Georgia, serif;
   font-style: italic;
-  font-size: 11px;
+  font-size: 12.5px;
   color: rgba(238, 224, 196, 0.55);
 }
 
 .tool-content {
-  max-height: 200px;
+  max-height: 220px;
   overflow-y: auto;
   font-family: Georgia, serif;
-  font-size: 12px;
+  font-size: 13.5px;
   color: rgba(238, 224, 196, 0.65);
   font-style: italic;
 }
@@ -706,7 +706,7 @@ function handleDelete() {
   align-items: center;
   font-family: Georgia, serif;
   font-style: italic;
-  font-size: 11px;
+  font-size: 12.5px;
   letter-spacing: 0.15em;
   text-transform: uppercase;
   color: rgba(238, 224, 196, 0.45);
@@ -721,7 +721,7 @@ function handleDelete() {
   white-space: pre-wrap;
   word-break: break-word;
   font-family: Georgia, 'Palatino Linotype', Palatino, serif;
-  font-size: 14px;
+  font-size: 16px;
   line-height: 1.75;
   color: rgba(238, 224, 196, 0.85);
   margin: 0;
@@ -740,7 +740,7 @@ function handleDelete() {
    sequences — italic small caps + 0.18em letter spacing, gold-soft. */
 .cp-detail-eyebrow {
   font-style: italic;
-  font-size: 11px;
+  font-size: 12.5px;
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--cp-gold-soft);
@@ -752,7 +752,7 @@ function handleDelete() {
   display: inline-block;
   font-family: Georgia, 'Palatino Linotype', Palatino, serif;
   font-style: italic;
-  font-size: 11px;
+  font-size: 12.5px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--cp-gold);
@@ -768,7 +768,7 @@ function handleDelete() {
   align-items: center;
   font-family: Georgia, serif;
   font-style: italic;
-  font-size: 11px;
+  font-size: 12.5px;
   letter-spacing: 0.04em;
   color: var(--cp-ink-mute);
   background: transparent;
@@ -787,7 +787,7 @@ function handleDelete() {
   display: inline-block;
   font-family: Georgia, serif;
   font-style: italic;
-  font-size: 9.5px;
+  font-size: 11px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--cp-gold-bright);
@@ -803,7 +803,7 @@ function handleDelete() {
   align-items: baseline;
   gap: 4px;
   font-family: Georgia, serif;
-  font-size: 10px;
+  font-size: 11.5px;
   letter-spacing: 0.04em;
   color: var(--cp-ink-mute);
   background: transparent;
@@ -829,20 +829,20 @@ function handleDelete() {
 .cp-delete-eyebrow {
   margin: 0 0 8px;
   font-style: italic;
-  font-size: 10px;
+  font-size: 11.5px;
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--cp-gold-soft);
 }
 .cp-delete-title {
   margin: 0 0 8px;
-  font-size: 17px;
+  font-size: 19px;
   color: var(--cp-ink);
   font-variant: small-caps;
 }
 .cp-delete-tagline {
   margin: 0;
-  font-size: 12.5px;
+  font-size: 14.5px;
   color: var(--cp-ink-mute);
   line-height: 1.55;
   font-style: italic;

@@ -61,11 +61,11 @@
 .empty-hint {
   margin: 4px auto 0;
   font-style: italic;
-  font-size: 13px;
+  font-size: 14.5px;
   color: var(--cp-ink-mute);
   letter-spacing: 0.02em;
   max-width: 56ch;
-  line-height: 1.5;
+  line-height: 1.55;
 }
 .empty-hint em { color: var(--cp-gold-soft); font-style: italic; }
 
@@ -99,9 +99,9 @@ mark.cp-mark {
   border-left: 2px solid var(--cp-gold);
   padding: 18px 22px;
   font-family: Georgia, 'Palatino Linotype', Palatino, serif;
-  font-size: 14px;
+  font-size: 16px;
   line-height: 1.7;
-  max-height: 500px;
+  max-height: 540px;
   overflow-y: auto;
   color: var(--cp-ink);
   word-break: break-word;
@@ -119,11 +119,11 @@ mark.cp-mark {
   margin: 1.2em 0 0.4em;
   line-height: 1.25;
 }
-.cp-prose h1 { font-size: 18px; }
-.cp-prose h2 { font-size: 16px; }
-.cp-prose h3 { font-size: 14.5px; color: var(--cp-gold-bright); }
+.cp-prose h1 { font-size: 20.5px; }
+.cp-prose h2 { font-size: 18px; }
+.cp-prose h3 { font-size: 16.5px; color: var(--cp-gold-bright); }
 .cp-prose h4, .cp-prose h5, .cp-prose h6 {
-  font-size: 13px;
+  font-size: 14.5px;
   font-style: italic;
   color: var(--cp-gold-soft);
   text-transform: none;
@@ -152,7 +152,7 @@ mark.cp-mark {
 }
 .cp-prose code {
   font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
-  font-size: 12.5px;
+  font-size: 13.5px;
   background: rgba(200, 169, 110, 0.08);
   border: 1px solid var(--cp-gold-faint);
   border-radius: 2px;
@@ -167,9 +167,9 @@ mark.cp-mark {
   border-left: 2px solid var(--cp-gold-soft);
   border-radius: 2px;
   overflow-x: auto;
-  font-size: 12.5px;
-  line-height: 1.55;
-  max-height: 320px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  max-height: 360px;
 }
 .cp-prose pre code {
   background: transparent;
@@ -187,7 +187,7 @@ mark.cp-mark {
   border-collapse: collapse;
   width: 100%;
   margin: 0.9em 0;
-  font-size: 13px;
+  font-size: 14.5px;
 }
 .cp-prose th, .cp-prose td {
   border-bottom: 1px dotted var(--cp-gold-faint);
@@ -196,7 +196,7 @@ mark.cp-mark {
 }
 .cp-prose th {
   font-style: italic;
-  font-size: 11px;
+  font-size: 12.5px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--cp-gold-soft);

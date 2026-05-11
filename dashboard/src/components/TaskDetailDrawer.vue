@@ -469,13 +469,13 @@ function statusGlyph(s: string): string {
 }
 .section-title {
   font-style: italic;
-  font-size: 13px;
+  font-size: 14.5px;
   color: var(--cp-ink);
 }
 .section-flag {
   margin-left: auto;
   font-style: italic;
-  font-size: 11px;
+  font-size: 12.5px;
   color: var(--cp-ink-mute);
 }
 
@@ -502,7 +502,7 @@ function statusGlyph(s: string): string {
 .spark-legend {
   display: flex;
   gap: 8px;
-  font-size: 11px;
+  font-size: 12.5px;
   color: var(--cp-ink-mute);
   font-style: italic;
   margin-top: 6px;
@@ -517,7 +517,7 @@ function statusGlyph(s: string): string {
 
 .drawer-error {
   font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
-  font-size: 11.5px;
+  font-size: 13px;
   background: rgba(196, 106, 106, 0.06);
   border-left: 2px solid #c46a6a;
   padding: 10px 12px;
@@ -525,7 +525,7 @@ function statusGlyph(s: string): string {
   word-break: break-word;
   color: rgba(238, 224, 196, 0.85);
   border-radius: 2px;
-  max-height: 200px;
+  max-height: 220px;
   overflow-y: auto;
 }
 
@@ -543,7 +543,7 @@ function statusGlyph(s: string): string {
   margin: 0 -8px;
   border-radius: 2px;
   border-bottom: 1px dotted rgba(200, 169, 110, 0.10);
-  font-size: 13px;
+  font-size: 14.5px;
   cursor: pointer;
   transition:
     background var(--cp-dur-hover) var(--cp-ease),
@@ -577,9 +577,9 @@ function statusGlyph(s: string): string {
 }
 .run-detail-grid {
   display: grid;
-  grid-template-columns: 80px 1fr;
+  grid-template-columns: 88px 1fr;
   gap: 4px 12px;
-  font-size: 12px;
+  font-size: 13.5px;
 }
 .run-detail-row { display: contents; }
 .run-detail-key {
@@ -597,7 +597,7 @@ function statusGlyph(s: string): string {
 .run-detail-val.run-ok { color: var(--cp-ink); }
 .run-detail-error {
   font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
-  font-size: 11px;
+  font-size: 12.5px;
   background: rgba(196, 106, 106, 0.06);
   border-left: 2px solid #c46a6a;
   padding: 8px 10px;

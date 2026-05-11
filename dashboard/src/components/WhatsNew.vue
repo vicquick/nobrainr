@@ -98,7 +98,7 @@ onMounted(async () => {
 .cp-whatsnew-eyebrow {
   margin: 0 0 6px;
   font-style: italic;
-  font-size: 10px;
+  font-size: 11.5px;
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--cp-gold);
@@ -114,14 +114,14 @@ onMounted(async () => {
 }
 .cp-whatsnew-text {
   margin: 0 0 8px;
-  font-size: 12.5px;
+  font-size: 14.5px;
   line-height: 1.55;
   color: var(--cp-ink);
 }
 .cp-whatsnew-stats {
   margin: 0;
   font-style: italic;
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--cp-ink-faint);
   letter-spacing: 0.04em;
 }
