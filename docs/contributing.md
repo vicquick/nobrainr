@@ -8,8 +8,8 @@ Contributions are welcome! Here's how to get set up.
 git clone https://github.com/youruser/nobrainr.git
 cd nobrainr
 
-# Start infrastructure
-docker compose up -d postgres ollama ollama-init
+# Start infrastructure (PostgreSQL + llama-swap with 3 llama-server processes)
+docker compose up -d postgres llama-swap
 
 # Install dependencies
 uv sync --extra dev

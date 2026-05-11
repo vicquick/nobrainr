@@ -13,14 +13,15 @@ $EDITOR .env
 # Start everything
 docker compose up -d
 
-# Wait for Ollama to pull the embedding model (~270MB, first run only)
-docker compose logs -f ollama-init
+# Wait for the model stack to load on first start
+docker compose logs -f llama-swap
 
 # Verify
 curl -sf http://localhost:8420/api/stats
 ```
 
-The extraction model (`qwen3.5:9b`, ~6.6GB) is also pulled on first start. If you don't need automatic entity extraction, set `NOBRAINR_EXTRACTION_ENABLED=false` in `.env`.
+The reference deployment runs three on-GPU llama-server processes via a single `llama-swap` container:
+**Qwen3.6-27B-IQ4_XS** (main LLM, ~15 GB VRAM at 32K ctx, parallel=2), **Qwen3-Embedding-0.6B** (~700 MB, 1024-dim), and **bge-reranker-v2-m3** (~600 MB). Total ~18 GB / 20 GB on an RTX 4000 Ada. If your GPU is smaller, drop the reranker first (`NOBRAINR_RERANKER_ENABLED=false`), then drop to a smaller LLM (Qwen3.5-9B or gemma3:4b). For CPU-only, set `NOBRAINR_EXTRACTION_ENABLED=false` — embedding-only mode still gives you semantic search.
 
 ## pip install
 
@@ -28,7 +29,7 @@ The extraction model (`qwen3.5:9b`, ~6.6GB) is also pulled on first start. If yo
 pip install nobrainr
 ```
 
-You'll need PostgreSQL with pgvector and Ollama running separately:
+You'll need PostgreSQL with pgvector and an LLM inference server running separately. The reference uses `llama-swap` + three `llama-server` (llama.cpp) processes, but any OpenAI-compatible endpoint works:
 
 ```bash
 # Start PostgreSQL with pgvector
@@ -36,10 +37,9 @@ docker run -d --name nobrainr-db \
   -e POSTGRES_DB=nobrainr -e POSTGRES_USER=nobrainr -e POSTGRES_PASSWORD=changeme \
   -p 5432:5432 pgvector/pgvector:pg18
 
-# Start Ollama and pull the embedding model
-ollama pull nomic-embed-text
-
-# Run nobrainr
+# Point nobrainr at any OpenAI-compatible LLM endpoint
+# (llama-server, vLLM, Ollama with /v1/ proxy, etc.)
+export NOBRAINR_LLM_SERVER_URL=http://localhost:5803
 export NOBRAINR_DATABASE_URL=postgresql://nobrainr:changeme@localhost:5432/nobrainr
 nobrainr serve
 ```
@@ -48,7 +48,7 @@ nobrainr serve
 
 ```bash
 # Start only the infrastructure
-docker compose up -d postgres ollama ollama-init
+docker compose up -d postgres llama-swap
 
 # Run the backend
 uv sync

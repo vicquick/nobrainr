@@ -26,17 +26,20 @@ All settings are configured via environment variables with the `NOBRAINR_` prefi
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NOBRAINR_EXTRACTION_ENABLED` | `true` | Enable automatic entity extraction |
-| `NOBRAINR_EXTRACTION_MODEL` | `gemma3:12b` | Ollama model for extraction (must support structured output) |
+| `NOBRAINR_EXTRACTION_MODEL` | `qwen3.6:35b` | llama-swap group label for the main 27B LLM (file: `Qwen3.6-27B-IQ4_XS.gguf`). Routes to llama-server on port 5803, all layers on GPU, 32K ctx |
 
 !!! tip
-    On CPU-only servers, extraction takes ~60-120s per memory. Set `NOBRAINR_EXTRACTION_ENABLED=false` if you don't need the knowledge graph, or if your server doesn't have enough RAM for the extraction model.
+    On bimavo (RTX 4000 SFF Ada 20GB) extraction runs ~2-5s per memory on the on-GPU Qwen3.6-27B-IQ4_XS slot. On CPU-only servers, extraction takes ~60-120s per memory. Set `NOBRAINR_EXTRACTION_ENABLED=false` if you don't need the knowledge graph, or if your server doesn't have enough RAM for the extraction model.
+
+!!! note "llama-swap labels vs file names"
+    Model env vars (`NOBRAINR_EXTRACTION_MODEL`, `NOBRAINR_SCHEDULER_LLM_MODEL`, `NOBRAINR_CHAT_MODEL`) are llama-swap *group labels*, not file names. llama-swap routes the label to whichever physical model is currently loaded on the matching port. The label `qwen3.6:35b` currently routes to `Qwen3.6-27B-IQ4_XS.gguf` on port 5803; verify with `curl http://llama-server:8080/v1/models`.
 
 ## Chat (RAG)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NOBRAINR_CHAT_ENABLED` | `true` | Enable the RAG chatbot endpoint |
-| `NOBRAINR_CHAT_MODEL` | *(extraction model)* | Ollama model for chat. Defaults to extraction model if empty. |
+| `NOBRAINR_CHAT_MODEL` | *(extraction model)* | llama-swap label for chat. Defaults to extraction model if empty — chat reuses the main 27B slot on port 5803. |
 | `NOBRAINR_CHAT_MAX_CONTEXT_MEMORIES` | `15` | Max memories injected as chat context |
 | `NOBRAINR_CHAT_MAX_SOURCE_MEMORIES` | `50` | Max memories searched for context |
 | `NOBRAINR_CHAT_MAX_MESSAGE_LENGTH` | `2000` | Max user message length (characters) |
@@ -56,7 +59,7 @@ All settings are configured via environment variables with the `NOBRAINR_` prefi
 | `NOBRAINR_SCHEDULER_ENABLED` | `true` | Enable background learning jobs |
 | `NOBRAINR_SCHEDULER_LLM_CONCURRENCY` | `3` | Max concurrent LLM jobs (leave slots for live requests) |
 | `NOBRAINR_SCHEDULER_INTER_REQUEST_DELAY` | `1.0` | Seconds between LLM calls in batch jobs |
-| `NOBRAINR_SCHEDULER_LLM_MODEL` | `gemma3:12b` | Model for scheduler LLM jobs |
+| `NOBRAINR_SCHEDULER_LLM_MODEL` | `qwen3.6:35b` | Same llama-swap label as the main LLM — scheduler reuses the same 27B slot on port 5803 |
 
 ### Knowledge lifecycle jobs
 
@@ -64,7 +67,7 @@ All settings are configured via environment variables with the `NOBRAINR_` prefi
 |----------|---------|-------------|
 | `NOBRAINR_CHATGPT_DISTILL_INTERVAL_HOURS` | `0.1` | Distill imported ChatGPT/Claude conversations |
 | `NOBRAINR_CHATGPT_DISTILL_BATCH_SIZE` | `20` | Conversations per cycle |
-| `NOBRAINR_CHATGPT_DISTILL_MODEL` | `gemma3:12b` | Model for distillation |
+| `NOBRAINR_CHATGPT_DISTILL_MODEL` | `qwen3.6:35b` | Same llama-swap label as the main LLM — distillation reuses the same 27B slot on port 5803 |
 | `NOBRAINR_SUMMARIZE_INTERVAL_HOURS` | `1.0` | Auto-summarize unsummarized memories |
 | `NOBRAINR_SUMMARIZE_BATCH_SIZE` | `20` | Memories per cycle |
 | `NOBRAINR_INSIGHT_EXTRACTION_INTERVAL_HOURS` | `1.0` | Extract learnings from agent events |
