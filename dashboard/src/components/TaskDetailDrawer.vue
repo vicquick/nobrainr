@@ -112,16 +112,58 @@
               <span class="section-title">Annotationes · recent runs</span>
             </div>
             <ul class="run-list">
-              <li
-                v-for="run in data.runs.slice(0, 20)"
-                :key="run.id"
-                class="run-line"
-                :class="`run-${run.status}`"
-              >
-                <span class="run-status">{{ statusGlyph(run.status) }}</span>
-                <span class="run-time">{{ formatRelative(run.started_at) }}</span>
-                <span class="run-dur">{{ run.duration_ms !== null ? formatDur(run.duration_ms) : '—' }}</span>
-              </li>
+              <template v-for="run in data.runs.slice(0, 20)" :key="run.id">
+                <li
+                  class="run-line"
+                  :class="[`run-${run.status}`, { 'run-line-open': openRunId === run.id }]"
+                  tabindex="0"
+                  role="button"
+                  :aria-expanded="openRunId === run.id"
+                  :aria-label="`Run #${run.id}, ${run.status}, started ${formatRelative(run.started_at)}`"
+                  @click="toggleRun(run.id)"
+                  @keydown.enter.prevent="toggleRun(run.id)"
+                  @keydown.space.prevent="toggleRun(run.id)"
+                >
+                  <span class="run-status">{{ statusGlyph(run.status) }}</span>
+                  <span class="run-time">{{ formatRelative(run.started_at) }}</span>
+                  <span class="run-dur">{{ run.duration_ms !== null ? formatDur(run.duration_ms) : '—' }}</span>
+                </li>
+                <!-- Expanded detail row — grid-rows 0fr → 1fr animates
+                     the height without measuring; works because the
+                     inner content stays absolutely-sized via the grid
+                     track collapse. CSS-only, GPU-friendly. -->
+                <li
+                  v-if="openRunId === run.id"
+                  class="run-detail"
+                  :class="`run-${run.status}`"
+                >
+                  <div class="run-detail-grid">
+                    <div class="run-detail-row">
+                      <span class="run-detail-key">id</span>
+                      <span class="run-detail-val">#{{ run.id }}</span>
+                    </div>
+                    <div class="run-detail-row">
+                      <span class="run-detail-key">started</span>
+                      <span class="run-detail-val">{{ formatAbsolute(run.started_at) }}</span>
+                    </div>
+                    <div v-if="run.finished_at" class="run-detail-row">
+                      <span class="run-detail-key">finished</span>
+                      <span class="run-detail-val">{{ formatAbsolute(run.finished_at) }}</span>
+                    </div>
+                    <div class="run-detail-row">
+                      <span class="run-detail-key">duration</span>
+                      <span class="run-detail-val">
+                        {{ run.duration_ms !== null ? formatDur(run.duration_ms) : 'in flight' }}
+                      </span>
+                    </div>
+                    <div class="run-detail-row">
+                      <span class="run-detail-key">status</span>
+                      <span class="run-detail-val" :class="`run-${run.status}`">{{ run.status }}</span>
+                    </div>
+                  </div>
+                  <pre v-if="run.error_msg" class="run-detail-error">{{ run.error_msg }}</pre>
+                </li>
+              </template>
             </ul>
           </section>
         </template>
@@ -283,6 +325,17 @@ function formatRelative(iso: string): string {
   const hours = Math.floor(mins / 60)
   if (hours < 24) return `${hours}h ago`
   return `${Math.floor(hours / 24)}d ago`
+}
+
+function formatAbsolute(iso: string): string {
+  const d = new Date(iso)
+  // ISO-ish but human-friendly: "2026-05-11 14:32:09 UTC"
+  return d.toISOString().replace('T', ' ').slice(0, 19) + ' UTC'
+}
+
+const openRunId = ref<number | null>(null)
+function toggleRun(id: number) {
+  openRunId.value = openRunId.value === id ? null : id
 }
 function statusGlyph(s: string): string {
   return s === 'ok' ? '✓' : s === 'failed' ? '✗' : s === 'timeout' ? '⌛' : '∘'
@@ -486,9 +539,75 @@ function statusGlyph(s: string): string {
   grid-template-columns: 24px 1fr auto;
   gap: 8px;
   align-items: baseline;
-  padding: 6px 0;
+  padding: 6px 8px;
+  margin: 0 -8px;
+  border-radius: 2px;
   border-bottom: 1px dotted rgba(200, 169, 110, 0.10);
   font-size: 13px;
+  cursor: pointer;
+  transition:
+    background var(--cp-dur-hover) var(--cp-ease),
+    transform var(--cp-dur-hover) var(--cp-ease);
+}
+.run-line:hover,
+.run-line:focus-visible {
+  background: var(--cp-gold-trace);
+  transform: translateX(2px);
+}
+.run-line:focus-visible { outline: none; }
+.run-line-open {
+  background: var(--cp-gold-trace);
+  border-bottom-color: transparent;
+}
+.run-detail {
+  display: block;
+  margin: 0 -8px 6px;
+  padding: 10px 12px 12px;
+  background: rgba(8, 6, 2, 0.35);
+  border-left: 2px solid var(--cp-gold-soft);
+  border-bottom: 1px dotted var(--cp-gold-faint);
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
+  animation: run-detail-in 220ms var(--cp-ease-decel) both;
+}
+.run-detail.run-failed { border-left-color: #c46a6a; }
+.run-detail.run-timeout { border-left-color: #c4a46a; }
+@keyframes run-detail-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.run-detail-grid {
+  display: grid;
+  grid-template-columns: 80px 1fr;
+  gap: 4px 12px;
+  font-size: 12px;
+}
+.run-detail-row { display: contents; }
+.run-detail-key {
+  font-style: italic;
+  letter-spacing: 0.04em;
+  color: var(--cp-ink-mute);
+}
+.run-detail-val {
+  color: var(--cp-ink);
+  font-variant-numeric: tabular-nums;
+}
+.run-detail-val.run-failed { color: #c46a6a; }
+.run-detail-val.run-timeout { color: #c4a46a; }
+.run-detail-val.run-running { color: var(--cp-gold); }
+.run-detail-val.run-ok { color: var(--cp-ink); }
+.run-detail-error {
+  font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+  background: rgba(196, 106, 106, 0.06);
+  border-left: 2px solid #c46a6a;
+  padding: 8px 10px;
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: rgba(238, 224, 196, 0.85);
+  border-radius: 2px;
+  max-height: 180px;
+  overflow-y: auto;
 }
 .run-status { color: var(--cp-gold-soft); }
 .run-failed .run-status { color: #c46a6a; }
