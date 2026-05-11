@@ -1,9 +1,18 @@
-"""Ollama embedding client for Qwen3-Embedding (qwen3-embedding-cpu).
+"""Embedding client for Qwen3-Embedding (qwen3-embedding-cpu).
 
-Uses /api/embed. Ollama serialises embedding requests internally but does NOT
-limit concurrent HTTP connections — if 5 callers hit /api/embed simultaneously,
-Ollama queues them and each waits for all previous to finish. On the i5-13500
-(CPU-only, ~7s per embed) that means caller 5 waits ~35s.
+Hits the OpenAI-compatible `/v1/embeddings` endpoint on whatever backend
+`settings.ollama_url` points at. The filename + module name are historical
+— in production this routes to a `llama-server` (llama.cpp) process hosted
+by `llama-swap`, not to Ollama. Both Ollama (>= 0.1.34) and llama-server
+expose `/v1/embeddings` with the same request shape (`{model, input}`) and
+the OpenAI response shape (`{data: [{embedding: [...], index: N}, ...]}`)
+— so this client works against either backend without code branching.
+
+Background: prior to 2026-05-11 this module posted to `/api/embed` (the
+Ollama-native path). After the migration to llama-server the path returned
+HTTP 404 from llama-server, silently failing 245+ memory writes over weeks
+until detected. The endpoint switch is permanent — Ollama's OpenAI compat
+layer has been stable since 2024.
 
 The global _EMBED_SEM semaphore caps in-flight embed requests to 1 so that
 background jobs (write_queue, scheduler backfills) cannot starve interactive
@@ -56,17 +65,22 @@ def _get_client() -> httpx.AsyncClient:
 
 
 async def _embed_with_retry(payload: dict) -> dict:
-    """POST to /api/embed with retry on transient errors."""
+    """POST to /v1/embeddings with retry on transient errors.
+
+    The `keep_alive` field in `payload` is Ollama-specific; llama-server
+    silently ignores unknown fields, so the same payload shape works against
+    both backends.
+    """
     client = _get_client()
     last_exc: Exception | None = None
 
     for attempt in range(MAX_RETRIES):
         try:
-            resp = await client.post("/api/embed", json=payload)
+            resp = await client.post("/v1/embeddings", json=payload)
             if resp.status_code in RETRYABLE_STATUS:
                 delay = 2 ** attempt
                 logger.warning(
-                    "Ollama embed returned %d, retrying in %ds (attempt %d/%d)",
+                    "Embed returned %d, retrying in %ds (attempt %d/%d)",
                     resp.status_code, delay, attempt + 1, MAX_RETRIES,
                 )
                 await asyncio.sleep(delay)
@@ -79,13 +93,29 @@ async def _embed_with_retry(payload: dict) -> dict:
         except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as exc:
             delay = 2 ** attempt
             logger.warning(
-                "Ollama embed connection error: %s, retrying in %ds (attempt %d/%d)",
+                "Embed connection error: %s, retrying in %ds (attempt %d/%d)",
                 exc, delay, attempt + 1, MAX_RETRIES,
             )
             await asyncio.sleep(delay)
             last_exc = exc
 
     raise last_exc or RuntimeError("Embedding failed after retries")
+
+
+def _extract_vectors(data: dict) -> list[list[float]]:
+    """Pull the embedding vectors out of an OpenAI-shape response.
+
+    Returns the list of vectors in the same order as the input list,
+    using `index` if present, otherwise positional order. The OpenAI
+    spec guarantees `data` is ordered, but the index field exists so
+    that re-ordered responses (rare with batching) still resolve right.
+    """
+    items = data.get("data") or []
+    if not items:
+        return []
+    if all("index" in item for item in items):
+        items = sorted(items, key=lambda x: x["index"])
+    return [item["embedding"] for item in items]
 
 
 async def embed_text(text: str) -> list[float]:
@@ -95,7 +125,10 @@ async def embed_text(text: str) -> list[float]:
         data = await _embed_with_retry(
             {"model": settings.embedding_model, "input": text, "keep_alive": "24h"},
         )
-    return data["embeddings"][0]
+    vectors = _extract_vectors(data)
+    if not vectors:
+        raise RuntimeError("Embed returned no vectors")
+    return vectors[0]
 
 
 # Query embedding cache: key = sha1(model + lower(strip(query))), value = (vec, ts).
@@ -162,7 +195,10 @@ async def embed_text_with_timeout(text: str, timeout_s: float = 15.0) -> list[fl
                 data = await _embed_with_retry(
                     {"model": settings.embedding_model, "input": text, "keep_alive": "24h"},
                 )
-            return data["embeddings"][0]
+            vectors = _extract_vectors(data)
+            if not vectors:
+                raise RuntimeError("Embed returned no vectors")
+            return vectors[0]
 
         vec = await asyncio.wait_for(_do(), timeout=timeout_s)
         _qcache_put(text, vec)
@@ -177,24 +213,33 @@ async def embed_batch(
 ) -> list[list[float]]:
     """Generate embeddings for multiple texts (background-safe, serialised)."""
     sem = _get_sem()
-    all_embeddings = []
+    all_embeddings: list[list[float]] = []
     for i in range(0, len(texts), batch_size):
         batch = texts[i : i + batch_size]
         async with sem:
             data = await _embed_with_retry(
                 {"model": settings.embedding_model, "input": batch, "keep_alive": "24h"},
             )
-        all_embeddings.extend(data["embeddings"])
+        all_embeddings.extend(_extract_vectors(data))
     return all_embeddings
 
 
 async def check_model() -> bool:
-    """Check if the embedding model is available in Ollama."""
+    """Check if the embedding model is available on the inference backend.
+
+    Hits the OpenAI-compatible `/v1/models` endpoint; the response shape is
+    `{"data": [{"id": "<label>", ...}, ...]}`. Returns True if any model
+    label starts with the configured embedding model name OR matches any
+    of the registered aliases (handles llama-swap label-vs-filename drift
+    that bit us on 2026-04-08).
+    """
     try:
         client = _get_client()
-        resp = await client.get("/api/tags")
+        resp = await client.get("/v1/models")
         resp.raise_for_status()
-        models = resp.json().get("models", [])
-        return any(m["name"].startswith(settings.embedding_model) for m in models)
+        models = resp.json().get("data", [])
+        ids = [m.get("id", "") for m in models]
+        targets = {settings.embedding_model, *settings.embedding_model_aliases}
+        return any(any(mid.startswith(t) for t in targets) for mid in ids)
     except Exception:
         return False
