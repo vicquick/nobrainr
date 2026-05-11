@@ -25,6 +25,11 @@
             class="cp-search"
           />
         </div>
+        <!-- What's new — today's insight + corpus vital signs.
+             Self-mounts; renders nothing if /api/insights/today
+             returns no card. Codex card with hover lift, links to
+             /insights for the full gallery. -->
+        <WhatsNew />
         <v-divider style="opacity: 0.15; border-color: var(--cp-gold);" />
         <div class="flex-grow-1" style="overflow-y: auto;">
           <template v-if="loadingChapters">
@@ -306,6 +311,7 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, watch } from 'vue'
+import WhatsNew from '@/components/WhatsNew.vue'
 
 interface Chapter {
   community_id: number
