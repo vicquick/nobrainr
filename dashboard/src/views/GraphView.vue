@@ -103,6 +103,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useDisplay } from 'vuetify'
 import Sigma from 'sigma'
 import Graph from 'graphology'
@@ -127,6 +128,8 @@ const TYPE_COLORS: Record<string, string> = {
 
 const entityTypes = Object.keys(TYPE_COLORS)
 const { mobile } = useDisplay()
+const route = useRoute()
+const router = useRouter()
 const chatStore = useChatStore()
 
 const { graphData, communityGraphData, selectedNode, loading, nodeLoading, fetchGraph, fetchCommunityGraph, fetchNodeDetail, clearSelection } = useGraph()
@@ -910,7 +913,29 @@ onMounted(async () => {
     })
     resizeObserver.observe(sigmaContainer.value)
   }
+
+  // Honour ?focus=<entity-id> so cross-surface entity links from
+  // MemoryDetail / ThreadDetailView land here with the side panel
+  // pre-opened on that entity. We push without the query so a
+  // refresh doesn't re-trigger the focus.
+  await maybeApplyFocusFromQuery()
 })
+
+async function maybeApplyFocusFromQuery() {
+  const focusId = typeof route.query.focus === 'string' ? route.query.focus : null
+  if (!focusId) return
+  if (graph?.hasNode(focusId)) {
+    focusNode(focusId)
+    await fetchNodeDetail(focusId)
+  } else {
+    // The entity may exist in the database but not yet in the loaded
+    // graph (filtered by category, or below the rendered subset).
+    // Fetching the detail still opens the side panel with the full
+    // record + connections; the user can then navigate from there.
+    await fetchNodeDetail(focusId)
+  }
+  router.replace({ path: '/graph', query: {} })
+}
 
 onUnmounted(() => {
   renderer?.kill()
