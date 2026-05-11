@@ -16,6 +16,11 @@
       <div v-else-if="!conv" class="thread-empty">
         <span class="ornament">❦</span>
         <p>— this thread is not in the codex —</p>
+        <p class="empty-hint">
+          The conversation may have been deleted, or its source export
+          was never imported. Try the codex of all conversations from
+          the Threads index.
+        </p>
       </div>
       <article v-else class="thread-content">
         <div class="masthead-rule" />
@@ -28,18 +33,24 @@
         </div>
         <div class="masthead-rule" />
 
-        <div class="messages">
+        <div class="messages cp-stagger">
           <article
             v-for="(m, idx) in messages"
             :key="idx"
             class="msg"
             :class="`role-${messageRole(m) || 'unknown'}`"
+            :style="staggerStyle(idx)"
           >
             <div class="msg-margin">
               <span class="msg-numeral">{{ idx + 1 }}</span>
               <span class="msg-role">{{ messageRole(m) || 'message' }}</span>
             </div>
-            <p class="msg-content">{{ messageText(m) }}</p>
+            <!-- v-html is safe: renderMemoryMarkdown pipes through
+                 marked → DOMPurify with the same allowlist used for
+                 memory bodies. Imported chats are markdown-heavy
+                 (code fences, lists, links) — rendering them as raw
+                 text was wasting the medium. -->
+            <div class="msg-content cp-prose" v-html="renderedContent(m)" />
           </article>
         </div>
       </article>
@@ -52,6 +63,8 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import Dotty from '@/components/Dotty.vue'
+import { staggerStyle } from '@/composables/useStaggerIndex'
+import { renderMemoryMarkdown } from '@/composables/useMarkdown'
 
 const route = useRoute()
 const conv = ref<any>(null)
@@ -80,6 +93,10 @@ function messageText(m: any): string {
   return JSON.stringify(m).slice(0, 1000)
 }
 
+function renderedContent(m: any): string {
+  return renderMemoryMarkdown(messageText(m))
+}
+
 function formatDate(s?: string) {
   if (!s) return ''
   return new Date(s).toLocaleDateString('en-GB', {
@@ -102,11 +119,8 @@ onMounted(load)
 
 <style scoped>
 .thread-page {
-  --cp-gold: #c8a96e;
-  --cp-gold-soft: rgba(200, 169, 110, 0.45);
-  --cp-gold-faint: rgba(200, 169, 110, 0.18);
-  --cp-ink: rgba(238, 224, 196, 0.94);
-  --cp-ink-mute: rgba(238, 224, 196, 0.55);
+  /* Tokens come from global tokens.css now — local re-declarations
+     dropped (their values matched the globals exactly). */
   font-family: Georgia, 'Palatino Linotype', Palatino, serif;
   color: var(--cp-ink);
   padding: 24px 24px 80px;
@@ -132,9 +146,10 @@ onMounted(load)
   letter-spacing: 0.05em;
   cursor: pointer;
   padding: 4px 0;
-  transition: color 150ms;
+  transition: color var(--cp-dur-hover) var(--cp-ease);
 }
-.back-btn:hover { color: rgba(238, 224, 196, 0.95); }
+.back-btn:hover { color: var(--cp-gold-bright); }
+.back-btn:focus-visible { outline: none; }
 .header-rule {
   flex-grow: 1;
   height: 1px;
@@ -230,16 +245,22 @@ onMounted(load)
 .role-user .msg-numeral { color: var(--cp-gold); }
 .role-user .msg-role { color: var(--cp-gold); }
 
-.msg-content {
-  font-family: Georgia, serif;
+/* msg-content piggybacks on the global .cp-prose styles introduced
+   in PR #57 — same heading / list / code / blockquote treatment as
+   memory bodies. We override only the wrapper-level concerns
+   (border, padding, max-height) since chat messages don't need the
+   raised-paper card chrome that memory content uses. */
+.msg-content.cp-prose {
+  background: transparent;
+  border: 0;
+  border-left: 0;
+  padding: 0;
+  max-height: none;
   font-size: 14px;
-  line-height: 1.75;
+  line-height: 1.7;
   color: rgba(238, 224, 196, 0.96);
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
 }
-.role-assistant .msg-content {
+.role-assistant .msg-content.cp-prose {
   color: rgba(238, 224, 196, 0.88);
 }
 
