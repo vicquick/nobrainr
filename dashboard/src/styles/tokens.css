@@ -140,6 +140,45 @@ mark.cp-mark {
   transition: text-decoration-color var(--cp-dur-hover) var(--cp-ease);
 }
 .cp-prose a:hover { text-decoration-color: var(--cp-gold); }
+
+/* ── Entity link (.cp-entity-link) ───────────────────────────────
+   Inserted post-sanitization by linkifyEntities (useEntityLinks.ts)
+   to wrap occurrences of known entity canonical names inside .cp-prose
+   (and any other .cp-prose surface that adopts the pattern). Reads
+   as a marginal annotation, not as a link — gold-bright underline +
+   tiny ink-pen mark, no color change of the body text. Clicks are
+   intercepted by the parent (event delegation) and routed to
+   /graph?focus=<id>; modifier keys + middle-click fall through to the
+   native href so open-in-new-tab still works. */
+.cp-entity-link {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px dotted var(--cp-gold-soft);
+  cursor: pointer;
+  transition:
+    border-bottom-color var(--cp-dur-hover) var(--cp-ease),
+    background var(--cp-dur-hover) var(--cp-ease);
+  padding: 0 1px;
+  border-radius: 1px;
+}
+.cp-entity-link::after {
+  content: '↗';
+  display: inline-block;
+  margin-left: 1px;
+  font-size: 0.78em;
+  color: var(--cp-gold-soft);
+  vertical-align: super;
+  line-height: 0;
+  transition: color var(--cp-dur-hover) var(--cp-ease);
+}
+.cp-entity-link:hover,
+.cp-entity-link:focus-visible {
+  background: var(--cp-gold-trace);
+  border-bottom-color: var(--cp-gold);
+}
+.cp-entity-link:hover::after,
+.cp-entity-link:focus-visible::after { color: var(--cp-gold); }
+.cp-entity-link:focus-visible { outline: none; }
 .cp-prose ul, .cp-prose ol { margin: 0 0 0.9em; padding-left: 1.4em; }
 .cp-prose li { margin: 0.18em 0; }
 .cp-prose li::marker { color: var(--cp-gold-soft); }
