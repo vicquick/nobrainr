@@ -49,6 +49,37 @@
           </div>
 
           <div ref="listEl" class="cp-list">
+            <!-- Recent queries — only when input is empty AND there's
+                 history to surface. Lets the reader pull a previous
+                 search back into the input with one keystroke. -->
+            <template v-if="showRecent">
+              <p class="cp-section">
+                Recent
+                <span class="cp-section-count">· {{ recentQueries.length }}</span>
+              </p>
+              <button
+                v-for="(q, k) in recentQueries"
+                :key="`recent-${q}`"
+                class="cp-row cp-row-recent"
+                :class="{ 'cp-row-active': cursor === k }"
+                role="option"
+                :aria-selected="cursor === k"
+                @mouseenter="cursor = k"
+                @click="recallQuery(q)"
+              >
+                <span class="cp-row-glyph" aria-hidden="true">↻</span>
+                <span class="cp-row-text">{{ q }}</span>
+                <span
+                  class="cp-row-recent-dismiss"
+                  role="button"
+                  tabindex="-1"
+                  aria-label="Forget this query"
+                  title="Forget"
+                  @click.stop="forgetQuery(q)"
+                >×</span>
+              </button>
+            </template>
+
             <!-- Routes section -->
             <template v-if="filteredRoutes.length">
               <p class="cp-section">Routes</p>
@@ -57,10 +88,10 @@
                 :key="r.to"
                 ref="routeRowsEl"
                 class="cp-row cp-row-route"
-                :class="{ 'cp-row-active': cursor === i }"
+                :class="{ 'cp-row-active': cursor === routeBase + i }"
                 role="option"
-                :aria-selected="cursor === i"
-                @mouseenter="cursor = i"
+                :aria-selected="cursor === routeBase + i"
+                @mouseenter="cursor = routeBase + i"
                 @click="goRoute(r.to)"
               >
                 <span class="cp-row-glyph" aria-hidden="true">→</span>
@@ -83,10 +114,10 @@
                 :key="m.id"
                 ref="memoryRowsEl"
                 class="cp-row cp-row-memory"
-                :class="{ 'cp-row-active': cursor === filteredRoutes.length + j }"
+                :class="{ 'cp-row-active': cursor === memoryBase + j }"
                 role="option"
-                :aria-selected="cursor === filteredRoutes.length + j"
-                @mouseenter="cursor = filteredRoutes.length + j"
+                :aria-selected="cursor === memoryBase + j"
+                @mouseenter="cursor = memoryBase + j"
                 @click="goMemory(m.id)"
               >
                 <span class="cp-row-glyph" aria-hidden="true">·</span>
@@ -172,6 +203,62 @@ const memoryHits = ref<MemoryHit[]>([])
 const memoriesLoading = ref(false)
 let searchTimer: number | undefined
 
+// Persistent recent-queries history. Capped at 5 to keep the empty
+// palette tight; ordered most-recent-first; deduped on insert.
+// Storage key bumps if the shape ever changes substantively.
+const HISTORY_KEY = 'nobrainr.cmdk.history.v1'
+const HISTORY_MAX = 5
+const recentQueries = ref<string[]>([])
+
+function loadHistory() {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY)
+    if (!raw) return
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed)) {
+      recentQueries.value = parsed.filter((q): q is string => typeof q === 'string').slice(0, HISTORY_MAX)
+    }
+  } catch {
+    // Storage disabled (Safari private mode etc.) — palette still
+    // works, history just doesn't persist for the session.
+  }
+}
+
+function saveHistory() {
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(recentQueries.value))
+  } catch { /* see loadHistory */ }
+}
+
+function rememberQuery(q: string) {
+  const trimmed = q.trim()
+  if (!trimmed) return
+  recentQueries.value = [
+    trimmed,
+    ...recentQueries.value.filter((x) => x !== trimmed),
+  ].slice(0, HISTORY_MAX)
+  saveHistory()
+}
+
+function forgetQuery(q: string) {
+  recentQueries.value = recentQueries.value.filter((x) => x !== q)
+  saveHistory()
+  // Pull cursor back if the removal pulled the selection out of bounds.
+  cursor.value = Math.min(cursor.value, totalRows.value - 1)
+}
+
+function recallQuery(q: string) {
+  query.value = q
+  cursor.value = 0
+  // Re-focus the input so the next keystroke continues editing.
+  nextTick(() => inputEl.value?.focus())
+}
+
+const showRecent = computed(() => !query.value.trim() && recentQueries.value.length > 0)
+const routeBase = computed(() => (showRecent.value ? recentQueries.value.length : 0))
+const memoryBase = computed(() => routeBase.value + filteredRoutes.value.length)
+const totalRows = computed(() => routeBase.value + filteredRoutes.value.length + memoryHits.value.length)
+
 const filteredRoutes = computed<RouteHit[]>(() => {
   const q = query.value.trim().toLowerCase()
   if (!q) return ROUTES // empty query → show all routes for fast nav
@@ -209,7 +296,7 @@ watch(query, (q) => {
 })
 
 function moveCursor(delta: number) {
-  const total = filteredRoutes.value.length + memoryHits.value.length
+  const total = totalRows.value
   if (!total) return
   cursor.value = (cursor.value + delta + total) % total
   scrollCursorIntoView()
@@ -226,19 +313,29 @@ function scrollCursorIntoView() {
 
 function activateCursor() {
   const i = cursor.value
-  if (i < filteredRoutes.value.length) {
-    goRoute(filteredRoutes.value[i].to)
-  } else {
-    const m = memoryHits.value[i - filteredRoutes.value.length]
-    if (m) goMemory(m.id)
+  if (showRecent.value && i < recentQueries.value.length) {
+    recallQuery(recentQueries.value[i])
+    return
   }
+  const r = i - routeBase.value
+  if (r >= 0 && r < filteredRoutes.value.length) {
+    goRoute(filteredRoutes.value[r].to)
+    return
+  }
+  const m = memoryHits.value[i - memoryBase.value]
+  if (m) goMemory(m.id)
 }
 
 function goRoute(to: string) {
+  // Only remember the query if the user actually typed something.
+  // Hitting Enter on an empty palette to jump to a default route
+  // shouldn't pollute history with empty entries.
+  rememberQuery(query.value)
   router.push(to)
   close()
 }
 function goMemory(id: string) {
+  rememberQuery(query.value)
   // Land on Memories index; the scoped state on that route picks the
   // memory by id from the URL hash. Caveman: any agent that needs a
   // dedicated /memory/{id} route should add it later — for now Memories
@@ -277,7 +374,10 @@ function onGlobalKey(e: KeyboardEvent) {
   }
 }
 
-onMounted(() => window.addEventListener('keydown', onGlobalKey))
+onMounted(() => {
+  loadHistory()
+  window.addEventListener('keydown', onGlobalKey)
+})
 onUnmounted(() => {
   window.removeEventListener('keydown', onGlobalKey)
   if (searchTimer !== undefined) clearTimeout(searchTimer)
@@ -430,6 +530,34 @@ onUnmounted(() => {
 }
 .cp-row-route { grid-template-columns: 16px auto 1fr; }
 .cp-row-memory { grid-template-columns: 16px 1fr auto; }
+.cp-row-recent { grid-template-columns: 16px 1fr auto; }
+.cp-row-recent .cp-row-text {
+  font-style: italic;
+  color: var(--cp-ink-mute);
+}
+.cp-row-recent:hover .cp-row-text,
+.cp-row-recent.cp-row-active .cp-row-text {
+  color: var(--cp-ink);
+}
+.cp-row-recent-dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 2px;
+  color: var(--cp-ink-faint);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    color var(--cp-dur-hover) var(--cp-ease),
+    background var(--cp-dur-hover) var(--cp-ease);
+}
+.cp-row-recent-dismiss:hover {
+  color: var(--cp-ink);
+  background: var(--cp-gold-trace);
+}
 
 .cp-row:hover,
 .cp-row-active {
