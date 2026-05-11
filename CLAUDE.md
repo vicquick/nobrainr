@@ -25,8 +25,14 @@ cross-machine patterns, and archives stale knowledge — all on scheduled LLM-po
 - **Backend** — Python ASGI: FastMCP (HTTP + SSE) + pure JSON API (Starlette)
 - **Frontend** — Vue 3 + Vuetify + Cytoscape.js (separate container, nginx)
 - **PostgreSQL 18 + pgvector** — storage, vector similarity, knowledge graph
-- **Ollama + snowflake-arctic-embed2** — local embeddings (1024 dimensions, 8K context, Matryoshka MRL)
-- **Ollama + gemma3:12b** — entity/relationship extraction, scheduler jobs (structured output)
+- **llama-swap** (Coolify-deployed) — hosts three on-GPU `llama-server` processes serving
+  the entire LLM stack from a single container:
+  - **Main LLM** — `Qwen3.6-27B-IQ4_XS.gguf` (port 5803, 32K ctx, parallel=2, all layers on GPU)
+    handles extraction, chat, scheduler jobs, dedup, synthesis
+  - **Embeddings** — `Qwen3-Embedding-0.6B-Q8_0.gguf` (port 5802, 4K ctx, all layers on GPU)
+    1024-dim vectors, OpenAI-compatible `/v1/embeddings`
+  - **Reranker** — `bge-reranker-v2-m3-Q8_0.gguf` (port 5800, 4K ctx, all layers on GPU)
+    cross-encoder rerank via llama.cpp `/v1/rerank`, sigmoid-normalised
 - **Crawl4AI** — web crawling service (CPU-only container on `mcp` network, port 11235)
 
 ### Routing (when using a reverse proxy)
@@ -47,14 +53,15 @@ src/nobrainr/              # Python backend
 ├── services/
 │   ├── memory.py          # store_memory_with_extraction(), store_document_chunked()
 │   ├── chunking.py        # Text chunking with configurable overlap
-│   └── reranker.py        # Cross-encoder reranking via flashrank (always installed)
+│   └── reranker.py        # Cross-encoder reranking via llama-server (bge-reranker-v2-m3, GPU)
 ├── embeddings/
-│   └── ollama.py          # Ollama API client (embed_text, embed_batch)
+│   └── ollama.py          # llama-server client (embed_text, embed_batch via /v1/embeddings)
+│                          # — name predates the migration; still routes to llama-server on port 5802
 ├── extraction/
 │   ├── models.py          # Pydantic: ExtractedEntity, ExtractedRelationship, ExtractionResult
-│   ├── extractor.py       # Ollama /api/chat with structured output
+│   ├── extractor.py       # llama-server /v1/chat/completions with JSON-mode structured output
 │   ├── dedup.py           # Memory dedup (vector + LLM merge decision)
-│   ├── llm.py             # Shared Ollama chat helper
+│   ├── llm.py             # Shared llama-server chat helper (OpenAI-compatible)
 │   └── pipeline.py        # Full pipeline: extract → dedup → store → link
 ├── crawler/
 │   ├── client.py          # Shared Crawl4AI HTTP client (crawl4ai_request, crawl4ai_job, crawl4ai_deep, discover_sitemap_urls, bm25_markdown_generator)
@@ -177,7 +184,7 @@ query → [optional] LLM query decomposition (2-4 sub-queries)
      (embed hypothetical         ↓                                    ↓
       answer too)          Reciprocal Rank Fusion (RRF, k=60)
                               ↓
-                   cross-encoder reranking (flashrank, enabled by default)
+                   cross-encoder reranking (bge-reranker-v2-m3 on GPU, enabled by default)
                               ↓
                    [optional] chunk context expansion (fetch adjacent chunks)
                               ↓
@@ -209,10 +216,18 @@ This enables safe model migration via `nobrainr re-embed --model <new-model>`.
 
 ### Reranking (optional)
 
-When `NOBRAINR_RERANKER_ENABLED=true` (default), search overfetches 5x results and reranks with a
-cross-encoder (flashrank, ONNX, CPU-only, ~100ms for 30 docs). flashrank is now a hard dependency
-since the default model `ms-marco-MiniLM-L-12-v2` is small (~34 MB) and the quality lift is large.
-The model is auto-downloaded from HuggingFace on first use and cached at `/tmp/`.
+When `NOBRAINR_RERANKER_ENABLED=true` (default), search overfetches `overfetch_mult` × `limit`
+results per RRF branch and reranks the top `reranker_max_candidates` with a cross-encoder.
+
+Active backend: **bge-reranker-v2-m3** (`Q8_0` quant) running as a dedicated llama-server process
+on the llama-swap container, port 5800, all layers on GPU. Latency ~50ms for 8 candidates at
+4K ctx. Backend preference is `reranker_backend="http"` which hits the llama-server
+`/v1/rerank` endpoint; sigmoid-normalises scores to `[0,1]` so threshold semantics stay stable
+across model swaps. Falls through to local sentence-transformers (then flashrank ONNX) if the
+HTTP sidecar is unavailable — keeps search functional during llama-swap redeploys.
+
+Skip-when-dominant: if top-1 RRF score ≥ 2.5× top-2, the reranker is skipped (it can't
+meaningfully reorder when RRF already has a clear winner). Saves GPU on easy queries.
 
 ## Memory Versioning (Audit Trail)
 
@@ -335,35 +350,61 @@ Knowledge graph grows → entities enriched → new relations discovered
 
 ## Deployment Notes
 
-### Ollama Configuration
-Two models are required:
-- `snowflake-arctic-embed2` — embeddings (1024d, ~1.2 GB VRAM, always loaded)
-- `gemma3:12b` — entity extraction + scheduler (~11.4 GB VRAM, keep_alive=5m)
+### LLM Stack (llama-swap on GPU)
 
-Additionally, `qwen3.5-nothink:9b` is available for external consumers (Affine copilot).
+The entire inference stack runs as a single Coolify-deployed `llama-swap` application that
+supervises three `llama-server` (llama.cpp) processes pinned to the RTX 4000 SFF Ada (20GB VRAM).
+**Ollama is not used for inference any more** — the `embeddings/ollama.py` filename + a few
+docstring references are pre-migration leftovers; everything routes through llama-server's
+OpenAI-compatible endpoints.
 
-Recommended Ollama env vars for production (RTX 4000 Ada 20GB):
-- `OLLAMA_FLASH_ATTENTION=1` — reduces VRAM, speeds inference
-- `OLLAMA_KV_CACHE_TYPE=q8_0` — halves KV cache memory per slot (critical for larger context)
-- `OLLAMA_NUM_PARALLEL=2` — inference slots (reduced from 6; LLM jobs are serialized)
-- `OLLAMA_KEEP_ALIVE=5m` — unload idle models after 5 minutes
-- `OLLAMA_MAX_LOADED_MODELS=2` — embedding + one LLM at a time
-- `OLLAMA_NUM_CTX=12288` — context window (safe max with Q8 KV cache + snowflake on 20GB GPU)
-- `OLLAMA_NUM_GPU=999` — offload all layers to GPU
+| Role | Port | Model | Quant | ctx | parallel | n-gpu-layers |
+|------|------|-------|-------|-----|----------|--------------|
+| Main LLM | 5803 | `Qwen3.6-27B-IQ4_XS.gguf` | IQ4_XS | 32768 | 2 | 99 (all) |
+| Embeddings | 5802 | `Qwen3-Embedding-0.6B-Q8_0.gguf` | Q8_0 | 4096 | — | 99 |
+| Reranker | 5800 | `bge-reranker-v2-m3-Q8_0.gguf` | Q8_0 | 4096 | — | 99 |
 
-VRAM budget with Q8 KV cache: gemma3:12b Q8 (13GB weights + ~4.6GB KV at 12K ctx) + snowflake (1.2GB) = ~19.8GB / 20GB.
-LLM jobs are serialized (Semaphore(1)) to prevent concurrent gemma3 inference which causes ReadTimeouts.
+The 27B model carries all language workloads — extraction, dedup, summarization,
+consolidation, synthesis, scheduler jobs, chat. Config aliases like `qwen3.6:35b` in
+`config.py` (`extraction_model`, `scheduler_llm_model`, `chat_model`) are llama-swap
+group labels — llama-swap maps the label to whichever physical model is currently loaded
+on the matching port. Don't expect the label to match the file name; trust the live
+`/v1/models` endpoint on port 5803 as ground truth.
+
+**VRAM budget**: ~18.1 / 20.0 GB in use, ~2.4 GB headroom. All three models stay resident
+— no swap-out, no keep-alive timer to worry about. Parallel=2 on the 27B lets two
+concurrent generations share the slot (scheduler batch jobs + a live MCP request can
+overlap without contention).
+
+**Service URL** for the nobrainr backend:
+```
+NOBRAINR_LLM_SERVER_URL=http://llama-server:8080
+```
+The llama-swap router multiplexes the three ports behind that single hostname. The
+backend uses OpenAI-compatible paths (`/v1/chat/completions`, `/v1/embeddings`,
+`/v1/rerank`) and chooses the model via the `model` field, which llama-swap routes to
+the right llama-server process.
 
 ### Extraction Performance
-- `ollama_chat()` defaults to `think=False` — gemma3 does not support thinking mode (Ollama returns 400)
-- Default `num_ctx=8192` for all LLM calls (extraction, dedup, distill, documents, search synthesis)
-- `MAX_CONTENT_CHARS=6000` — content truncation for extraction (matches chunk config)
-- Post-extraction noise filter in `pipeline.py` catches: short names, generic words, function calls,
-  CLI flags, CSS selectors, trivial file names, resolution strings, git branch names
-- gemma3:12b is ~2x faster than qwen3.5 for structured output and more reliable at producing valid JSON
+- Main LLM serves chat in non-thinking mode by default (Qwen3.6 supports
+  `enable_thinking=true` via `chat_template_kwargs` when explicitly enabled, but
+  extraction/dedup/scheduler all run with `enable_thinking=false` for ~10× speed and
+  cleaner JSON output).
+- Default `num_ctx=8192` for all LLM calls (extraction, dedup, distill, documents,
+  search synthesis). Main LLM is loaded with 32K ctx so longer contexts are available
+  on demand.
+- `MAX_CONTENT_CHARS=6000` — content truncation for extraction (matches chunk config).
+- Post-extraction noise filter in `pipeline.py` catches: short names, generic words,
+  function calls, CLI flags, CSS selectors, trivial file names, resolution strings,
+  git branch names.
+- Qwen3.6-27B IQ4_XS is ~2-3× faster than the previous gemma3:12b stack for structured
+  JSON output and supports a much larger context window without VRAM trouble.
 - Backfill: `nobrainr extract-backfill --batch-size 50`
-- Retry logic: 404s from Ollama (model loading contention) are retried 5x with exponential backoff
-- LLM retry: 5 attempts with exponential backoff on empty/malformed JSON responses
+- Retry logic: 5 attempts with exponential backoff on HTTP errors / empty / malformed
+  JSON responses from llama-server.
+- LLM scheduler jobs are serialized via `Semaphore(1)` (`scheduler_llm_concurrency: 5`
+  setting is the upper bound; the actual lock is hardcoded to 1 to prevent concurrent
+  27B inference from spawning extra slots beyond `parallel=2`).
 
 ### Network Aliases (Coolify)
 Coolify redeploys create new containers with random suffixes. Traefik routes to stable
@@ -380,7 +421,7 @@ docker network disconnect mcp <container> && docker network connect --alias nobr
 ### Crawl4AI Configuration
 - Container: `crawl4ai` on `mcp` network, port 11235 (v0.8.0)
 - CPU only (no GPU), 4GB RAM, 4 CPUs, `--shm-size=2g` for Chromium
-- Connects to Ollama via `http://ollama:11434` for LLM-based extraction
+- Connects to llama-swap via `http://llama-server:8080` for LLM-based extraction
 - Env vars: `NOBRAINR_CRAWL4AI_URL=http://crawl4ai:11235`, `NOBRAINR_CRAWL4AI_API_TOKEN`
 - **Shared client**: All crawl operations go through `nobrainr.crawler.client` which applies
   `PruningContentFilter` by default (80% noise reduction) and wraps sync/async/deep crawl APIs
@@ -409,18 +450,26 @@ uv run ruff check src/
 # Test
 uv run pytest
 
-# flashrank is in main deps; uv sync installs everything needed
+# flashrank + sentence-transformers stay in deps as fallback paths;
+# uv sync installs everything needed.
 ```
 
 ## Configuration Reference (Retrieval)
 
 | Env Var | Default | Purpose |
 |---------|---------|---------|
-| `NOBRAINR_EMBEDDING_MODEL` | `snowflake-arctic-embed2` | Ollama embedding model |
-| `NOBRAINR_EMBEDDING_DIMENSIONS` | `1024` | Vector dimensions (must match model) |
+| `NOBRAINR_LLM_SERVER_URL` | `http://llama-server:8080` | llama-swap router (multiplexes 5800/5802/5803) |
+| `NOBRAINR_EMBEDDING_MODEL` | `qwen3-embedding-cpu` | llama-swap label for the embedding slot (5802) |
+| `NOBRAINR_EMBEDDING_DIMENSIONS` | `1024` | Vector dimensions (must match model — Qwen3-Embed-0.6B = 1024) |
+| `NOBRAINR_EXTRACTION_MODEL` | `qwen3.6:35b` | llama-swap label for the main LLM slot (5803, actual file is `Qwen3.6-27B-IQ4_XS.gguf`) |
+| `NOBRAINR_SCHEDULER_LLM_MODEL` | `qwen3.6:35b` | Same slot — scheduler reuses the main LLM |
+| `NOBRAINR_CHAT_MODEL` | (empty → extraction_model) | Same slot — chat reuses the main LLM |
+| `NOBRAINR_RERANKER_BACKEND` | `http` | Reranker backend (`http` → llama-server 5800; falls back to `sentence-transformers` then `flashrank`) |
+| `NOBRAINR_RERANKER_URL` | `http://reranker:80` | Override if reranker is on a separate sidecar (default routes via llama-swap path) |
+| `NOBRAINR_RERANKER_MODEL` | `Qwen/Qwen3-Reranker-0.6B` | Sentence-transformers fallback model name (actual GPU process serves `bge-reranker-v2-m3`) |
+| `NOBRAINR_RERANKER_ENABLED` | `true` | Enable cross-encoder reranking |
+| `NOBRAINR_RERANKER_MAX_CANDIDATES` | `8` | Top-N RRF candidates sent to the cross-encoder |
 | `NOBRAINR_CHUNK_MAX_CHARS` | `6000` | Max characters per chunk |
 | `NOBRAINR_CHUNK_OVERLAP_CHARS` | `500` | Overlap between consecutive chunks |
 | `NOBRAINR_CHUNK_THRESHOLD` | `8000` | Content above this length gets chunked |
 | `NOBRAINR_CHUNK_CONTEXT_WINDOW` | `1` | Adjacent chunks fetched around search hits |
-| `NOBRAINR_RERANKER_ENABLED` | `true` | Enable cross-encoder reranking |
-| `NOBRAINR_RERANKER_MODEL` | `ms-marco-MiniLM-L-12-v2` | flashrank model name |
