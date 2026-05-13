@@ -596,13 +596,20 @@ async def send_knowledge_digest() -> dict:
               (SELECT COUNT(*) FROM memories) AS total
             """
         )
+        # entity_relations columns are source_entity_id / target_entity_id /
+        # relationship_type — the older source_id / target_id / relation_type
+        # names were renamed in the 2026-04 schema refactor and never updated
+        # here, causing 1-3 failures per day on this digest since.
         new_bridges = await conn.fetch(
             """
-            SELECT er.source_id, er.target_id, er.relation_type, er.created_at,
+            SELECT er.source_entity_id AS source_id,
+                   er.target_entity_id AS target_id,
+                   er.relationship_type AS relation_type,
+                   er.created_at,
                    se.canonical_name AS src_name, te.canonical_name AS tgt_name
             FROM entity_relations er
-            JOIN entities se ON se.id = er.source_id
-            JOIN entities te ON te.id = er.target_id
+            JOIN entities se ON se.id = er.source_entity_id
+            JOIN entities te ON te.id = er.target_entity_id
             WHERE er.created_at > NOW() - INTERVAL '24 hours'
               AND se.community_id IS NOT NULL
               AND te.community_id IS NOT NULL
