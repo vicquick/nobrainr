@@ -222,7 +222,11 @@ class Settings(BaseSettings):
     insight_extraction_interval_hours: float = 1.0
     insight_extraction_batch_size: int = 30
     chatgpt_distill_interval_hours: float = 2.0  # 2h — backlog done, free GPU for fact extraction
-    chatgpt_distill_batch_size: int = 15  # reduced: ~45min/run, releases LLM lock sooner
+    # 2026-05-13 cut 15→10: with batch 15 every other run was hitting the 120m
+    # timeout (per-call work scales linearly, GPU contention from concurrent
+    # quality_scoring tripled the worst-case). Batch 10 keeps run time well
+    # under the (now 180m) ceiling with headroom for one slow conversation.
+    chatgpt_distill_batch_size: int = 10
     chatgpt_distill_concurrency: int = 1
     chatgpt_distill_model: str = "qwen3.6:35b"
     # Fact extraction (NEW — Mem0-style atomic facts)

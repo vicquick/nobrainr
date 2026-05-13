@@ -147,7 +147,13 @@ LLM_JOB_TIMEOUT = 30 * 60  # 30 minutes for larger batch sizes
 
 # Per-job timeout overrides for slow jobs (multi-pass distillation etc.)
 LLM_JOB_TIMEOUT_OVERRIDES = {
-    "chatgpt_distill": 120 * 60,   # 120 minutes — multi-pass × 2 conversations × shared GPU
+    # chatgpt_distill: 2026-05 audit showed every failure was a hard hit
+    # at exactly 7200s (120m). Successful runs landed at 6.4-6.8M ms
+    # (1h45-1h53) — running right at the edge with no headroom. Bumped
+    # to 180m so the long-tail variance (network blips, GPU contention
+    # from quality_scoring) stops killing otherwise-healthy runs. Batch
+    # size is also being cut 15→10 in config so per-run work shrinks.
+    "chatgpt_distill": 180 * 60,
     "community_detection": 90 * 60,  # 42k entities + 50 community summaries = slow
     # quality_scoring: batch=60 × ~90s queue-wait per call when entity extraction
     # is competing for llama-server = 5400s >> 30min default. 60min survives the

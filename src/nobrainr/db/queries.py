@@ -4445,17 +4445,30 @@ async def get_research_candidates(
     Criteria: important entities (5+ mentions) with thin descriptions,
     no web research in the last N days, and no existing crawled memory about them.
     """
+    # NOTE: prior version did ARRAY_AGG(DISTINCT m.content ORDER BY m.importance DESC)
+    # which Postgres rejects with: "in an aggregate with DISTINCT, ORDER BY
+    # expressions must appear in argument list". DISTINCT here was needed because
+    # the entity_memories ↔ memories join can fan out a single memory across
+    # multiple link rows. We push the dedup into a correlated subquery so the
+    # outer ARRAY_AGG keeps its importance ordering without DISTINCT.
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT e.id, e.name, e.entity_type, e.canonical_name,
                    e.description, e.mention_count,
-                   ARRAY_AGG(DISTINCT m.content ORDER BY m.importance DESC)
-                       FILTER (WHERE m.content IS NOT NULL) AS memory_contents
+                   (
+                       SELECT ARRAY_AGG(content ORDER BY importance DESC)
+                       FROM (
+                           SELECT DISTINCT m2.id, m2.content, m2.importance
+                           FROM memories m2
+                           JOIN entity_memories em2 ON em2.memory_id = m2.id
+                           WHERE em2.entity_id = e.id
+                             AND m2.category <> '_archived'
+                             AND m2.content IS NOT NULL
+                       ) sub
+                   ) AS memory_contents
             FROM entities e
-            LEFT JOIN entity_memories em ON em.entity_id = e.id
-            LEFT JOIN memories m ON m.id = em.memory_id AND m.category <> '_archived'
             WHERE e.mention_count >= $1
               AND e.entity_type IN ('technology', 'project', 'concept', 'organization')
               -- No web research event in last N days
@@ -4465,8 +4478,6 @@ async def get_research_candidates(
                     AND ae.metadata->>'entity_id' = e.id::text
                     AND ae.created_at > NOW() - INTERVAL '1 day' * $2
               )
-            GROUP BY e.id, e.name, e.entity_type, e.canonical_name,
-                     e.description, e.mention_count
             ORDER BY e.mention_count DESC
             LIMIT $3
             """,
