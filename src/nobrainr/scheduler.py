@@ -210,6 +210,7 @@ class Scheduler:
             {"name": "maintenance", "interval_hours": settings.maintenance_interval_hours, "type": "sql"},
             {"name": "feedback_integration", "interval_hours": settings.feedback_interval_hours, "type": "sql"},
             {"name": "memory_decay", "interval_hours": settings.decay_interval_hours, "type": "sql"},
+            {"name": "chatgpt_quality_archive", "interval_hours": 24.0, "type": "sql"},
             {"name": "auto_tier", "interval_hours": 6.0, "type": "sql"},
             {"name": "entity_pruning", "interval_hours": 4.0, "type": "sql"},
             {"name": "hub_dampening", "interval_hours": 4.0, "type": "sql"},
@@ -283,6 +284,13 @@ class Scheduler:
                     "memory_decay",
                     self._job_memory_decay,
                     settings.decay_interval_hours * 3600,
+                )
+            ),
+            asyncio.create_task(
+                self._run_periodic(
+                    "chatgpt_quality_archive",
+                    self._job_chatgpt_quality_archive,
+                    24.0 * 3600,  # daily
                 )
             ),
             asyncio.create_task(
@@ -927,6 +935,12 @@ class Scheduler:
         """Archive stale, low-value memories that are never accessed."""
         from nobrainr import scheduler_jobs
         return await scheduler_jobs.memory_decay()
+
+    @staticmethod
+    async def _job_chatgpt_quality_archive() -> dict:
+        """Archive low-importance ChatGPT memories by conversation age."""
+        from nobrainr import scheduler_jobs
+        return await scheduler_jobs.chatgpt_quality_archive()
 
     @staticmethod
     async def _job_auto_tier() -> dict:
