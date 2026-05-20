@@ -550,6 +550,16 @@ async def memory_decay() -> dict:
     return {"archived": count, "ran_at": datetime.now().isoformat()}
 
 
+async def chatgpt_quality_archive() -> dict:
+    """Archive low-importance ChatGPT memories based on conversation age.
+
+    Runs daily. Only touches memories older than 30 days so fresh imports
+    have time to accumulate retrieval reinforcement before being judged.
+    """
+    count = await queries.archive_chatgpt_low_quality(limit=500)
+    return {"archived": count, "ran_at": datetime.now().isoformat()}
+
+
 async def contradiction_detection() -> dict:
     """Find and flag contradicting memories."""
     model = settings.scheduler_llm_model
