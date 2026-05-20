@@ -218,20 +218,34 @@ async def _rerank_http(
     capped = results[: settings.reranker_max_candidates]
     passages = _build_passages(capped)
     texts = [text for text, _meta in passages]
-    url = settings.reranker_url.rstrip("/") + "/rerank"
+    # llama-swap uses OpenAI /v1/rerank format; TEI uses /rerank
+    base = settings.reranker_url.rstrip("/")
+    openai_url = base + "/v1/rerank"
+    tei_url = base + "/rerank"
 
     async with httpx.AsyncClient(timeout=settings.reranker_http_timeout_s) as client:
-        resp = await client.post(url, json={"query": query, "texts": texts})
+        # Try llama-swap/OpenAI format first
+        resp = await client.post(
+            openai_url,
+            json={"model": settings.reranker_model, "query": query, "documents": texts},
+        )
+        if resp.status_code == 404:
+            # Fall back to TEI format
+            resp = await client.post(tei_url, json={"query": query, "texts": texts})
         resp.raise_for_status()
-        scored = resp.json()
+        data = resp.json()
 
-    # TEI returns list of {index, score} sorted by score desc
+    # OpenAI format: {results: [{index, relevance_score}]} sorted by score desc
+    # TEI format: [{index, score}] sorted by score desc
+    raw = data.get("results", data) if isinstance(data, dict) else data
+    score_key = "relevance_score" if "relevance_score" in (raw[0] if raw else {}) else "score"
+
     reranked: list[dict] = []
-    for item in scored[:limit]:
+    for item in raw[:limit]:
         idx = int(item["index"])
         if 0 <= idx < len(passages):
             _text, meta = passages[idx]
-            meta["rerank_score"] = round(float(item["score"]), 4)
+            meta["rerank_score"] = round(float(item[score_key]), 4)
             reranked.append(meta)
     return reranked
 
