@@ -2201,6 +2201,47 @@ async def archive_stale_memories(limit: int = 50) -> int:
         return count
 
 
+async def archive_chatgpt_low_quality(limit: int = 500) -> int:
+    """Archive low-importance ChatGPT memories based on conversation age.
+
+    Applied 30 days after import so memories have time to accumulate retrieval
+    reinforcement before being judged. Protected categories (security,
+    architecture, infrastructure, patterns, insight) use a looser threshold
+    so domain knowledge survives regardless of access frequency.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await _set_provenance(
+                conn,
+                changed_by="scheduler:chatgpt_quality_archive",
+                change_type="quality_archive",
+                change_reason="ChatGPT memory below age-adjusted importance threshold",
+            )
+            result = await conn.execute("""
+                UPDATE memories
+                SET category = '_archived'
+                WHERE id IN (
+                    SELECT id FROM memories
+                    WHERE source_type = 'chatgpt'
+                      AND category != '_archived'
+                      AND created_at < now() - interval '30 days'
+                      AND (
+                        (date_trunc('year', created_at) <= '2024-01-01' AND importance < 0.5) OR
+                        (date_trunc('year', created_at) >= '2025-01-01'
+                         AND importance < 0.4
+                         AND category NOT IN (
+                           'security','architecture','infrastructure','patterns','insight'
+                         ))
+                      )
+                    ORDER BY importance ASC, created_at ASC
+                    LIMIT $1
+                )
+            """, limit)
+        count = int(result.split()[-1])
+        return count
+
+
 async def get_unscored_memories(limit: int = 20) -> list[dict]:
     """Get memories that haven't been quality-scored yet."""
     pool = await get_pool()
