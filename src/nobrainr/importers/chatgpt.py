@@ -443,9 +443,12 @@ async def distill_conversations(
                         logger.warning("Embedding failed for learning from '%s', skipping", title)
                         continue
 
-                    # Clamp LLM confidence to [0.1, 1.0]
+                    # Clamp LLM confidence to [0.1, 1.0]; skip below 0.5
                     raw_conf = learning.get("confidence", 0.5)
                     conf = max(0.1, min(1.0, float(raw_conf))) if isinstance(raw_conf, (int, float)) else 0.5
+                    if conf < 0.5:
+                        logger.debug("Skipping low-confidence learning (%.2f) from '%s'", conf, title)
+                        continue
 
                     await queries.store_memory(
                         content=full_content,
