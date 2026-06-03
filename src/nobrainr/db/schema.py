@@ -555,6 +555,21 @@ RETURNS TRIGGER AS $$
 DECLARE
     next_ver int;
 BEGIN
+    -- Skip version row when only metric fields changed (quality_score, trust_score,
+    -- tier, access_count, last_accessed_at, updated_at, embedding, etc.).
+    -- These fields are updated by scheduler jobs thousands of times per day and
+    -- have no value in version history — only content/summary/tags/category/confidence
+    -- changes are worth snapshotting.
+    IF TG_OP = 'UPDATE' AND NOT (
+        OLD.content     IS DISTINCT FROM NEW.content     OR
+        OLD.summary     IS DISTINCT FROM NEW.summary     OR
+        OLD.tags        IS DISTINCT FROM NEW.tags        OR
+        OLD.category    IS DISTINCT FROM NEW.category    OR
+        OLD.confidence  IS DISTINCT FROM NEW.confidence
+    ) THEN
+        RETURN NEW;
+    END IF;
+
     SELECT COALESCE(MAX(version), -1) + 1 INTO next_ver
     FROM memory_versions WHERE memory_id = OLD.id;
 
