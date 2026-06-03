@@ -1710,13 +1710,37 @@ async def analyze_tables() -> dict:
         await conn.execute("ANALYZE entity_memories")
         await conn.execute("ANALYZE entity_relations")
 
-        # Audit log retention — 7 days
+        # Audit log retention — tiered TTL.
+        # entities/entity_relations: 3 days. community_detection runs every 90 min
+        # and churns ~350K entity UPDATE rows/day (community_id changes). 3 days
+        # is plenty for forensic use; 7 days was accumulating ~1M rows/week.
+        # All other tables: 7 days (memories audit is sparse).
+        audit_entity_result = await conn.execute(
+            "DELETE FROM audit_log "
+            "WHERE table_name IN ('entities', 'entity_relations') "
+            "AND created_at < NOW() - INTERVAL '3 days'"
+        )
+        audit_entity_pruned = int(audit_entity_result.split()[-1]) if audit_entity_result else 0
+
         audit_result = await conn.execute(
-            "DELETE FROM audit_log WHERE created_at < NOW() - INTERVAL '7 days'"
+            "DELETE FROM audit_log "
+            "WHERE table_name NOT IN ('entities', 'entity_relations') "
+            "AND created_at < NOW() - INTERVAL '7 days'"
         )
         audit_pruned = int(audit_result.split()[-1]) if audit_result else 0
+        audit_pruned += audit_entity_pruned
 
-        # memory_versions retention — keep last 5 per memory_id
+        # memory_versions retention — two passes:
+        # 1) Delete all rows where content_changed=false immediately. These are
+        #    metric-only updates (quality_score, trust_score, tier) with zero
+        #    value as version history. The trigger now skips writing these, but
+        #    old rows that slipped through need to be cleaned up.
+        # 2) Keep last 5 content-changed versions per memory_id.
+        metric_versions_result = await conn.execute(
+            "DELETE FROM memory_versions WHERE content_changed = false"
+        )
+        metric_versions_pruned = int(metric_versions_result.split()[-1]) if metric_versions_result else 0
+
         versions_result = await conn.execute(
             """
             DELETE FROM memory_versions
@@ -1732,6 +1756,7 @@ async def analyze_tables() -> dict:
             """
         )
         versions_pruned = int(versions_result.split()[-1]) if versions_result else 0
+        versions_pruned += metric_versions_pruned
 
         # scheduler_runs retention — 30 days (added 2026-05-08).
         # Index idx_scheduler_runs_task_recent is on (task_name, started_at DESC)
