@@ -133,19 +133,37 @@ async def detect_communities(
         for e in edges
     ]
 
+    # Exclude high-degree hub entities before community detection.
+    # Hub entities (e.g. "bimavo", "docker", "nobrainr") bridge otherwise-distinct
+    # domains and cause Leiden to merge unrelated communities into mega-clusters.
+    # Threshold: entities connected to >150 distinct other entities are hubs.
+    # They're re-assigned post-detection to the community of their most-connected
+    # non-hub neighbour so they don't become singletons.
+    from collections import Counter as _Counter
+    degree: _Counter = _Counter()
+    for src, tgt, _ in edge_tuples:
+        degree[src] += 1
+        degree[tgt] += 1
+    HUB_THRESHOLD = 150
+    hub_ids = {nid for nid, d in degree.items() if d > HUB_THRESHOLD}
+    if hub_ids:
+        logger.info("Excluding %d hub entities (degree > %d) from community detection", len(hub_ids), HUB_THRESHOLD)
+    filtered_nodes = [nid for nid in node_ids if nid not in hub_ids]
+    filtered_edges = [(s, t, w) for s, t, w in edge_tuples if s not in hub_ids and t not in hub_ids]
+
     algo = "leiden"
     try:
-        communities = _run_leiden(node_ids, edge_tuples, resolution=resolution)
+        communities = _run_leiden(filtered_nodes, filtered_edges, resolution=resolution)
     except ImportError:
         logger.warning(
             "leidenalg/igraph not installed — falling back to Louvain. "
             "Install `leidenalg` + `python-igraph` for guaranteed connected clusters."
         )
-        communities = _run_louvain(node_ids, edge_tuples, resolution=resolution)
+        communities = _run_louvain(filtered_nodes, filtered_edges, resolution=resolution)
         algo = "louvain_fallback"
     except Exception:
         logger.exception("Leiden failed unexpectedly, falling back to Louvain")
-        communities = _run_louvain(node_ids, edge_tuples, resolution=resolution)
+        communities = _run_louvain(filtered_nodes, filtered_edges, resolution=resolution)
         algo = "louvain_fallback"
 
     # Filter out singleton/tiny communities
@@ -177,6 +195,19 @@ async def detect_communities(
         comm_id = int(sig[:8], 16) & 0x7FFFFFFF  # 31-bit, fits in PG int
         for node_id in members:
             community_assignments[node_id] = comm_id
+
+    # Re-assign hub entities to the community of their most-connected non-hub neighbour.
+    # Hubs were excluded from Leiden to prevent mega-cluster formation, but they
+    # still need a community_id so they're searchable and not left as singletons.
+    for hub in hub_ids:
+        neighbour_votes: _Counter = _Counter()
+        for src, tgt, _ in edge_tuples:
+            if src == hub and tgt in community_assignments:
+                neighbour_votes[community_assignments[tgt]] += 1
+            elif tgt == hub and src in community_assignments:
+                neighbour_votes[community_assignments[src]] += 1
+        if neighbour_votes:
+            community_assignments[hub] = neighbour_votes.most_common(1)[0][0]
 
     # Store community assignments in entities table using a SINGLE delta-only
     # bulk update. The previous pattern — "UPDATE entities SET community_id =
@@ -254,7 +285,7 @@ async def detect_communities(
     }
 
 
-async def generate_community_summaries(*, max_communities: int = 50) -> dict:
+async def generate_community_summaries(*, max_communities: int = 500) -> dict:
     """Generate LLM summaries for each detected community.
 
     Returns:
@@ -263,10 +294,13 @@ async def generate_community_summaries(*, max_communities: int = 50) -> dict:
     pool = await get_pool()
 
     async with pool.acquire() as conn:
-        # Get distinct communities with their entities
+        # Get distinct communities with their entities, ordered by mention_count
+        # so the most prominent entities (not random insertion order) define the title.
         rows = await conn.fetch("""
-            SELECT community_id, array_agg(name) AS names, array_agg(entity_type) AS types,
-                   array_agg(COALESCE(description, '')) AS descriptions
+            SELECT community_id,
+                   array_agg(name ORDER BY mention_count DESC NULLS LAST) AS names,
+                   array_agg(entity_type ORDER BY mention_count DESC NULLS LAST) AS types,
+                   array_agg(COALESCE(description, '') ORDER BY mention_count DESC NULLS LAST) AS descriptions
             FROM entities
             WHERE community_id IS NOT NULL
             GROUP BY community_id
