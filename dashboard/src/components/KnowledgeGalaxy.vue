@@ -92,11 +92,13 @@
     </Transition>
 
     <!-- Loading state -->
-    <div v-if="loading" class="galaxy-loading">
-      <v-progress-circular indeterminate size="48" />
-      <div class="text-body-medium mt-2">Computing knowledge galaxy...</div>
-      <div class="text-body-small text-medium-emphasis mt-1">UMAP dimensionality reduction on {{ estimatedCount.toLocaleString() }} memories</div>
-    </div>
+    <Transition name="galaxy-loader">
+      <div v-if="loading" class="galaxy-loading">
+        <span class="galaxy-loading-ornament" aria-hidden="true">❦</span>
+        <Dotty class="galaxy-loading-dots" />
+        <p class="galaxy-loading-label">Computing knowledge galaxy</p>
+      </div>
+    </Transition>
 
     <!-- Three.js canvas -->
     <canvas ref="canvasRef" class="galaxy-canvas" v-show="loaded" role="img" aria-label="Knowledge Galaxy" />
@@ -107,6 +109,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, shallowRef, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import api from '@/api/client'
+import Dotty from '@/components/Dotty.vue'
 
 // ---------------------------------------------------------------------------
 // Category colors — matches nobrainr canonical categories
@@ -683,12 +686,14 @@ async function loadData() {
       }
 
       loaded.value = true
+    } else {
+      loading.value = false
     }
   } catch (err) {
     console.error('Failed to load galaxy data:', err)
-  } finally {
     loading.value = false
   }
+  // loading stays true when loaded === true; cleared after buildPoints() in onMounted
 }
 
 // ---------------------------------------------------------------------------
@@ -699,10 +704,13 @@ onMounted(async () => {
 
   if (loaded.value) {
     await nextTick()
+    // One RAF so the spinner gets a paint cycle before heavy init
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
     const deps = await loadThree()
     initScene(deps)
     if (!renderer || !camera || !scene) return
     buildPoints()
+    loading.value = false
 
     let isVisible = true
     let mouseOverCanvas = false
@@ -970,12 +978,48 @@ watch(colorMode, () => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: var(--cp-ink-mute);
-  z-index: 5;
-  font-family: Georgia, serif;
-  font-style: italic;
-  letter-spacing: 0.05em;
+  gap: 14px;
+  background: #000000;
+  z-index: 10;
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
 }
+
+.galaxy-loading-ornament {
+  display: block;
+  font-size: 28px;
+  color: var(--cp-gold);
+  animation: ornament-breathe 2s ease-in-out infinite;
+  line-height: 1;
+}
+
+@keyframes ornament-breathe {
+  0%, 100% { opacity: 0.5; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.12); }
+}
+
+.galaxy-loading-dots {
+  opacity: 0.6;
+}
+
+.galaxy-loading-label {
+  font-style: italic;
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--cp-gold-soft);
+  margin: 0;
+}
+
+/* ── Galaxy loader transition ───────────────────────── */
+.galaxy-loader-enter-active {
+  transition: opacity 350ms var(--cp-ease);
+  transition-delay: 100ms;
+}
+.galaxy-loader-enter-from { opacity: 0; }
+.galaxy-loader-leave-active {
+  transition: opacity 600ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.galaxy-loader-leave-to { opacity: 0; }
 
 /* Transitions — slide+fade on the detail panel, codex tokens. */
 .galaxy-panel-enter-active {
