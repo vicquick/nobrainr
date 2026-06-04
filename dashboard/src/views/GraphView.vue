@@ -1,8 +1,7 @@
 <template>
   <v-container fluid class="fill-height pa-0 d-flex flex-column">
-    <!-- Compact toolbar -->
+    <!-- Toolbar — zoom/fit/refresh moved to floating cluster -->
     <div class="d-flex align-center ga-2 px-3 py-1 toolbar">
-      <!-- View mode toggle -->
       <v-btn-toggle v-model="viewMode" mandatory density="compact" variant="outlined" class="view-toggle mr-2">
         <v-btn value="communities" size="x-small">
           <v-icon size="14" class="mr-1">mdi-circle-multiple-outline</v-icon>
@@ -14,7 +13,6 @@
         </v-btn>
       </v-btn-toggle>
 
-      <!-- Back button when drilled into a community -->
       <v-btn
         v-if="drillCommunityId !== null"
         size="x-small"
@@ -49,12 +47,6 @@
         style="max-width: 180px;"
         density="compact"
       />
-      <div class="d-flex align-center ga-0">
-        <v-btn icon="mdi-minus" variant="text" size="x-small" aria-label="Zoom out" @click="zoomOut" />
-        <v-btn icon="mdi-plus" variant="text" size="x-small" aria-label="Zoom in" @click="zoomIn" />
-        <v-btn icon="mdi-fit-to-screen-outline" variant="text" size="x-small" aria-label="Fit graph to screen" @click="resetCamera" />
-        <v-btn icon="mdi-refresh" variant="text" size="x-small" aria-label="Refresh graph data" @click="refreshGraph" />
-      </div>
     </div>
 
     <!-- Status bar -->
@@ -76,28 +68,73 @@
       </span>
     </div>
 
-    <!-- Canvas + Entity Side Panel -->
+    <!-- Canvas + side panel -->
     <div class="graph-area" :class="{ 'panel-open': panelOpen }">
       <div ref="sigmaContainer" class="sigma-canvas" />
-      <!-- Loading overlay (on top of canvas so container always has dimensions) -->
-      <div v-if="loading" class="loading-overlay">
-        <div class="text-center">
-          <v-progress-circular indeterminate color="primary" size="40" width="2" class="mb-3" />
-          <div class="text-caption text-medium-emphasis">Loading graph...</div>
+
+      <!-- Loading overlay — delayed fade-in, smooth fade-out -->
+      <Transition name="graph-loader">
+        <div v-if="loading" class="loading-overlay" aria-live="polite" aria-label="Loading graph">
+          <div class="loading-inner">
+            <span class="loading-ornament" aria-hidden="true">❦</span>
+            <Dotty />
+            <span class="loading-label">Tracing the graph…</span>
+          </div>
         </div>
-      </div>
+      </Transition>
+
       <div v-if="panelOpen" class="entity-panel">
         <GraphSidePanel :node="selectedNode" :loading="nodeLoading" :highlight="searchQuery" @close="handleClosePanel" @navigate="handleNavigateEntity" />
       </div>
+
+      <!-- Floating zoom/fit/refresh cluster — top-right, vertical, all screen sizes -->
+      <div class="graph-zoom-float" aria-label="Graph view controls">
+        <button class="gzf-btn" @click="refreshGraph" title="Refresh" aria-label="Refresh graph data">
+          <v-icon size="14">mdi-refresh</v-icon>
+        </button>
+        <div class="gzf-rule" aria-hidden="true" />
+        <button class="gzf-btn" @click="resetCamera" title="Fit to screen" aria-label="Fit graph to screen">
+          <v-icon size="14">mdi-fit-to-screen-outline</v-icon>
+        </button>
+        <button class="gzf-btn" @click="zoomIn" title="Zoom in" aria-label="Zoom in">
+          <v-icon size="14">mdi-plus</v-icon>
+        </button>
+        <button class="gzf-btn" @click="zoomOut" title="Zoom out" aria-label="Zoom out">
+          <v-icon size="14">mdi-minus</v-icon>
+        </button>
+      </div>
     </div>
 
-    <!-- Mobile bottom sheet for entity panel -->
-    <v-bottom-sheet v-if="mobile" v-model="showMobilePanel" :scrim="false">
-      <v-card color="#12121a" class="mobile-entity-sheet" rounded="t-xl">
-        <div class="sheet-handle" />
-        <GraphSidePanel :node="selectedNode" :loading="nodeLoading" :highlight="searchQuery" @close="handleClosePanel" @navigate="handleNavigateEntity" />
-      </v-card>
-    </v-bottom-sheet>
+    <!-- Mobile bottom drawer — drag stripe to expand/collapse -->
+    <Transition name="mob-drawer">
+      <div
+        v-if="mobile && selectedNode"
+        class="mobile-drawer"
+        :class="{ 'mobile-drawer--expanded': drawerExpanded }"
+      >
+        <!-- Bright stripe — visible at midscreen, drag handle -->
+        <div
+          class="drawer-stripe"
+          @touchstart.passive="onDragStart"
+          @touchmove.passive="onDragMove"
+          @touchend="onDragEnd"
+        >
+          <div class="drawer-handle" aria-hidden="true" />
+          <span class="drawer-label">{{ selectedNode?.entity?.canonical_name }}</span>
+          <button class="drawer-close-btn" @click.stop="handleClosePanel" aria-label="Close panel">✕</button>
+        </div>
+        <!-- Scrollable content -->
+        <div class="drawer-content">
+          <GraphSidePanel
+            :node="selectedNode"
+            :loading="nodeLoading"
+            :highlight="searchQuery"
+            @close="handleClosePanel"
+            @navigate="handleNavigateEntity"
+          />
+        </div>
+      </div>
+    </Transition>
   </v-container>
 </template>
 
@@ -113,6 +150,7 @@ import { useGraph } from '@/composables/useGraph'
 import { useSSE } from '@/composables/useSSE'
 import { useChatStore } from '@/stores/chat'
 import GraphSidePanel from '@/components/GraphSidePanel.vue'
+import Dotty from '@/components/Dotty.vue'
 
 const TYPE_COLORS: Record<string, string> = {
   person: '#5c7cfacc',
@@ -144,17 +182,43 @@ const focusedLabel = ref('')
 const viewMode = ref<'communities' | 'entities'>('entities')
 const drillCommunityId = ref<number | null>(null)
 
-const panelOpen = computed(() => !!selectedNode.value && !mobile.value)
-const showMobilePanel = computed({
-  get: () => mobile.value && !!selectedNode.value,
-  set: (v) => { if (!v) handleClosePanel() },
+// Mobile drawer state
+const drawerExpanded = ref(false)
+let dragStartY = 0
+let dragDelta = 0
+
+function onDragStart(e: TouchEvent) {
+  dragStartY = e.touches[0].clientY
+  dragDelta = 0
+}
+
+function onDragMove(e: TouchEvent) {
+  dragDelta = e.touches[0].clientY - dragStartY
+}
+
+function onDragEnd(e: TouchEvent) {
+  e.preventDefault() // prevent synthetic click from toggle-firing twice
+  const delta = e.changedTouches[0].clientY - dragStartY
+  if (Math.abs(delta) > 32) {
+    drawerExpanded.value = delta < 0 // swipe up = expand, down = collapse
+  } else {
+    drawerExpanded.value = !drawerExpanded.value // tap = toggle
+  }
+  dragDelta = 0
+}
+
+// Reset drawer position when node is deselected
+watch(selectedNode, (node) => {
+  if (!node) drawerExpanded.value = false
 })
+
+const panelOpen = computed(() => !!selectedNode.value && !mobile.value)
 
 let graph: Graph | null = null
 let renderer: Sigma | null = null
 let resizeObserver: ResizeObserver | null = null
 
-// Custom label renderer with dark background plate
+// Custom label renderer with dark background plate — uses Georgia for consistency
 function drawLabelWithBg(
   context: CanvasRenderingContext2D,
   data: Record<string, any>,
@@ -172,7 +236,6 @@ function drawLabelWithBg(
   const x = data.x + data.size + 3
   const y = data.y + size / 3
 
-  // Background plate — tight to text
   const px = 4, r = 3
   const rx = x - px, ry = y - size + 1
   const rw = textWidth + px * 2, rh = size + 3
@@ -194,7 +257,6 @@ function drawLabelWithBg(
   context.fillText(data.label, x, y)
 }
 
-// Node program with subtle border for depth
 const BorderedNodeProgram = createNodeBorderProgram({
   borders: [
     { size: { value: 0.12 }, color: { value: '#2a2a36' } },
@@ -284,7 +346,6 @@ function initSigma() {
     renderer = null
   }
 
-  // Clear stale highlight state — node IDs from previous graph may not exist
   chatFocusedNodes.clear()
   chatFocusedNeighbors.clear()
   focusedNode = null
@@ -295,7 +356,6 @@ function initSigma() {
 
   const communities = new Set<number>()
 
-  // When drilled into a community, only show that community's entities
   const drillFilter = drillCommunityId.value
   const filteredNodes = drillFilter !== null
     ? graphData.value.nodes.filter(n => n.data.community === drillFilter)
@@ -339,32 +399,24 @@ function initSigma() {
   edgeCount.value = graph.size
   communityCount.value = communities.size
 
-  // Identify hub nodes for edge filtering at overview level
   hubNodes.clear()
   graph.forEachNode((node) => {
     if (graph!.degree(node) >= 10) hubNodes.add(node)
   })
 
   renderer = new Sigma(graph, sigmaContainer.value, {
-    // Edge rendering — gl.LINES for performance
     defaultEdgeType: 'line',
     edgeProgramClasses: { line: EdgeLineProgram },
-
-    // Performance
     enableEdgeEvents: false,
-
-    // Labels
     drawLabel: drawLabelWithBg,
     renderLabels: true,
     labelColor: { attribute: 'labelColor', defaultValue: 'rgba(255, 255, 255, 0.7)' },
     labelSize: 11,
-    labelFont: '"Inter", system-ui, sans-serif',
+    labelFont: 'Georgia, "Palatino Linotype", Palatino, serif',
     labelWeight: '500',
     labelDensity: 0.12,
     labelGridCellSize: 100,
     labelRenderedSizeThreshold: 5,
-
-    // Defaults
     defaultNodeColor: '#6b7280aa',
     defaultEdgeColor: '#242438',
     stagePadding: 40,
@@ -375,13 +427,11 @@ function initSigma() {
       const res = { ...data }
       const type = graph!.getNodeAttribute(node, 'nodeType')
 
-      // Type filter
       if (activeTypes.value.size < entityTypes.length && !activeTypes.value.has(type)) {
         res.hidden = true
         return res
       }
 
-      // Click-focus takes priority
       if (focusedNode) {
         if (node === focusedNode) {
           res.zIndex = 2
@@ -402,7 +452,6 @@ function initSigma() {
         return res
       }
 
-      // Chat focus: entities from chatbot response — same visual treatment as click-focus
       if (chatFocusedNodes.size > 0) {
         if (chatFocusedNodes.has(node)) {
           res.zIndex = 2
@@ -423,7 +472,6 @@ function initSigma() {
         return res
       }
 
-      // Search: highlight matches, dim others
       if (searchMatches.size > 0) {
         if (searchMatches.has(node)) {
           res.zIndex = 1
@@ -438,7 +486,6 @@ function initSigma() {
         return res
       }
 
-      // Hover: show label with high contrast
       if (hoveredNode === node) {
         res.forceLabel = true
         res.labelColor = '#000000'
@@ -451,7 +498,6 @@ function initSigma() {
     edgeReducer(edge, data) {
       const res = { ...data }
 
-      // Click-focus: show only edges to focused node
       if (focusedNode) {
         if (graph!.extremities(edge).includes(focusedNode)) {
           res.color = '#5c5c8a'
@@ -463,7 +509,6 @@ function initSigma() {
         return res
       }
 
-      // Chat focus: show edges where at least one extremity is chat-focused
       if (chatFocusedNodes.size > 0) {
         const [src, tgt] = graph!.extremities(edge)
         if (chatFocusedNodes.has(src) || chatFocusedNodes.has(tgt)) {
@@ -476,7 +521,6 @@ function initSigma() {
         return res
       }
 
-      // Search: show only edges between matches
       if (searchMatches.size > 0) {
         const [src, tgt] = graph!.extremities(edge)
         if (!searchMatches.has(src) || !searchMatches.has(tgt)) {
@@ -487,9 +531,6 @@ function initSigma() {
         return res
       }
 
-      // Hover (with no active selection): light up edges touching
-      // the hovered node so the local subgraph reads as a unit.
-      // Other edges fall through to the hub-only filter below.
       if (hoveredNode) {
         const [src, tgt] = graph!.extremities(edge)
         if (src === hoveredNode || tgt === hoveredNode) {
@@ -500,7 +541,6 @@ function initSigma() {
         }
       }
 
-      // Default overview: only show edges between hub nodes
       const [src, tgt] = graph!.extremities(edge)
       if (!hubNodes.has(src) || !hubNodes.has(tgt)) {
         res.hidden = true
@@ -510,7 +550,6 @@ function initSigma() {
     },
   })
 
-  // Hover events
   renderer.on('enterNode', ({ node }) => {
     hoveredNode = node
     hoveredNeighbors.clear()
@@ -525,13 +564,11 @@ function initSigma() {
     renderer?.refresh()
   })
 
-  // Click to focus + open side panel
   renderer.on('clickNode', async ({ node }) => {
     focusNode(node)
     await fetchNodeDetail(node)
   })
 
-  // Click background to deselect — clear all highlights, restore full graph
   renderer.on('clickStage', () => {
     unfocusNode()
     clearSelection()
@@ -598,7 +635,7 @@ function initCommunitySigma() {
     renderLabels: true,
     labelColor: { attribute: 'labelColor', defaultValue: 'rgba(255, 255, 255, 0.85)' },
     labelSize: 13,
-    labelFont: '"Inter", system-ui, sans-serif',
+    labelFont: 'Georgia, "Palatino Linotype", Palatino, serif',
     labelWeight: '600',
     labelDensity: 0.5,
     labelGridCellSize: 120,
@@ -611,9 +648,6 @@ function initCommunitySigma() {
 
     nodeReducer(node, data) {
       const res = { ...data }
-      // Hover takes precedence in the community overview — when nothing
-      // is selected, hovering a community should pop it forward and
-      // gently quiet the rest of the field.
       if (hoveredNode) {
         if (hoveredNode === node) {
           res.zIndex = 2
@@ -630,7 +664,6 @@ function initCommunitySigma() {
           res.label = ''
         }
       }
-      // Search filter
       if (searchMatches.size > 0) {
         if (searchMatches.has(node)) {
           res.forceLabel = true
@@ -670,7 +703,6 @@ function initCommunitySigma() {
     renderer?.refresh()
   })
 
-  // Click community → drill into entity view for that community
   renderer.on('clickNode', async ({ node }) => {
     const communityId = graph!.getNodeAttribute(node, 'communityId')
     if (communityId !== undefined) {
@@ -686,7 +718,6 @@ function initCommunitySigma() {
 async function drillIntoCommunity(communityId: number) {
   drillCommunityId.value = communityId
   viewMode.value = 'entities'
-  // fetchGraph will load full graph; we filter in initSigma via drillCommunityId
   await fetchGraph()
   await nextTick()
   requestAnimationFrame(() => {
@@ -747,7 +778,6 @@ watch(searchQuery, (q) => {
   }, 200)
 })
 
-// Navigate to a connected entity from side panel — focus + load details
 async function handleNavigateEntity(entityId: string) {
   if (!entityId || !graph) return
   if (graph.hasNode(entityId)) {
@@ -756,7 +786,6 @@ async function handleNavigateEntity(entityId: string) {
   await fetchNodeDetail(entityId)
 }
 
-// Watch single entity focus from chat — click-focus on graph + open side panel
 watch(() => chatStore.focusEntityId, async (entityId) => {
   if (!entityId || !graph || !graph.hasNode(entityId)) return
   focusNode(entityId)
@@ -764,16 +793,13 @@ watch(() => chatStore.focusEntityId, async (entityId) => {
   chatStore.clearFocus()
 })
 
-// Watch chat sources — populate chatFocusedNodes with full click-focus treatment
 watch(() => chatStore.currentSources, async (sources) => {
   if (!sources || !graph) return
 
-  // Clear single click-focus to avoid conflicts
   focusedNode = null
   focusedNeighbors.clear()
   clearSelection()
 
-  // Purge any stale IDs from previous graph reloads
   for (const id of chatFocusedNodes) {
     if (!graph.hasNode(id)) chatFocusedNodes.delete(id)
   }
@@ -788,7 +814,6 @@ watch(() => chatStore.currentSources, async (sources) => {
     }
   }
 
-  // Compute neighbors: union of all neighbors of all chat-focused nodes
   chatFocusedNeighbors.clear()
   for (const nodeId of chatFocusedNodes) {
     if (!graph.hasNode(nodeId)) continue
@@ -797,7 +822,6 @@ watch(() => chatStore.currentSources, async (sources) => {
     })
   }
 
-  // Update status bar
   focusedLabel.value = chatFocusedNodes.size > 0
     ? `${chatFocusedNodes.size} chat entities`
     : ''
@@ -805,7 +829,6 @@ watch(() => chatStore.currentSources, async (sources) => {
   if (chatFocusedNodes.size > 0) {
     renderer?.refresh()
     if (added) zoomToNodes(chatFocusedNodes)
-    // Open side panel for the first new entity
     if (firstEntityId) {
       await fetchNodeDetail(firstEntityId)
     }
@@ -814,7 +837,6 @@ watch(() => chatStore.currentSources, async (sources) => {
   }
 })
 
-// Clear conversation highlights when chat history is cleared
 watch(() => chatStore.messages.length, (len) => {
   if (len === 0) {
     chatFocusedNodes.clear()
@@ -858,7 +880,6 @@ async function refreshGraph() {
   }
 }
 
-// Watch view mode changes (from toggle button)
 watch(viewMode, async (mode) => {
   if (mode === 'communities' && drillCommunityId.value === null) {
     await switchToCommunityView()
@@ -867,7 +888,6 @@ watch(viewMode, async (mode) => {
   }
 })
 
-// SSE: don't rebuild the graph while the user is looking at it — just track staleness
 const graphStale = ref(false)
 useSSE((evt) => {
   if (['memory_created', 'memory_deleted'].includes(evt.type)) {
@@ -875,7 +895,6 @@ useSSE((evt) => {
   }
 })
 
-// Wait until the container has non-zero dimensions (flex layout settled)
 function waitForLayout(): Promise<void> {
   return new Promise((resolve) => {
     const check = () => {
@@ -898,6 +917,8 @@ onMounted(async () => {
   }
   await nextTick()
   await waitForLayout()
+  // One RAF before heavy init so the loading overlay renders its first animation frame
+  await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
   if (viewMode.value === 'communities') {
     initCommunitySigma()
   } else {
@@ -905,7 +926,6 @@ onMounted(async () => {
   }
   loading.value = false
 
-  // ResizeObserver: auto-resize Sigma when container changes (panel open/close, window resize)
   if (sigmaContainer.value) {
     resizeObserver = new ResizeObserver(() => {
       renderer?.resize()
@@ -914,10 +934,6 @@ onMounted(async () => {
     resizeObserver.observe(sigmaContainer.value)
   }
 
-  // Honour ?focus=<entity-id> so cross-surface entity links from
-  // MemoryDetail / ThreadDetailView land here with the side panel
-  // pre-opened on that entity. We push without the query so a
-  // refresh doesn't re-trigger the focus.
   await maybeApplyFocusFromQuery()
 })
 
@@ -928,10 +944,6 @@ async function maybeApplyFocusFromQuery() {
     focusNode(focusId)
     await fetchNodeDetail(focusId)
   } else {
-    // The entity may exist in the database but not yet in the loaded
-    // graph (filtered by category, or below the rendered subset).
-    // Fetching the detail still opens the side panel with the full
-    // record + connections; the user can then navigate from there.
     await fetchNodeDetail(focusId)
   }
   router.replace({ path: '/graph', query: {} })
@@ -944,9 +956,6 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-/* Graph view chrome dressed in parchment palette. Sigma canvas itself
-   keeps its dark fill — the graph nodes/edges are coloured per entity
-   type by the renderer, not by CSS. */
 .graph-area {
   --panel-width: 420px;
   --cp-gold: #c8a96e;
@@ -970,19 +979,55 @@ onUnmounted(() => {
   height: 100%;
   background: #0e0b06;
 }
+
+/* ── Loading overlay — delayed entry, smooth exit ──────────────── */
 .loading-overlay {
   position: absolute;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(14, 11, 6, 0.95);
+  background: rgba(14, 11, 6, 0.90);
   z-index: 10;
-  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
-  font-style: italic;
-  color: rgba(238, 224, 196, 0.65);
+  pointer-events: none;
 }
-.loading-overlay :deep(.v-progress-circular) { color: #c8a96e !important; }
+.loading-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
+}
+.loading-ornament {
+  font-size: 34px;
+  color: rgba(200, 169, 110, 0.55);
+  line-height: 1;
+  animation: ornament-breathe 2.8s ease-in-out infinite;
+}
+@keyframes ornament-breathe {
+  0%, 100% { opacity: 0.35; transform: scale(1); }
+  50%       { opacity: 0.75; transform: scale(1.12); }
+}
+.loading-label {
+  font-style: italic;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(238, 224, 196, 0.38);
+}
+
+/* Delayed enter — only appears if loading takes >100ms; exits smoothly */
+.graph-loader-enter-active {
+  transition: opacity 350ms ease;
+  transition-delay: 100ms;
+}
+.graph-loader-enter-from { opacity: 0; }
+.graph-loader-leave-active {
+  transition: opacity 600ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.graph-loader-leave-to { opacity: 0; }
+
+/* ── Entity side panel ─────────────────────────────────────────── */
 .entity-panel {
   position: absolute;
   right: 0;
@@ -995,46 +1040,156 @@ onUnmounted(() => {
   z-index: 5;
   font-family: Georgia, serif;
 }
-/* Tablet: narrower panel */
-@media (min-width: 600px) and (max-width: 960px) {
-  .graph-area { --panel-width: 340px; }
+
+/* ── Floating zoom cluster ─────────────────────────────────────── */
+.graph-zoom-float {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  background: rgba(14, 11, 6, 0.80);
+  border: 1px solid rgba(200, 169, 110, 0.20);
+  border-radius: 4px;
+  padding: 3px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
 }
-@media (max-width: 960px) {
-  .graph-area { transition: none; }
+.gzf-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 2px;
+  cursor: pointer;
+  color: rgba(238, 224, 196, 0.50);
+  transition:
+    color 150ms ease,
+    background 150ms ease;
+  padding: 0;
 }
-/* Small mobile: hide search field, let pills-scroll claim all spare
-   horizontal space, and tighten everything around it. The default
-   v-spacer steals flex-grow:1 and crushes the pills strip — so we
-   hide it at this viewport and give pills-scroll the grow instead. */
-@media (max-width: 480px) {
-  .toolbar :deep(.v-text-field) { display: none; }
-  .toolbar :deep(.v-spacer) { display: none; }
-  .pills-scroll {
-    flex: 1 1 0;
-    /* Soft fade on the trailing edge hints there's more to scroll. */
-    -webkit-mask-image:
-      linear-gradient(90deg, #000 0, #000 calc(100% - 24px), transparent 100%);
-            mask-image:
-      linear-gradient(90deg, #000 0, #000 calc(100% - 24px), transparent 100%);
-  }
-  .type-pill { padding: 2px 6px; font-size: 10px; }
-  /* The view-toggle is already two short labels but takes too much room
-     when paired with zoom buttons on a 375px viewport. Make it tighter. */
-  .toolbar :deep(.view-toggle .v-btn) { padding: 0 6px !important; min-width: 0 !important; }
+.gzf-btn:hover {
+  color: rgba(200, 169, 110, 0.90);
+  background: rgba(200, 169, 110, 0.08);
 }
-/* Mobile bottom sheet entity panel */
-.mobile-entity-sheet {
-  max-height: 70vh;
-  overflow-y: auto;
-  background: linear-gradient(180deg, #14110a 0%, #0e0b06 100%) !important;
+.gzf-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--cp-focus-ring);
 }
-.sheet-handle {
-  width: 40px;
+.gzf-rule {
+  width: 16px;
+  height: 1px;
+  background: rgba(200, 169, 110, 0.14);
+  margin: 2px 0;
+  flex-shrink: 0;
+}
+
+/* ── Mobile drawer ─────────────────────────────────────────────── */
+.mobile-drawer {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  /* Fixed height — transform slides up/down to reveal half or all */
+  height: 88vh;
+  transform: translateY(30vh); /* default: show bottom 58vh */
+  transition: transform 340ms cubic-bezier(0, 0, 0.2, 1);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg, #14110a 0%, #0e0b06 100%);
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
+}
+.mobile-drawer--expanded {
+  transform: translateY(0); /* show full 88vh */
+}
+
+/* Transition: slide up from fully below viewport */
+.mob-drawer-enter-active {
+  transition: transform 360ms cubic-bezier(0, 0, 0.2, 1);
+}
+.mob-drawer-leave-active {
+  transition: transform 260ms cubic-bezier(0.4, 0, 1, 1);
+}
+.mob-drawer-enter-from,
+.mob-drawer-leave-to {
+  transform: translateY(100%) !important;
+}
+
+/* ── Bright stripe — the visual "midscreen" seam ──────────────── */
+.drawer-stripe {
+  flex-shrink: 0;
+  height: 36px;
+  border-top: 2px solid rgba(200, 169, 110, 0.48);
+  background: linear-gradient(
+    180deg,
+    rgba(200, 169, 110, 0.12) 0%,
+    rgba(14, 11, 6, 0.0) 100%
+  );
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  gap: 10px;
+  cursor: ns-resize;
+  touch-action: none;
+  user-select: none;
+}
+.drawer-handle {
+  width: 36px;
   height: 3px;
   border-radius: 2px;
-  background: rgba(200, 169, 110, 0.45);
-  margin: 8px auto 0;
+  background: rgba(200, 169, 110, 0.55);
+  flex-shrink: 0;
 }
+.drawer-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 13.5px;
+  color: rgba(238, 224, 196, 0.72);
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}
+.drawer-close-btn {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  cursor: pointer;
+  color: rgba(238, 224, 196, 0.40);
+  font-size: 11px;
+  font-family: Georgia, serif;
+  transition: color 150ms ease, border-color 150ms ease;
+  padding: 0;
+  line-height: 1;
+}
+.drawer-close-btn:hover {
+  color: rgba(238, 224, 196, 0.85);
+  border-color: rgba(200, 169, 110, 0.25);
+}
+.drawer-content {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* ── Toolbar ───────────────────────────────────────────────────── */
 .toolbar {
   width: 100%;
   border-bottom: 1px solid rgba(200, 169, 110, 0.18);
@@ -1046,25 +1201,47 @@ onUnmounted(() => {
   border: 1px solid rgba(200, 169, 110, 0.25) !important;
   border-radius: 0 !important;
 }
-.toolbar :deep(.v-btn) {
+.toolbar :deep(.v-btn),
+.toolbar :deep(.v-btn__content) {
   font-family: Georgia, serif !important;
   font-style: italic;
   letter-spacing: 0.04em;
   color: rgba(238, 224, 196, 0.7) !important;
 }
-.toolbar :deep(.v-btn-toggle .v-btn--active) {
+.toolbar :deep(.v-btn-toggle .v-btn--active),
+.toolbar :deep(.v-btn-toggle .v-btn--active .v-btn__content) {
   color: #c8a96e !important;
   background: rgba(200, 169, 110, 0.1) !important;
 }
-.toolbar :deep(.v-text-field input) {
+.toolbar :deep(.v-text-field input),
+.toolbar :deep(.v-field__input) {
   font-family: Georgia, serif !important;
   font-style: italic;
   color: rgba(238, 224, 196, 0.94) !important;
 }
-.toolbar :deep(.v-text-field input::placeholder) {
+.toolbar :deep(.v-text-field input::placeholder),
+.toolbar :deep(.v-field__input::placeholder) {
   color: rgba(238, 224, 196, 0.45) !important;
   font-style: italic;
 }
+
+/* ── Status bar ────────────────────────────────────────────────── */
+.status-bar {
+  width: 100%;
+  border-bottom: 1px solid rgba(200, 169, 110, 0.1);
+  background: rgba(20, 17, 10, 0.5);
+  min-height: 22px;
+  font-family: Georgia, serif;
+  font-style: italic;
+  color: rgba(238, 224, 196, 0.55);
+}
+.status-bar :deep(.text-caption),
+.status-bar :deep(*) {
+  font-family: Georgia, serif !important;
+  font-style: italic;
+}
+
+/* ── Entity type pills ─────────────────────────────────────────── */
 .pills-scroll {
   display: flex;
   gap: 4px;
@@ -1076,19 +1253,6 @@ onUnmounted(() => {
   min-width: 0;
 }
 .pills-scroll::-webkit-scrollbar { display: none; }
-.status-bar {
-  width: 100%;
-  border-bottom: 1px solid rgba(200, 169, 110, 0.1);
-  background: rgba(20, 17, 10, 0.5);
-  min-height: 22px;
-  font-family: Georgia, serif;
-  font-style: italic;
-  color: rgba(238, 224, 196, 0.55);
-}
-.status-bar :deep(.text-caption) {
-  font-family: Georgia, serif !important;
-  font-style: italic;
-}
 .type-pill {
   display: inline-flex;
   align-items: center;
@@ -1122,11 +1286,38 @@ onUnmounted(() => {
   transition: opacity 150ms ease;
 }
 .type-pill.active .type-dot { opacity: 0.95; }
+
+/* ── View toggle ───────────────────────────────────────────────── */
 .view-toggle { flex-shrink: 0; }
 .view-toggle :deep(.v-btn) {
   font-size: 11px !important;
   text-transform: none !important;
   letter-spacing: 0 !important;
   min-width: 70px !important;
+  font-family: Georgia, serif !important;
+  font-style: italic !important;
+}
+
+/* ── Responsive ────────────────────────────────────────────────── */
+@media (min-width: 600px) and (max-width: 960px) {
+  .graph-area { --panel-width: 340px; }
+}
+@media (max-width: 960px) {
+  .graph-area { transition: none; }
+}
+/* Mobile: hide search + spacer so pills fill the bar.
+   Zoom cluster is in the floating panel, so pills have full width. */
+@media (max-width: 480px) {
+  .toolbar :deep(.v-text-field) { display: none; }
+  .toolbar :deep(.v-spacer) { display: none; }
+  .pills-scroll {
+    flex: 1 1 0;
+    -webkit-mask-image:
+      linear-gradient(90deg, #000 0, #000 calc(100% - 24px), transparent 100%);
+            mask-image:
+      linear-gradient(90deg, #000 0, #000 calc(100% - 24px), transparent 100%);
+  }
+  .type-pill { padding: 2px 6px; font-size: 10px; }
+  .toolbar :deep(.view-toggle .v-btn) { padding: 0 6px !important; min-width: 0 !important; }
 }
 </style>
