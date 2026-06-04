@@ -89,8 +89,8 @@ const CARDS: Card[] = [
 const ORNAMENTS = ['❦', '✦', '⸻']
 const EYEBROWS = ['Codex · I.', 'Codex · II.', 'Codex · III.']
 
-// Deep-dive routes where the FAB would intrude on focused work
-const DEEP_ROUTES = new Set(['graph', 'insights', 'thread-detail'])
+// Only hide FAB on true detail/sub-pages (thread detail view)
+const DEEP_ROUTES = new Set(['thread-detail'])
 
 const route = useRoute()
 const visible = ref(false)
