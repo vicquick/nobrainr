@@ -252,6 +252,20 @@ async def process_memory(
             len(clean_entities), len(result.entities), stored_rels, memory_id,
         )
 
+        # Notify the dashboard only when the entity graph actually changed —
+        # memory_created fires on every write (session logs, scheduler) and
+        # made the graph's "update available" banner cry wolf.
+        if entity_id_map or stored_rels:
+            try:
+                from nobrainr.events import publish
+                publish("entities_changed", {
+                    "memory_id": memory_id,
+                    "entities": len(entity_id_map),
+                    "relations": stored_rels,
+                })
+            except Exception:
+                pass
+
     except Exception:
         logger.exception("Extraction pipeline failed for memory %s", memory_id)
         await set_extraction_status(memory_id, "failed")
