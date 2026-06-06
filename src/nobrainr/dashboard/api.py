@@ -1151,7 +1151,7 @@ async def api_graph_search(request: Request) -> JSONResponse:
                 ORDER BY embedding::halfvec(1024) <=> $1::halfvec(1024)
                 LIMIT 40
                 """,
-                str(embedding),
+                embedding,  # raw list — the pool's pgvector codec encodes it
             )
     except EmbedTimeout:
         log.warning("graph search: embed timed out — lexical-only results")
