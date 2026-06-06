@@ -52,6 +52,15 @@
   border-radius: 3px;
 }
 
+/* Inside Vuetify fields the component already draws its own focus
+   outline on the field shell — the global ring on the inner <input>
+   produced a second, differently-sized frame (the "double focus"
+   artifact on search bars). One frame is enough. */
+.v-field input:focus-visible,
+.v-field input:focus {
+  box-shadow: none;
+}
+
 /* ── Empty-state hint (codex aesthetic) ─────────────────────────
    Used by views' "— nothing here yet —" blocks to render the
    actionable next-step line beneath the headline message. Keeps
@@ -68,6 +77,62 @@
   line-height: 1.55;
 }
 .empty-hint em { color: var(--cp-gold-soft); font-style: italic; }
+
+/* ── Codex dropdowns — the OPENED list of .folio-select ──────────
+   The closed control is skinned per-view; the opened list was the
+   browser's default white popup, jarring against the parchment.
+   Baseline: dark options everywhere option styling is honored.
+   Enhancement: Chromium's customizable <select> (appearance:
+   base-select + ::picker) gets the full codex treatment. */
+.folio-select option,
+.folio-select optgroup {
+  background: var(--cp-paper);
+  color: var(--cp-ink);
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
+}
+
+@supports selector(::picker(select)) {
+  select.folio-select {
+    appearance: base-select;
+    background-image: none; /* base-select brings its own picker icon */
+  }
+  select.folio-select::picker-icon {
+    color: var(--cp-gold-soft);
+    font-size: 10px;
+  }
+  select.folio-select::picker(select) {
+    appearance: base-select;
+    background: linear-gradient(180deg, var(--cp-paper) 0%, var(--cp-paper-deep) 100%);
+    border: 1px solid var(--cp-rule);
+    border-radius: 3px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+    padding: 4px;
+    margin-top: 4px;
+  }
+  select.folio-select option {
+    font-size: 12.5px;
+    font-style: italic;
+    letter-spacing: 0.04em;
+    padding: 6px 10px;
+    border-radius: 2px;
+    transition: background var(--cp-dur-hover) var(--cp-ease),
+                color var(--cp-dur-hover) var(--cp-ease);
+  }
+  select.folio-select option:hover,
+  select.folio-select option:focus {
+    background: rgba(200, 169, 110, 0.10);
+    color: var(--cp-gold-bright);
+  }
+  select.folio-select option:checked {
+    color: var(--cp-gold);
+    background: rgba(200, 169, 110, 0.06);
+  }
+  select.folio-select option::checkmark {
+    content: '❧';
+    color: var(--cp-gold);
+    margin-right: 6px;
+  }
+}
 
 /* ── Search highlight (.cp-mark) ─────────────────────────────────
    Used by the highlightMatches composable to wrap query terms in
