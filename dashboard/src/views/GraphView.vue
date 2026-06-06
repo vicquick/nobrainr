@@ -59,9 +59,11 @@
         prepend-inner-icon="mdi-magnify"
         placeholder="Search..."
         clearable
-        variant="plain"
+        variant="outlined"
+        hide-details
         style="max-width: 180px;"
         density="compact"
+        class="graph-search"
       />
     </div>
 
@@ -1523,13 +1525,17 @@ onUnmounted(() => {
 .toolbar :deep(.v-btn-toggle .v-btn) {
   background: transparent;
 }
-/* plain variant: no underline/overlay — the field's focus state is enough */
-.toolbar :deep(.v-field--variant-plain .v-field__outline),
+/* Search — outlined like the commonplace bar: soft gold rule at rest,
+   gold frame on focus. Overlay (grey fill) stays off. */
 .toolbar :deep(.v-field__overlay) {
   display: none;
 }
-.toolbar :deep(.v-field--variant-plain) {
-  --v-field-padding-top: 2px;
+.toolbar :deep(.graph-search .v-field) {
+  border-radius: 2px;
+  color: rgba(200, 169, 110, 0.2); /* .v-field__outline inherits currentColor */
+}
+.toolbar :deep(.graph-search .v-field.v-field--focused) {
+  color: rgba(200, 169, 110, 0.65);
 }
 .toolbar :deep(.v-btn),
 .toolbar :deep(.v-btn__content) {
