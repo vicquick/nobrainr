@@ -59,6 +59,7 @@
         prepend-inner-icon="mdi-magnify"
         placeholder="Search..."
         clearable
+        variant="plain"
         style="max-width: 180px;"
         density="compact"
       />
@@ -184,6 +185,7 @@ import { EdgeLineProgram } from 'sigma/rendering'
 import { createNodeBorderProgram } from '@sigma/node-border'
 import FA2Layout from 'graphology-layout-forceatlas2/worker'
 import { inferSettings } from 'graphology-layout-forceatlas2'
+import api from '@/api/client'
 import { useGraph } from '@/composables/useGraph'
 import { useSSE } from '@/composables/useSSE'
 import { useChatStore } from '@/stores/chat'
@@ -1034,21 +1036,40 @@ function lighten(hex: string, amount: number): string {
   return `rgb(${r}, ${g}, ${b})`
 }
 
+// Search: instant local substring pass for immediate feedback, then a
+// debounced hybrid call (trigram + pgvector semantic, RRF-fused) merges
+// in conceptually related entities that share no keyword with the query.
 let searchTimeout: ReturnType<typeof setTimeout>
+let searchSeq = 0
 watch(searchQuery, (q) => {
   clearTimeout(searchTimeout)
-  searchTimeout = setTimeout(() => {
-    searchMatches.clear()
-    if (q && graph) {
-      const lower = q.toLowerCase()
-      graph.forEachNode((node, attrs) => {
-        if (attrs.label?.toLowerCase().includes(lower)) {
-          searchMatches.add(node)
+  const seq = ++searchSeq
+  searchMatches.clear()
+  if (q && graph) {
+    const lower = q.toLowerCase()
+    graph.forEachNode((node, attrs) => {
+      if (attrs.label?.toLowerCase().includes(lower)) {
+        searchMatches.add(node)
+      }
+    })
+  }
+  renderer?.refresh()
+  if (!q || q.trim().length < 2) return
+
+  searchTimeout = setTimeout(async () => {
+    try {
+      const { data } = await api.get('/api/graph/search', { params: { q: q.trim() } })
+      if (seq !== searchSeq) return // a newer query superseded this one
+      let added = false
+      for (const hit of data.results ?? []) {
+        if (graph?.hasNode(hit.id) && !searchMatches.has(hit.id)) {
+          searchMatches.add(hit.id)
+          added = true
         }
-      })
-    }
-    renderer?.refresh()
-  }, 200)
+      }
+      if (added) renderer?.refresh()
+    } catch { /* network hiccup — local matches already shown */ }
+  }, 280)
 })
 
 async function handleNavigateEntity(entityId: string) {
@@ -1497,6 +1518,18 @@ onUnmounted(() => {
 .toolbar :deep(.v-btn-toggle) {
   border: 1px solid rgba(200, 169, 110, 0.25) !important;
   border-radius: 0 !important;
+  background: transparent !important; /* buttons carry their own fill */
+}
+.toolbar :deep(.v-btn-toggle .v-btn) {
+  background: transparent;
+}
+/* plain variant: no underline/overlay — the field's focus state is enough */
+.toolbar :deep(.v-field--variant-plain .v-field__outline),
+.toolbar :deep(.v-field__overlay) {
+  display: none;
+}
+.toolbar :deep(.v-field--variant-plain) {
+  --v-field-padding-top: 2px;
 }
 .toolbar :deep(.v-btn),
 .toolbar :deep(.v-btn__content) {

@@ -1099,6 +1099,96 @@ async def api_events(request: Request) -> StreamingResponse:
     )
 
 
+async def api_graph_search(request: Request) -> JSONResponse:
+    """GET /api/graph/search?q= — hybrid entity search for the graph view.
+
+    Two legs fused with Reciprocal Rank Fusion:
+      lexical  — pg_trgm similarity on canonical_name (typo-tolerant
+                 fuzzy name match, GIN-indexed, ~7ms)
+      semantic — pgvector cosine over entity embeddings via the halfvec
+                 HNSW index (finds conceptually related entities that
+                 share no keyword with the query)
+
+    Returns ranked entity ids; the client highlights whichever of them
+    are present in the rendered graph.
+    """
+    q = request.query_params.get("q", "").strip()
+    if len(q) < 2:
+        return JSONResponse({"results": []})
+    try:
+        limit = min(int(request.query_params.get("limit", "40")), 100)
+    except ValueError:
+        limit = 40
+
+    from nobrainr.db.pool import get_pool
+    pool = await get_pool()
+
+    # Lexical leg — trigram similarity, typo-tolerant
+    async with pool.acquire() as conn:
+        lex_rows = await conn.fetch(
+            """
+            SELECT id::text, canonical_name, entity_type,
+                   similarity(canonical_name, $1) AS sim
+            FROM entities
+            WHERE canonical_name % $1 OR canonical_name ILIKE '%' || $1 || '%'
+            ORDER BY sim DESC NULLS LAST
+            LIMIT 40
+            """,
+            q,
+        )
+
+    # Semantic leg — embed the query, cosine over the HNSW index
+    sem_rows: list = []
+    try:
+        embedding = await embed_text_with_timeout(q, timeout_s=8.0)
+        async with pool.acquire() as conn:
+            sem_rows = await conn.fetch(
+                """
+                SELECT id::text, canonical_name, entity_type,
+                       1 - (embedding::halfvec(1024) <=> $1::halfvec(1024)) AS sim
+                FROM entities
+                WHERE embedding IS NOT NULL
+                ORDER BY embedding::halfvec(1024) <=> $1::halfvec(1024)
+                LIMIT 40
+                """,
+                str(embedding),
+            )
+    except EmbedTimeout:
+        log.warning("graph search: embed timed out — lexical-only results")
+    except Exception:
+        log.exception("graph search: semantic leg failed")
+
+    # Reciprocal Rank Fusion (k=60) — robust to incomparable score scales
+    K = 60
+    fused: dict[str, dict] = {}
+    for rank, row in enumerate(lex_rows):
+        e = fused.setdefault(row["id"], {
+            "id": row["id"], "name": row["canonical_name"],
+            "type": row["entity_type"], "score": 0.0, "via": set(),
+        })
+        e["score"] += 1.0 / (K + rank + 1)
+        e["via"].add("name")
+    for rank, row in enumerate(sem_rows):
+        # Drop weak semantic tails — below ~0.45 cosine the matches are noise
+        if row["sim"] is not None and row["sim"] < 0.45:
+            continue
+        e = fused.setdefault(row["id"], {
+            "id": row["id"], "name": row["canonical_name"],
+            "type": row["entity_type"], "score": 0.0, "via": set(),
+        })
+        e["score"] += 1.0 / (K + rank + 1)
+        e["via"].add("semantic")
+
+    results = sorted(fused.values(), key=lambda e: -e["score"])[:limit]
+    return JSONResponse({
+        "results": [
+            {"id": e["id"], "name": e["name"], "type": e["type"],
+             "score": round(e["score"], 5), "via": sorted(e["via"])}
+            for e in results
+        ],
+    })
+
+
 async def api_entities(request: Request) -> JSONResponse:
     """List entities with optional type filter."""
     entity_type = request.query_params.get("type") or None
@@ -2475,6 +2565,7 @@ api_routes = [
     Route("/api/galaxy", api_galaxy),
     Route("/api/graph", api_graph),
     Route("/api/graph/communities", api_graph_communities),
+    Route("/api/graph/search", api_graph_search),
     Route("/api/memories", api_memories),
     Route("/api/memories/{memory_id}", api_memory_detail, methods=["GET"]),
     Route("/api/memories/{memory_id}", api_memory_update, methods=["POST"]),
