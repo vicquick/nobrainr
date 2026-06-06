@@ -319,32 +319,35 @@ async def api_graph_communities(request: Request) -> JSONResponse:
         if c >= 0:
             community_nodes[c].append(node["data"])
 
-    # Build community meta-nodes
+    # Build community meta-nodes.
+    # Illuminated-manuscript pigments — muted jewel tones in one luminance
+    # band, ordered so adjacent palette indices stay maximally distinct.
+    # Matches the dashboard codex aesthetic (TYPE_COLORS in GraphView).
     COMMUNITY_PALETTE = [
-        "#5c7cfa",  # indigo
-        "#f76707",  # deep orange
-        "#2f9e44",  # forest green
-        "#e03131",  # crimson
-        "#7048e8",  # violet
-        "#0ca678",  # teal
-        "#1971c2",  # ocean blue
-        "#c2255c",  # magenta
-        "#d9480f",  # burnt orange
-        "#5f3dc4",  # dark purple
-        "#1098ad",  # cyan
-        "#2b8a3e",  # deep green
-        "#9c36b5",  # purple
-        "#e67700",  # amber
-        "#1864ab",  # navy
-        "#087f5b",  # dark teal
-        "#a61e4d",  # dark rose
-        "#364fc7",  # cobalt
-        "#5c940d",  # olive
-        "#862e9c",  # dark violet
-        "#e8590c",  # orange-red
-        "#0b7285",  # deep cyan
-        "#c92a2a",  # deep red
-        "#2d6a4f",  # emerald
+        "#c9a96e",  # gilt gold
+        "#7fa3c2",  # ultramarine wash
+        "#bd5a52",  # madder red
+        "#74a48d",  # verdigris
+        "#a98bc0",  # amethyst
+        "#c98a6d",  # terracotta
+        "#6f81ab",  # indigo
+        "#a8b072",  # sage bronze
+        "#c0788f",  # rose madder
+        "#5f9ea0",  # patina teal
+        "#b3924f",  # ochre
+        "#8d7ab5",  # violet ash
+        "#7da06b",  # moss
+        "#b8685a",  # sienna
+        "#6b93b8",  # cerulean wash
+        "#b89d83",  # parchment tan
+        "#9a6b8f",  # plum
+        "#86a895",  # celadon
+        "#c2925a",  # amber
+        "#7a86c2",  # lavender blue
+        "#a0795d",  # umber
+        "#5d8a78",  # pine verdigris
+        "#b07070",  # faded carmine
+        "#94a3b0",  # silverpoint
     ]
     nodes = []
     # Sort communities by size descending so stable palette assignment (largest = most distinct color)
