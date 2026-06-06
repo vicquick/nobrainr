@@ -226,6 +226,10 @@ CREATE INDEX IF NOT EXISTS idx_entities_embedding_halfvec_hnsw
 CREATE INDEX IF NOT EXISTS idx_entities_type
     ON entities (entity_type);
 
+-- Trigram index for typo-tolerant entity name search (/api/graph/search)
+CREATE INDEX IF NOT EXISTS idx_entities_name_trgm
+    ON entities USING gin (canonical_name gin_trgm_ops);
+
 -- ──────────────────────────────────────────────
 -- Entity-memory junction
 -- ──────────────────────────────────────────────
