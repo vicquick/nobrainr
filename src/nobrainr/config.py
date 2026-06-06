@@ -250,9 +250,10 @@ class Settings(BaseSettings):
     # Extraction quality
     quality_interval_hours: float = 4.0
     quality_batch_size: int = 20
-    # Memory quality scoring (LLM-assessed) — aggressive to clear 78% unscored backlog
+    # Memory quality scoring (LLM-assessed) — packed 8-per-call since 2026-06-06,
+    # so a 120 batch is 15 LLM calls (~7x throughput vs per-memory calls)
     quality_scoring_interval_hours: float = 0.25
-    quality_scoring_batch_size: int = 60
+    quality_scoring_batch_size: int = 120
     # Fact-augmented key expansion (LongMemEval pattern)
     key_expansion_interval_hours: float = 0.5
     key_expansion_batch_size: int = 30

@@ -1525,17 +1525,15 @@ onUnmounted(() => {
 .toolbar :deep(.v-btn-toggle .v-btn) {
   background: transparent;
 }
-/* Search — outlined like the commonplace bar: soft gold rule at rest,
-   gold frame on focus. Overlay (grey fill) stays off. */
+/* Search — same look as the commonplace bar: theme-default outline +
+   icon (ink-toned), no grey overlay fill. The earlier gold currentColor
+   override washed out frame AND icon — commonplace never overrides
+   these, which is exactly why it looks right. */
 .toolbar :deep(.v-field__overlay) {
   display: none;
 }
 .toolbar :deep(.graph-search .v-field) {
   border-radius: 2px;
-  color: rgba(200, 169, 110, 0.2); /* .v-field__outline inherits currentColor */
-}
-.toolbar :deep(.graph-search .v-field.v-field--focused) {
-  color: rgba(200, 169, 110, 0.65);
 }
 .toolbar :deep(.v-btn),
 .toolbar :deep(.v-btn__content) {

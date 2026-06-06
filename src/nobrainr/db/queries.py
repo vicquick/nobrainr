@@ -2279,7 +2279,9 @@ async def get_unscored_memories(limit: int = 20) -> list[dict]:
               AND category != '_archived'
               AND content IS NOT NULL
               AND length(content) > 20
-            ORDER BY created_at DESC
+            -- Importance-first: likely-valuable knowledge gets validated
+            -- quality early; bulk-import filler waits its turn.
+            ORDER BY COALESCE(importance, 0.5) DESC, created_at DESC
             LIMIT $1
             """,
             limit,
