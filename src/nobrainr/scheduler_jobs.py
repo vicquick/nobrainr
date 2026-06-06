@@ -1301,6 +1301,35 @@ MEMORY_QUALITY_SCHEMA = {
 PERSONAL_SOURCES = {"manual", "affine_memos", "docx", "sticky_notes", "keep"}
 
 
+# Packed variant — one LLM call scores several memories. The dominant cost
+# per call is llama-swap queue wait (~90s under extraction contention), not
+# generation, so packing 8 memories per call is a ~7x throughput win.
+PACKED_QUALITY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "scores": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "idx": {
+                        "type": "integer",
+                        "description": "The [n] index of the entry being scored",
+                    },
+                    "specificity": {"type": "integer"},
+                    "actionability": {"type": "integer"},
+                    "self_containment": {"type": "integer"},
+                },
+                "required": ["idx", "specificity", "actionability", "self_containment"],
+            },
+        }
+    },
+    "required": ["scores"],
+}
+
+QUALITY_PACK_SIZE = 8
+
+
 async def quality_scoring() -> dict:
     """LLM-assess quality of unscored memories on dimensions appropriate to source.
 
@@ -1322,71 +1351,89 @@ async def quality_scoring() -> dict:
     if not batch:
         return {"scored": 0, "ran_at": datetime.now().isoformat()}
 
+    PERSONAL_SYSTEM = (
+        "You assess personal notes / journal entries / hand-written memos. "
+        "Rate three dimensions 1-5. The output schema names are "
+        "specificity / actionability / self_containment but for personal "
+        "notes treat them as:\n"
+        "- specificity → CLARITY: 1=fragmentary unintelligible, "
+        "5=clear and well-formed thought\n"
+        "- actionability → COMPLETENESS: 1=cut off mid-thought / single "
+        "keyword, 5=fully developed idea\n"
+        "- self_containment → CONNECTION_DENSITY: 1=isolated thought with "
+        "no anchor, 5=rich in named people / projects / dates / ideas\n"
+        "Personal notes are valuable EVEN IF they aren't technical. Only "
+        "score 1-2 when content is genuinely fragmentary or unclear. Do NOT "
+        "penalize for non-technical content.\n"
+        "You will receive several entries labeled [1], [2], … — return one "
+        "scores object per entry with its idx."
+    )
+    TECHNICAL_SYSTEM = (
+        "You assess the quality of knowledge base entries for AI coding agents. "
+        "Rate each dimension 1-5:\n"
+        "- specificity: 1=vague/generic ('Python is useful'), 5=concrete details "
+        "(commands, file paths, error messages, version numbers)\n"
+        "- actionability: 1=trivia/opinion/personal, 5=an agent can directly use "
+        "this to solve a problem or make a technical decision\n"
+        "- self_containment: 1=needs original conversation context to understand, "
+        "5=fully self-contained and clear\n"
+        "Be strict. Generic programming tips are 1-2. Specific bug fixes with "
+        "root cause are 4-5.\n"
+        "You will receive several entries labeled [1], [2], … — return one "
+        "scores object per entry with its idx."
+    )
+
+    # Group by rubric so one system prompt fits the whole pack
+    personal = [m for m in batch if m.get("source_type") in PERSONAL_SOURCES]
+    technical = [m for m in batch if m.get("source_type") not in PERSONAL_SOURCES]
+
     scored = 0
-    for mem in batch:
-        try:
-            content = mem.get("summary") or mem["content"][:800]
-            source = mem.get("source_type", "unknown")
-            category = mem.get("category", "uncategorized")
-            is_personal = source in PERSONAL_SOURCES
-
-            if is_personal:
-                system = (
-                    "You assess personal notes / journal entries / hand-written memos. "
-                    "Rate three dimensions 1-5. The output schema names are "
-                    "specificity / actionability / self_containment but for personal "
-                    "notes treat them as:\n"
-                    "- specificity → CLARITY: 1=fragmentary unintelligible, "
-                    "5=clear and well-formed thought\n"
-                    "- actionability → COMPLETENESS: 1=cut off mid-thought / single "
-                    "keyword, 5=fully developed idea\n"
-                    "- self_containment → CONNECTION_DENSITY: 1=isolated thought with "
-                    "no anchor, 5=rich in named people / projects / dates / ideas\n"
-                    "Personal notes are valuable EVEN IF they aren't technical. A short "
-                    "personal reflection like 'realized I work better in mornings' is "
-                    "4-5 on clarity, 5 on completeness if that's the whole thought. Only "
-                    "score 1-2 when content is genuinely fragmentary or unclear (e.g. "
-                    "'todo: ?', 'see also'). Do NOT penalize for non-technical content."
-                )
-            else:
-                system = (
-                    "You assess the quality of knowledge base entries for AI coding agents. "
-                    "Rate each dimension 1-5:\n"
-                    "- specificity: 1=vague/generic ('Python is useful'), 5=concrete details "
-                    "(commands, file paths, error messages, version numbers)\n"
-                    "- actionability: 1=trivia/opinion/personal, 5=an agent can directly use "
-                    "this to solve a problem or make a technical decision\n"
-                    "- self_containment: 1=needs original conversation context to understand, "
-                    "5=fully self-contained and clear\n"
-                    "Be strict. Generic programming tips are 1-2. Specific bug fixes with "
-                    "root cause are 4-5."
+    for mems, system in ((technical, TECHNICAL_SYSTEM), (personal, PERSONAL_SYSTEM)):
+        for i in range(0, len(mems), QUALITY_PACK_SIZE):
+            pack = mems[i : i + QUALITY_PACK_SIZE]
+            try:
+                lines = []
+                for n, mem in enumerate(pack, start=1):
+                    content = (mem.get("summary") or mem["content"])[:500]
+                    lines.append(
+                        f"[{n}] Source: {mem.get('source_type', 'unknown')} | "
+                        f"Category: {mem.get('category', 'uncategorized')}\n{content}"
+                    )
+                result = await ollama_chat(
+                    system=system,
+                    user="\n\n---\n\n".join(lines),
+                    schema=PACKED_QUALITY_SCHEMA,
+                    model=model,
+                    timeout=600.0,
+                    think=False,
                 )
 
-            result = await ollama_chat(
-                system=system,
-                user=f"Source: {source} | Category: {category}\n\n{content}",
-                schema=MEMORY_QUALITY_SCHEMA,
-                model=model,
-                timeout=600.0,
-                think=False,
-            )
+                by_idx = {}
+                for s in result.get("scores", []):
+                    idx = s.get("idx")
+                    if isinstance(idx, int) and 1 <= idx <= len(pack):
+                        by_idx[idx] = s
 
-            spec = max(1, min(5, result.get("specificity", 3)))
-            act = max(1, min(5, result.get("actionability", 3)))
-            self_c = max(1, min(5, result.get("self_containment", 3)))
-            quality = (spec + act + self_c) / 15.0
-
-            await queries.update_quality_score(
-                mem["id"],
-                quality_score=quality,
-                specificity=spec,
-                actionability=act,
-                self_containment=self_c,
-            )
-            scored += 1
-        except Exception:
-            logger.exception("quality_scoring failed for memory %s", mem["id"][:8])
-        await _yield_to_live_requests()
+                for n, mem in enumerate(pack, start=1):
+                    s = by_idx.get(n)
+                    if not s:
+                        continue  # stays unscored — retried next run
+                    spec = max(1, min(5, s.get("specificity", 3)))
+                    act = max(1, min(5, s.get("actionability", 3)))
+                    self_c = max(1, min(5, s.get("self_containment", 3)))
+                    await queries.update_quality_score(
+                        mem["id"],
+                        quality_score=(spec + act + self_c) / 15.0,
+                        specificity=spec,
+                        actionability=act,
+                        self_containment=self_c,
+                    )
+                    scored += 1
+            except Exception:
+                logger.exception(
+                    "quality_scoring pack failed (%d memories)", len(pack)
+                )
+            await _yield_to_live_requests()
 
     return {
         "scored": scored,
