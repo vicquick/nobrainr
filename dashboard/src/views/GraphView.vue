@@ -190,16 +190,19 @@ import { useChatStore } from '@/stores/chat'
 import GraphSidePanel from '@/components/GraphSidePanel.vue'
 import Dotty from '@/components/Dotty.vue'
 
+// Illuminated-manuscript pigments — terracotta, gilt, ultramarine wash,
+// amethyst, verdigris, madder. Muted jewel tones in one luminance band so
+// no type shouts; gold stays reserved for projects (the codex accent).
 const TYPE_COLORS: Record<string, string> = {
-  person: '#5c7cfacc',
-  project: '#2f9e44cc',
-  technology: '#7048e8cc',
-  concept: '#e67700cc',
-  file: '#6b7280aa',
-  config: '#d9480fcc',
-  error: '#e03131cc',
-  location: '#0ca678cc',
-  organization: '#1971c2cc',
+  person: '#c98a6dcc',       // terracotta
+  project: '#c9a96ecc',      // gilt gold
+  technology: '#7fa3c2cc',   // ultramarine wash
+  concept: '#a98bc0cc',      // amethyst
+  file: '#8a8f98aa',         // graphite
+  config: '#a89a62cc',       // bronze-olive
+  error: '#bd5a52cc',        // madder red
+  location: '#74a48dcc',     // verdigris
+  organization: '#6f81abcc', // indigo
 }
 
 const entityTypes = Object.keys(TYPE_COLORS)
@@ -458,7 +461,7 @@ function drawHoverWithBg(
 
 const BorderedNodeProgram = createNodeBorderProgram({
   borders: [
-    { size: { value: 0.12 }, color: { value: '#2a2a36' } },
+    { size: { value: 0.12 }, color: { value: '#2e2a20' } },
     { size: { fill: true }, color: { attribute: 'color' } },
   ],
   drawLabel: drawLabelWithBg,
@@ -543,6 +546,31 @@ function zoomToNodes(nodeIds: Set<string> | string[], opts: { forMobileDrawer?: 
   )
 }
 
+// The currently focused node set (click-focus or chat-focus), or null.
+function currentFocusSet(): Set<string> | null {
+  if (focusedNode) return new Set([focusedNode, ...focusedNeighbors])
+  if (chatFocusedNodes.size > 0) return new Set(chatFocusedNodes)
+  return null
+}
+
+// Keep the focused subset fitted + centered in the canvas extent of the
+// moment: the desktop side panel shrinks the canvas (250ms padding
+// transition), window resizes and rotations change it — every time the
+// canvas settles, the subset re-fits.
+let refitTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleRefit() {
+  const set = currentFocusSet()
+  if (!set) return
+  if (refitTimer) clearTimeout(refitTimer)
+  refitTimer = setTimeout(() => {
+    refitTimer = null
+    const current = currentFocusSet()
+    if (current) {
+      zoomToNodes(current, { forMobileDrawer: mobile.value && !!selectedNode.value })
+    }
+  }, 140)
+}
+
 function focusNode(nodeId: string) {
   focusedNode = nodeId
   focusedNeighbors.clear()
@@ -596,7 +624,7 @@ function initSigma() {
       x: node.data.x,
       y: node.data.y,
       size: Math.max(2, Math.min(28, Math.pow(mc, 0.38) * 1.1)),
-      color: TYPE_COLORS[node.data.type] || '#6b7280aa',
+      color: TYPE_COLORS[node.data.type] || '#8a8f98aa',
       labelColor: 'rgba(255, 255, 255, 0.7)',
       nodeType: node.data.type,
       community: node.data.community,
@@ -613,7 +641,7 @@ function initSigma() {
         graph.addEdge(edge.data.source, edge.data.target, {
           label: edge.data.label,
           size: 0.8,
-          color: '#242438',
+          color: '#272218',
         })
       } catch {
         // duplicate edge
@@ -647,8 +675,8 @@ function initSigma() {
     labelDensity: 0.12,
     labelGridCellSize: 100,
     labelRenderedSizeThreshold: 5,
-    defaultNodeColor: '#6b7280aa',
-    defaultEdgeColor: '#242438',
+    defaultNodeColor: '#8a8f98aa',
+    defaultEdgeColor: '#272218',
     stagePadding: 40,
     zIndex: true,
     hideEdgesOnMove: true,
@@ -707,7 +735,7 @@ function initSigma() {
           res.forceLabel = true
           res.labelColor = 'rgba(255, 255, 255, 0.9)'
         } else {
-          res.color = 'rgba(60, 60, 70, 0.15)'
+          res.color = 'rgba(72, 65, 52, 0.15)'
           res.size = 1.5
           res.label = ''
         }
@@ -728,7 +756,7 @@ function initSigma() {
 
       if (focusedNode) {
         if (graph!.extremities(edge).includes(focusedNode)) {
-          res.color = '#5c5c8a'
+          res.color = '#8a7a5a'
           res.size = 1.5
           res.zIndex = 1
         } else {
@@ -740,7 +768,7 @@ function initSigma() {
       if (chatFocusedNodes.size > 0) {
         const [src, tgt] = graph!.extremities(edge)
         if (chatFocusedNodes.has(src) || chatFocusedNodes.has(tgt)) {
-          res.color = '#5c5c8a'
+          res.color = '#8a7a5a'
           res.size = 1.5
           res.zIndex = 1
         } else {
@@ -754,7 +782,7 @@ function initSigma() {
         if (!searchMatches.has(src) || !searchMatches.has(tgt)) {
           res.hidden = true
         } else {
-          res.color = '#3a3a5c'
+          res.color = '#4d4430'
         }
         return res
       }
@@ -762,7 +790,7 @@ function initSigma() {
       if (hoveredNode) {
         const [src, tgt] = graph!.extremities(edge)
         if (src === hoveredNode || tgt === hoveredNode) {
-          res.color = '#5c5c8a'
+          res.color = '#8a7a5a'
           res.size = 1.5
           res.zIndex = 1
           return res
@@ -859,7 +887,7 @@ function initCommunitySigma() {
       try {
         graph.addEdge(edge.data.source, edge.data.target, {
           size: Math.max(0.8, Math.min(3, Math.sqrt(edge.data.weight) * 0.5)),
-          color: '#26263e',
+          color: '#28231a',
         })
       } catch { /* dup */ }
     }
@@ -884,8 +912,8 @@ function initCommunitySigma() {
     labelDensity: 0.5,
     labelGridCellSize: 120,
     labelRenderedSizeThreshold: 4,
-    defaultNodeColor: '#6b7280',
-    defaultEdgeColor: '#26263e',
+    defaultNodeColor: '#8a8f98',
+    defaultEdgeColor: '#28231a',
     stagePadding: 60,
     zIndex: true,
 
@@ -903,7 +931,7 @@ function initCommunitySigma() {
           res.forceLabel = true
           res.labelColor = 'rgba(255, 255, 255, 0.92)'
         } else {
-          res.color = 'rgba(60, 60, 70, 0.30)'
+          res.color = 'rgba(72, 65, 52, 0.30)'
           res.label = ''
         }
       }
@@ -912,7 +940,7 @@ function initCommunitySigma() {
           res.forceLabel = true
           res.zIndex = 1
         } else {
-          res.color = 'rgba(60, 60, 70, 0.15)'
+          res.color = 'rgba(72, 65, 52, 0.15)'
           res.size = 3
           res.label = ''
         }
@@ -1178,6 +1206,9 @@ onMounted(async () => {
     resizeObserver = new ResizeObserver(() => {
       renderer?.resize()
       renderer?.refresh()
+      // Canvas extent changed (side panel open/close, window resize,
+      // rotation) — re-fit the focused subset to the new extent.
+      scheduleRefit()
     })
     resizeObserver.observe(sigmaContainer.value)
   }
@@ -1203,6 +1234,7 @@ async function maybeApplyFocusFromQuery() {
 
 onUnmounted(() => {
   stopOrganicSettle()
+  if (refitTimer) clearTimeout(refitTimer)
   renderer?.kill()
   resizeObserver?.disconnect()
   window.removeEventListener('resize', computeDrawerMetrics)
