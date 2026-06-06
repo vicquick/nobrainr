@@ -114,30 +114,32 @@ import Dotty from '@/components/Dotty.vue'
 // ---------------------------------------------------------------------------
 // Category colors — matches nobrainr canonical categories
 // ---------------------------------------------------------------------------
+// Manuscript pigments, lifted ~15% luminance for additive blending +
+// bloom on black — jewel tones instead of neon, insights gilded brightest.
 const CATEGORY_COLORS: Record<string, string> = {
-  architecture: '#4080ff',
-  debugging: '#ff4040',
-  deployment: '#ff8020',
-  infrastructure: '#ff6600',
-  patterns: '#a040ff',
-  tooling: '#40cc40',
-  security: '#ff2060',
-  frontend: '#20cccc',
-  backend: '#2080ff',
-  data: '#ccaa20',
-  business: '#cc60cc',
-  documentation: '#8090a0',
-  'session-log': '#606870',
-  insight: '#ffcc00',
-  _archived: '#404040',
-  other: '#555555',
+  architecture: '#7e9fd9',     // lapis
+  debugging: '#d96e63',        // madder
+  deployment: '#d99a55',       // amber
+  infrastructure: '#c2854a',   // copper
+  patterns: '#ab8fd4',         // amethyst
+  tooling: '#8fbc7a',          // sage
+  security: '#d4647e',         // carmine rose
+  frontend: '#7cc4ba',         // verdigris
+  backend: '#6c97cc',          // ultramarine
+  data: '#d4b865',             // gold ochre
+  business: '#c290ba',         // mauve rose
+  documentation: '#9aa5b3',    // slate
+  'session-log': '#787e85',    // graphite
+  insight: '#e8c97a',          // gilt — illumination
+  _archived: '#4a463e',
+  other: '#6a665e',
 }
 
 const TIER_COLORS: Record<number, string> = {
-  0: '#ffcc00', // pinned
-  1: '#ff6040', // hot
-  2: '#4080ff', // standard
-  3: '#404050', // cold
+  0: '#e8c97a', // pinned — gilt
+  1: '#d96e63', // hot — madder
+  2: '#7e9fd9', // standard — lapis
+  3: '#4a4540', // cold — ash
 }
 
 const COLOR_MODE_MAP: Record<string, number> = { category: 0, tier: 1, importance: 2 }
@@ -366,11 +368,11 @@ function buildColorAlpha(): { colors: Float32Array; alphas: Float32Array } {
       b = parseInt(hex.slice(5, 7), 16) / 255
       a = vis ? (tier === 0 ? 0.9 : tier === 1 ? 0.7 : tier === 2 ? 0.4 : 0.15) : 0.0
     } else {
-      // importance mode — gradient from dim to bright
+      // importance mode — ash → gilt: the more important, the more gilded
       const imp = importanceData.value[i] || 0.5
-      r = 0.2 + imp * 0.8
-      g = 0.4 + imp * 0.5
-      b = 1.0 - imp * 0.3
+      r = 0.29 + imp * 0.62
+      g = 0.27 + imp * 0.52
+      b = 0.24 + imp * 0.24
       a = 0.1 + imp * 0.7
     }
 
