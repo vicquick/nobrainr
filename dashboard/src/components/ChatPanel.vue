@@ -211,10 +211,11 @@ import { useDisplay } from 'vuetify'
 import { useChatStore } from '@/stores/chat'
 import type { ChatSources } from '@/types'
 
+// Canonical manuscript pigments — keep in sync with GraphView TYPE_COLORS
 const TYPE_COLORS: Record<string, string> = {
-  person: '#7b8ec8', project: '#6ba87a', technology: '#9585c4',
-  concept: '#c4a46a', file: '#7a8290', config: '#b09060',
-  error: '#c46b6b', location: '#6b9e8f', organization: '#7d92b0',
+  person: '#c98a6d', project: '#c9a96e', technology: '#7fa3c2',
+  concept: '#a98bc0', file: '#8a8f98', config: '#a89a62',
+  error: '#bd5a52', location: '#74a48d', organization: '#6f81ab',
 }
 
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024 // 10 MB
@@ -363,7 +364,7 @@ const lastAssistantMsg = computed(() => {
 })
 
 function typeColor(type: string) {
-  return TYPE_COLORS[type] || '#7a8290'
+  return TYPE_COLORS[type] || '#8a8f98'
 }
 
 function toggleSources(msgId: string) {
