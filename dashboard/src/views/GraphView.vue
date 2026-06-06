@@ -38,6 +38,21 @@
           {{ type }}
         </button>
       </div>
+
+      <!-- Mobile-only: detached categories button — opens vertical modal -->
+      <button
+        v-if="viewMode === 'entities'"
+        ref="catsBtnRef"
+        class="cats-btn"
+        :class="{ open: catsOpen }"
+        @click="catsOpen = !catsOpen"
+        aria-label="Filter entity categories"
+        :aria-expanded="catsOpen"
+      >
+        <v-icon size="13">mdi-shape-outline</v-icon>
+        <span class="cats-btn-label">categories</span>
+        <span v-if="activeTypes.size < entityTypes.length" class="cats-btn-count">{{ activeTypes.size }}</span>
+      </button>
       <v-spacer />
       <v-text-field
         v-model="searchQuery"
@@ -50,7 +65,7 @@
     </div>
 
     <!-- Status bar -->
-    <div class="d-flex align-center ga-3 px-3 py-0 status-bar">
+    <div ref="statusBarRef" class="d-flex align-center ga-3 px-3 py-0 status-bar">
       <span class="text-caption text-medium-emphasis" style="font-variant-numeric: tabular-nums; font-size: 10px;">
         <template v-if="viewMode === 'communities'">
           {{ nodeCount.toLocaleString() }} topics · {{ edgeCount.toLocaleString() }} connections
@@ -87,6 +102,24 @@
         <GraphSidePanel :node="selectedNode" :loading="nodeLoading" :highlight="searchQuery" @close="handleClosePanel" @navigate="handleNavigateEntity" />
       </div>
 
+      <!-- Mobile categories modal — vertical pill list, click outside closes -->
+      <Transition name="cats-pop">
+        <div v-if="catsOpen" ref="catsModalRef" class="cats-modal" role="menu" aria-label="Entity categories">
+          <p class="cats-modal-eyebrow">— categories —</p>
+          <button
+            v-for="type in entityTypes"
+            :key="type"
+            class="type-pill cats-modal-pill"
+            :class="{ active: isTypeActive(type) }"
+            :style="{ '--pill-color': TYPE_COLORS[type] }"
+            @click="toggleType(type)"
+          >
+            <span class="type-dot" />
+            {{ type }}
+          </button>
+        </div>
+      </Transition>
+
       <!-- Floating zoom/fit/refresh cluster — top-right, vertical, all screen sizes -->
       <div class="graph-zoom-float" aria-label="Graph view controls">
         <button class="gzf-btn" @click="refreshGraph" title="Refresh" aria-label="Refresh graph data">
@@ -111,8 +144,12 @@
         v-if="mobile && selectedNode"
         class="mobile-drawer"
         :class="{ 'mobile-drawer--expanded': drawerExpanded }"
+        :style="{
+          '--drawer-max': drawerMaxPx + 'px',
+          '--drawer-peek': Math.max(0, drawerMaxPx - drawerCollapsedPx) + 'px',
+        }"
       >
-        <!-- Bright stripe — visible at midscreen, drag handle -->
+        <!-- Bright stripe — gold seam at the very top edge, drag handle above the title -->
         <div
           class="drawer-stripe"
           @touchstart.passive="onDragStart"
@@ -120,8 +157,10 @@
           @touchend="onDragEnd"
         >
           <div class="drawer-handle" aria-hidden="true" />
-          <span class="drawer-label">{{ selectedNode?.entity?.canonical_name }}</span>
-          <button class="drawer-close-btn" @click.stop="handleClosePanel" aria-label="Close panel">✕</button>
+          <div class="drawer-titlerow">
+            <span class="drawer-label">{{ selectedNode?.entity?.canonical_name }}</span>
+            <button class="drawer-close-btn" @click.stop="handleClosePanel" aria-label="Close panel">✕</button>
+          </div>
         </div>
         <!-- Scrollable content -->
         <div class="drawer-content">
@@ -184,6 +223,34 @@ const drillCommunityId = ref<number | null>(null)
 
 // Mobile drawer state
 const drawerExpanded = ref(false)
+const statusBarRef = ref<HTMLElement | null>(null)
+// Geometry: expanded drawer top snaps to the status-bar's bottom edge —
+// the toolbar numbers stay visible at every drawer position.
+const drawerMaxPx = ref(0)
+const drawerCollapsedPx = ref(0)
+const COLLAPSED_FRACTION = 0.42
+
+function computeDrawerMetrics() {
+  const sbBottom = statusBarRef.value?.getBoundingClientRect().bottom ?? 110
+  drawerMaxPx.value = Math.max(220, Math.round(window.innerHeight - sbBottom))
+  drawerCollapsedPx.value = Math.min(
+    Math.round(window.innerHeight * COLLAPSED_FRACTION),
+    drawerMaxPx.value,
+  )
+}
+
+// Mobile categories modal state
+const catsOpen = ref(false)
+const catsBtnRef = ref<HTMLElement | null>(null)
+const catsModalRef = ref<HTMLElement | null>(null)
+
+function onDocPointer(e: PointerEvent) {
+  if (!catsOpen.value) return
+  const t = e.target as Node
+  if (catsModalRef.value?.contains(t) || catsBtnRef.value?.contains(t)) return
+  catsOpen.value = false
+}
+
 let dragStartY = 0
 let dragDelta = 0
 
@@ -286,7 +353,7 @@ function toggleType(type: string) {
   renderer?.refresh()
 }
 
-function zoomToNodes(nodeIds: Set<string> | string[]) {
+function zoomToNodes(nodeIds: Set<string> | string[], opts: { forMobileDrawer?: boolean } = {}) {
   if (!graph || !renderer) return
   const ids = (nodeIds instanceof Set ? [...nodeIds] : nodeIds).filter(id => graph!.hasNode(id))
   if (ids.length === 0) return
@@ -304,18 +371,42 @@ function zoomToNodes(nodeIds: Set<string> | string[]) {
   if (minX === Infinity) return
 
   const cx = (minX + maxX) / 2
-  const cy = (minY + maxY) / 2
+  let cy = (minY + maxY) / 2
   const dx = maxX - minX
   const dy = maxY - minY
   const { width, height } = renderer.getDimensions()
-  const aspect = width / height
   const padding = 1.5
+
+  // On mobile with the half-drawer open, only the strip above the drawer
+  // is visible. Fit the subset to that strip and shift the camera so the
+  // subgraph centers in it instead of hiding behind the drawer.
+  let visibleH = height
+  if (opts.forMobileDrawer && mobile.value) {
+    computeDrawerMetrics()
+    const canvasTop = sigmaContainer.value?.getBoundingClientRect().top ?? 0
+    const drawerTop = window.innerHeight - drawerCollapsedPx.value
+    visibleH = Math.max(140, drawerTop - canvasTop)
+  }
+
+  const aspect = width / height
   const ratioForWidth = (dx * padding) / aspect
-  const ratioForHeight = dy * padding
+  const ratioForHeight = dy * padding * (height / visibleH)
   const newRatio = Math.max(ratioForWidth, ratioForHeight, 0.1)
+  const clamped = Math.max(0.05, Math.min(newRatio, 2))
+
+  if (visibleH < height) {
+    // Convert the pixel offset between canvas-center and visible-center
+    // into framed-graph units at the TARGET ratio (linear in ratio).
+    const p1 = renderer.viewportToFramedGraph({ x: 0, y: 0 })
+    const p2 = renderer.viewportToFramedGraph({ x: 0, y: 100 })
+    const unitsPerPxNow = (p2.y - p1.y) / 100 // sign included
+    const unitsPerPxTarget = unitsPerPxNow * (clamped / renderer.getCamera().ratio)
+    const pixelShift = (height - visibleH) / 2
+    cy += unitsPerPxTarget * pixelShift
+  }
 
   renderer.getCamera().animate(
-    { x: cx, y: cy, ratio: Math.max(0.05, Math.min(newRatio, 2)) },
+    { x: cx, y: cy, ratio: clamped },
     { duration: 400 },
   )
 }
@@ -328,7 +419,9 @@ function focusNode(nodeId: string) {
   graph!.forEachNeighbor(nodeId, (n) => focusedNeighbors.add(n))
   focusedLabel.value = graph!.getNodeAttribute(nodeId, 'label') || ''
   renderer?.refresh()
-  zoomToNodes(new Set([nodeId, ...focusedNeighbors]))
+  // On mobile the half-drawer opens with the selection — fit to the
+  // remaining visible strip above it.
+  zoomToNodes(new Set([nodeId, ...focusedNeighbors]), { forMobileDrawer: mobile.value })
 }
 
 function unfocusNode() {
@@ -934,6 +1027,10 @@ onMounted(async () => {
     resizeObserver.observe(sigmaContainer.value)
   }
 
+  computeDrawerMetrics()
+  window.addEventListener('resize', computeDrawerMetrics)
+  document.addEventListener('pointerdown', onDocPointer)
+
   await maybeApplyFocusFromQuery()
 })
 
@@ -952,6 +1049,8 @@ async function maybeApplyFocusFromQuery() {
 onUnmounted(() => {
   renderer?.kill()
   resizeObserver?.disconnect()
+  window.removeEventListener('resize', computeDrawerMetrics)
+  document.removeEventListener('pointerdown', onDocPointer)
 })
 </script>
 
@@ -1097,9 +1196,12 @@ onUnmounted(() => {
   bottom: 0;
   left: 0;
   right: 0;
-  /* Fixed height — transform slides up/down to reveal half or all */
-  height: 88vh;
-  transform: translateY(30vh); /* default: show bottom 58vh */
+  /* Height = viewport minus status-bar bottom, computed in JS.
+     Collapsed: transform reveals only the bottom 42vh.
+     Expanded: translateY(0) → top edge snaps exactly to the
+     status-bar's bottom edge; the counts stay readable. */
+  height: var(--drawer-max, 80vh);
+  transform: translateY(var(--drawer-peek, 38vh));
   transition: transform 340ms cubic-bezier(0, 0, 0.2, 1);
   z-index: 50;
   display: flex;
@@ -1108,7 +1210,7 @@ onUnmounted(() => {
   font-family: Georgia, 'Palatino Linotype', Palatino, serif;
 }
 .mobile-drawer--expanded {
-  transform: translateY(0); /* show full 88vh */
+  transform: translateY(0);
 }
 
 /* Transition: slide up from fully below viewport */
@@ -1123,10 +1225,9 @@ onUnmounted(() => {
   transform: translateY(100%) !important;
 }
 
-/* ── Bright stripe — the visual "midscreen" seam ──────────────── */
+/* ── Bright stripe — gold seam at the drawer's top edge ────────── */
 .drawer-stripe {
   flex-shrink: 0;
-  height: 36px;
   border-top: 2px solid rgba(200, 169, 110, 0.48);
   background: linear-gradient(
     180deg,
@@ -1134,19 +1235,27 @@ onUnmounted(() => {
     rgba(14, 11, 6, 0.0) 100%
   );
   display: flex;
-  align-items: center;
-  padding: 0 14px;
-  gap: 10px;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 0 14px 6px;
   cursor: ns-resize;
   touch-action: none;
   user-select: none;
 }
+/* Drag handle — centered, at the very top, above the title */
 .drawer-handle {
-  width: 36px;
+  width: 44px;
   height: 3px;
   border-radius: 2px;
   background: rgba(200, 169, 110, 0.55);
+  margin: 6px auto 6px;
   flex-shrink: 0;
+}
+.drawer-titlerow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
 }
 .drawer-label {
   flex: 1;
@@ -1287,6 +1396,87 @@ onUnmounted(() => {
 }
 .type-pill.active .type-dot { opacity: 0.95; }
 
+/* ── Mobile categories button + vertical modal ─────────────────── */
+/* Hidden on desktop — pills row covers it. Shown <=480px. */
+.cats-btn {
+  display: none;
+  align-items: center;
+  gap: 5px;
+  margin-left: 10px; /* slightly detached, nudged right of the toggles */
+  padding: 3px 9px;
+  font-family: Georgia, serif;
+  font-size: 11px;
+  font-style: italic;
+  letter-spacing: 0.05em;
+  border: 1px solid rgba(200, 169, 110, 0.28);
+  background: transparent;
+  color: rgba(238, 224, 196, 0.65);
+  cursor: pointer;
+  transition: all 150ms ease;
+  flex-shrink: 0;
+}
+.cats-btn.open,
+.cats-btn:hover {
+  color: #c8a96e;
+  border-color: rgba(200, 169, 110, 0.5);
+  background: rgba(200, 169, 110, 0.08);
+}
+.cats-btn-count {
+  font-size: 9.5px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  color: #c8a96e;
+  border: 1px solid rgba(200, 169, 110, 0.35);
+  border-radius: 8px;
+  padding: 0 5px;
+  line-height: 1.4;
+}
+
+.cats-modal {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 9;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  background: rgba(14, 11, 6, 0.92);
+  border: 1px solid rgba(200, 169, 110, 0.25);
+  border-radius: 4px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+}
+.cats-modal-eyebrow {
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(200, 169, 110, 0.5);
+  margin: 0 0 4px;
+  text-align: center;
+}
+.cats-modal-pill {
+  justify-content: flex-start;
+  width: 100%;
+}
+
+.cats-pop-enter-active {
+  transition: opacity 180ms cubic-bezier(0, 0, 0.2, 1), transform 180ms cubic-bezier(0, 0, 0.2, 1);
+}
+.cats-pop-leave-active {
+  transition: opacity 130ms cubic-bezier(0.4, 0, 1, 1), transform 130ms cubic-bezier(0.4, 0, 1, 1);
+}
+.cats-pop-enter-from,
+.cats-pop-leave-to {
+  opacity: 0;
+  transform: translateY(-6px) scale(0.97);
+}
+
 /* ── View toggle ───────────────────────────────────────────────── */
 .view-toggle { flex-shrink: 0; }
 .view-toggle :deep(.v-btn) {
@@ -1305,19 +1495,13 @@ onUnmounted(() => {
 @media (max-width: 960px) {
   .graph-area { transition: none; }
 }
-/* Mobile: hide search + spacer so pills fill the bar.
-   Zoom cluster is in the floating panel, so pills have full width. */
+/* Mobile: pills row replaced by the detached categories button +
+   vertical modal. Search + spacer hidden to keep the bar tight. */
 @media (max-width: 480px) {
   .toolbar :deep(.v-text-field) { display: none; }
   .toolbar :deep(.v-spacer) { display: none; }
-  .pills-scroll {
-    flex: 1 1 0;
-    -webkit-mask-image:
-      linear-gradient(90deg, #000 0, #000 calc(100% - 24px), transparent 100%);
-            mask-image:
-      linear-gradient(90deg, #000 0, #000 calc(100% - 24px), transparent 100%);
-  }
-  .type-pill { padding: 2px 6px; font-size: 10px; }
+  .pills-scroll { display: none; }
+  .cats-btn { display: inline-flex; }
   .toolbar :deep(.view-toggle .v-btn) { padding: 0 6px !important; min-width: 0 !important; }
 }
 </style>

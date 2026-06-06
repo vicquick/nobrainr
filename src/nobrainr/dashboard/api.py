@@ -1581,35 +1581,83 @@ async def api_facts_stats(request: Request) -> JSONResponse:
 
 
 _GALAXY_CACHE_PATH = "/tmp/nobrainr_galaxy_cache.json"
+_GALAXY_CACHE_GZ_PATH = "/tmp/nobrainr_galaxy_cache.json.gz"
+_galaxy_recomputing = False
+
+
+def _galaxy_cached_response(request: Request) -> Response:
+    """Serve the galaxy cache as raw bytes — no json parse/re-serialize.
+
+    Serves the pre-compressed .gz variant when the client accepts gzip
+    (browsers always do); falls back to plain JSON bytes otherwise.
+    """
+    import os
+
+    accept = request.headers.get("accept-encoding", "")
+    if "gzip" in accept and os.path.exists(_GALAXY_CACHE_GZ_PATH):
+        with open(_GALAXY_CACHE_GZ_PATH, "rb") as f:
+            return Response(
+                f.read(),
+                media_type="application/json",
+                headers={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"},
+            )
+    with open(_GALAXY_CACHE_PATH, "rb") as f:
+        return Response(f.read(), media_type="application/json")
 
 
 async def api_galaxy(request: Request) -> JSONResponse:
     """3D galaxy visualization data — PCA-reduced embeddings for all memories.
 
     Returns flat arrays for efficient Three.js InstancedBufferGeometry consumption.
-    Caches the PCA result for 1 hour.
+
+    Stale-while-revalidate: ANY existing cache is served immediately; if it
+    is older than the TTL, a background recompute refreshes it for the next
+    request. A user only ever blocks on the full UMAP when no cache exists
+    at all (first request after a redeploy, before the +10min pre-warm).
     """
-    import json
     import os
     import time as _time
 
-    # Serve from cache if available and fresh (default 30min).
-    # Both graph and galaxy are pre-warmed on startup so the first
-    # dashboard load never triggers a slow UMAP computation.
+    global _galaxy_recomputing
+
     cache_ttl = 1800  # 30 minutes
     force = request.query_params.get("refresh", "").lower() == "true"
+    limit = int(request.query_params.get("limit", "10000"))
+    limit = min(limit, 50000)
+
     if not force and os.path.exists(_GALAXY_CACHE_PATH):
         age = _time.time() - os.path.getmtime(_GALAXY_CACHE_PATH)
-        if age < cache_ttl:
-            with open(_GALAXY_CACHE_PATH) as f:
-                return JSONResponse(json.load(f))
+        if age >= cache_ttl and not _galaxy_recomputing:
+            # Serve stale now, refresh in the background.
+            _galaxy_recomputing = True
+
+            async def _refresh() -> None:
+                global _galaxy_recomputing
+                try:
+                    await _compute_galaxy(limit)
+                    log.info("Galaxy: background SWR refresh complete")
+                except Exception:
+                    log.exception("Galaxy: background SWR refresh failed")
+                finally:
+                    _galaxy_recomputing = False
+
+            asyncio.create_task(_refresh())
+        return _galaxy_cached_response(request)
+
+    result = await _compute_galaxy(limit)
+    if not os.path.exists(_GALAXY_CACHE_PATH):
+        # Empty DB — compute returned without writing a cache file.
+        return JSONResponse(result)
+    return _galaxy_cached_response(request)
+
+
+async def _compute_galaxy(limit: int) -> dict:
+    """Run the embeddings → PCA → UMAP pipeline and write the cache file."""
+    import json
 
     from nobrainr.db.pool import get_pool
 
     pool = await get_pool()
-    # Limit to manageable size for UMAP — sample by importance
-    limit = int(request.query_params.get("limit", "10000"))
-    limit = min(limit, 50000)
 
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
@@ -1623,7 +1671,7 @@ async def api_galaxy(request: Request) -> JSONResponse:
         """, limit)
 
     if not rows:
-        return JSONResponse({"count": 0, "positions": [], "categories": [], "ids": []})
+        return {"count": 0, "positions": [], "categories": [], "ids": []}
 
     import numpy as np
 
@@ -1687,8 +1735,10 @@ async def api_galaxy(request: Request) -> JSONResponse:
     if max_abs > 0:
         coords = (coords / max_abs).astype(np.float32)
 
-    # Flatten for JSON transfer
-    positions = coords.flatten().tolist()
+    # Flatten for JSON transfer. Coordinates are normalized to [-1, 1];
+    # 4 decimals is sub-pixel at any zoom and roughly halves the JSON size
+    # vs full float repr.
+    positions = [round(float(v), 4) for v in coords.flatten()]
 
     result = {
         "count": count,
@@ -1697,17 +1747,23 @@ async def api_galaxy(request: Request) -> JSONResponse:
         "tiers": tiers,
         "ids": ids,
         "summaries": summaries,
-        "importances": importances,
+        "importances": [round(v, 3) for v in importances],
     }
 
-    # Cache
+    # Cache — plain JSON plus a pre-compressed gz twin so cached requests
+    # are a raw byte read (no parse, no re-serialize, no per-request gzip).
     try:
-        with open(_GALAXY_CACHE_PATH, "w") as f:
-            json.dump(result, f)
+        import gzip as _gzip
+
+        payload = json.dumps(result, separators=(",", ":")).encode()
+        with open(_GALAXY_CACHE_PATH, "wb") as f:
+            f.write(payload)
+        with open(_GALAXY_CACHE_GZ_PATH, "wb") as f:
+            f.write(_gzip.compress(payload, 6))
     except Exception:
         pass
 
-    return JSONResponse(result)
+    return result
 
 
 async def api_health_detailed(request: Request) -> JSONResponse:
@@ -2083,46 +2139,71 @@ async def api_commonplace(request: Request) -> JSONResponse:
 
     pool = await get_pool()
     async with pool.acquire() as conn:
-        if q:
-            embedding = await embed_text(q)
-            # Semantic search on community_summaries where embedding exists,
-            # fall back to all entity-communities ordered by memory_count
-            rows = await conn.fetch(
-                """
-                WITH entity_communities AS (
+        # Shared CTE prefix. The old version computed top_names as a
+        # correlated subquery per community — 4.2s of a 4.4s endpoint.
+        # The window-function rewrite does one pass over entities (31ms).
+        # entity/memory counts are split into separate CTEs so the planner
+        # avoids a double COUNT(DISTINCT) sort over the em join.
+        _CTE_PREFIX = """
+                WITH name_max AS (
+                    SELECT community_id, canonical_name, MAX(mention_count) AS mc
+                    FROM entities
+                    WHERE community_id IS NOT NULL AND canonical_name IS NOT NULL
+                    GROUP BY community_id, canonical_name
+                ),
+                ranked AS (
+                    SELECT community_id, canonical_name,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY community_id ORDER BY mc DESC
+                           ) AS rn
+                    FROM name_max
+                ),
+                top_names AS (
+                    SELECT community_id,
+                           string_agg(canonical_name, ' · ' ORDER BY rn) AS names
+                    FROM ranked WHERE rn <= 3
+                    GROUP BY community_id
+                ),
+                ent_counts AS (
+                    SELECT community_id, COUNT(*) AS entity_count
+                    FROM entities
+                    WHERE community_id IS NOT NULL
+                    GROUP BY community_id
+                ),
+                mem_counts AS (
                     SELECT e.community_id,
-                           COUNT(DISTINCT e.id) AS entity_count,
-                           COUNT(DISTINCT em.memory_id) AS memory_count,
-                           (SELECT string_agg(sub.n, ' · ' ORDER BY sub.mc DESC)
-                            FROM (SELECT DISTINCT e2.canonical_name AS n,
-                                         MAX(e2.mention_count) AS mc
-                                  FROM entities e2
-                                  WHERE e2.community_id = e.community_id
-                                    AND e2.canonical_name IS NOT NULL
-                                  GROUP BY e2.canonical_name
-                                  ORDER BY mc DESC LIMIT 3) sub) AS top_names
+                           COUNT(DISTINCT em.memory_id) AS memory_count
                     FROM entities e
                     JOIN entity_memories em ON em.entity_id = e.id
                     WHERE e.community_id IS NOT NULL
                     GROUP BY e.community_id
                     HAVING COUNT(DISTINCT em.memory_id) > 0
                 )
-                SELECT ec.community_id,
-                       COALESCE(cs.title, ec.top_names) AS title,
+        """
+        if q:
+            embedding = await embed_text(q)
+            # Semantic search on community_summaries where embedding exists,
+            # fall back to all entity-communities ordered by memory_count
+            rows = await conn.fetch(
+                _CTE_PREFIX + """
+                SELECT mc.community_id,
+                       COALESCE(cs.title, tn.names) AS title,
                        COALESCE(cs.summary, '') AS summary,
                        COALESCE(cs.key_topics, ARRAY[]::text[]) AS key_topics,
                        ec.entity_count AS member_count,
                        cs.updated_at,
-                       ec.memory_count,
+                       mc.memory_count,
                        CASE WHEN cs.embedding IS NOT NULL
                            THEN 1 - (cs.embedding <=> $1::vector)
                            ELSE NULL END AS score
-                FROM entity_communities ec
-                LEFT JOIN community_summaries cs ON cs.community_id = ec.community_id
+                FROM mem_counts mc
+                JOIN ent_counts ec ON ec.community_id = mc.community_id
+                LEFT JOIN top_names tn ON tn.community_id = mc.community_id
+                LEFT JOIN community_summaries cs ON cs.community_id = mc.community_id
                 ORDER BY
                     CASE WHEN cs.embedding IS NOT NULL
                          THEN cs.embedding <=> $1::vector ELSE 1.0 END ASC,
-                    ec.memory_count DESC
+                    mc.memory_count DESC
                 LIMIT $2
                 """,
                 str(embedding),
@@ -2130,36 +2211,20 @@ async def api_commonplace(request: Request) -> JSONResponse:
             )
         else:
             rows = await conn.fetch(
-                """
-                WITH entity_communities AS (
-                    SELECT e.community_id,
-                           COUNT(DISTINCT e.id) AS entity_count,
-                           COUNT(DISTINCT em.memory_id) AS memory_count,
-                           (SELECT string_agg(sub.n, ' · ' ORDER BY sub.mc DESC)
-                            FROM (SELECT DISTINCT e2.canonical_name AS n,
-                                         MAX(e2.mention_count) AS mc
-                                  FROM entities e2
-                                  WHERE e2.community_id = e.community_id
-                                    AND e2.canonical_name IS NOT NULL
-                                  GROUP BY e2.canonical_name
-                                  ORDER BY mc DESC LIMIT 3) sub) AS top_names
-                    FROM entities e
-                    JOIN entity_memories em ON em.entity_id = e.id
-                    WHERE e.community_id IS NOT NULL
-                    GROUP BY e.community_id
-                    HAVING COUNT(DISTINCT em.memory_id) > 0
-                )
-                SELECT ec.community_id,
-                       COALESCE(cs.title, ec.top_names) AS title,
+                _CTE_PREFIX + """
+                SELECT mc.community_id,
+                       COALESCE(cs.title, tn.names) AS title,
                        COALESCE(cs.summary, '') AS summary,
                        COALESCE(cs.key_topics, ARRAY[]::text[]) AS key_topics,
                        ec.entity_count AS member_count,
                        cs.updated_at,
-                       ec.memory_count,
+                       mc.memory_count,
                        NULL::float AS score
-                FROM entity_communities ec
-                LEFT JOIN community_summaries cs ON cs.community_id = ec.community_id
-                ORDER BY ec.memory_count DESC
+                FROM mem_counts mc
+                JOIN ent_counts ec ON ec.community_id = mc.community_id
+                LEFT JOIN top_names tn ON tn.community_id = mc.community_id
+                LEFT JOIN community_summaries cs ON cs.community_id = mc.community_id
+                ORDER BY mc.memory_count DESC
                 LIMIT $1
                 """,
                 limit,
