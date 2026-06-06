@@ -144,10 +144,7 @@
         v-if="mobile && selectedNode"
         class="mobile-drawer"
         :class="{ 'mobile-drawer--expanded': drawerExpanded }"
-        :style="{
-          '--drawer-max': drawerMaxPx + 'px',
-          '--drawer-peek': Math.max(0, drawerMaxPx - drawerCollapsedPx) + 'px',
-        }"
+        :style="drawerStyle"
       >
         <!-- Bright stripe — gold seam at the very top edge, drag handle above the title -->
         <div
@@ -185,6 +182,8 @@ import Sigma from 'sigma'
 import Graph from 'graphology'
 import { EdgeLineProgram } from 'sigma/rendering'
 import { createNodeBorderProgram } from '@sigma/node-border'
+import FA2Layout from 'graphology-layout-forceatlas2/worker'
+import { inferSettings } from 'graphology-layout-forceatlas2'
 import { useGraph } from '@/composables/useGraph'
 import { useSSE } from '@/composables/useSSE'
 import { useChatStore } from '@/stores/chat'
@@ -251,28 +250,81 @@ function onDocPointer(e: PointerEvent) {
   catsOpen.value = false
 }
 
+// Live drag — drawer follows the finger 1:1; the snap happens only at
+// release (and only for the remaining distance), velocity-aware.
+const dragPeek = ref<number | null>(null)
 let dragStartY = 0
-let dragDelta = 0
+let dragStartPeek = 0
+let lastMoveY = 0
+let lastMoveT = 0
+let dragVelocity = 0 // px/ms, positive = downward
+
+function collapsedPeek() {
+  return Math.max(0, drawerMaxPx.value - drawerCollapsedPx.value)
+}
 
 function onDragStart(e: TouchEvent) {
+  computeDrawerMetrics()
   dragStartY = e.touches[0].clientY
-  dragDelta = 0
+  dragStartPeek = drawerExpanded.value ? 0 : collapsedPeek()
+  lastMoveY = dragStartY
+  lastMoveT = performance.now()
+  dragVelocity = 0
+  dragPeek.value = dragStartPeek
 }
 
 function onDragMove(e: TouchEvent) {
-  dragDelta = e.touches[0].clientY - dragStartY
+  if (dragPeek.value === null) return
+  const y = e.touches[0].clientY
+  const now = performance.now()
+  const dt = now - lastMoveT
+  if (dt > 0) dragVelocity = (y - lastMoveY) / dt
+  lastMoveY = y
+  lastMoveT = now
+  const next = dragStartPeek + (y - dragStartY)
+  // Follow the finger across the full range; below-collapsed drags pull
+  // toward dismissal.
+  dragPeek.value = Math.min(Math.max(next, 0), drawerMaxPx.value)
 }
 
 function onDragEnd(e: TouchEvent) {
   e.preventDefault() // prevent synthetic click from toggle-firing twice
-  const delta = e.changedTouches[0].clientY - dragStartY
-  if (Math.abs(delta) > 32) {
-    drawerExpanded.value = delta < 0 // swipe up = expand, down = collapse
-  } else {
-    drawerExpanded.value = !drawerExpanded.value // tap = toggle
+  const peek = dragPeek.value
+  dragPeek.value = null // transition re-engages; only the remaining bit animates
+  if (peek === null) return
+
+  const collapsed = collapsedPeek()
+  const moved = Math.abs(e.changedTouches[0].clientY - dragStartY)
+
+  if (moved < 6) {
+    drawerExpanded.value = !drawerExpanded.value // tap on stripe = toggle
+    return
   }
-  dragDelta = 0
+
+  const FLICK = 0.45 // px/ms
+  if (dragVelocity < -FLICK) { drawerExpanded.value = true; return }
+  if (dragVelocity > FLICK) {
+    if (peek > collapsed + 40) handleClosePanel()
+    else drawerExpanded.value = false
+    return
+  }
+
+  // No flick: settle to the nearest state; far below collapsed = dismiss.
+  if (peek > collapsed + 80) { handleClosePanel(); return }
+  drawerExpanded.value = peek < collapsed / 2
 }
+
+const drawerStyle = computed(() => {
+  const style: Record<string, string> = {
+    '--drawer-max': drawerMaxPx.value + 'px',
+    '--drawer-peek': collapsedPeek() + 'px',
+  }
+  if (dragPeek.value !== null) {
+    style.transform = `translateY(${dragPeek.value}px)`
+    style.transition = 'none'
+  }
+  return style
+})
 
 // Reset drawer position when node is deselected
 watch(selectedNode, (node) => {
@@ -284,6 +336,40 @@ const panelOpen = computed(() => !!selectedNode.value && !mobile.value)
 let graph: Graph | null = null
 let renderer: Sigma | null = null
 let resizeObserver: ResizeObserver | null = null
+
+// ── Organic settle — the Obsidian wiggle ──────────────────────────
+// A short ForceAtlas2 run in a web worker right after a small graph
+// mounts: nodes drift into place and breathe instead of appearing
+// frozen. Sigma re-renders automatically as the worker streams new
+// positions. Gated to small graphs (drill-downs, community view) —
+// the full entity graph keeps its precomputed layout.
+let fa2: InstanceType<typeof FA2Layout> | null = null
+let fa2Timer: ReturnType<typeof setTimeout> | null = null
+const SETTLE_MAX_NODES = 800
+const SETTLE_DURATION_MS = 3200
+
+function stopOrganicSettle() {
+  if (fa2Timer) { clearTimeout(fa2Timer); fa2Timer = null }
+  if (fa2) {
+    try { fa2.kill() } catch { /* worker already gone */ }
+    fa2 = null
+  }
+}
+
+function startOrganicSettle() {
+  stopOrganicSettle()
+  if (!graph || graph.order === 0 || graph.order > SETTLE_MAX_NODES) return
+  const settings = inferSettings(graph)
+  fa2 = new FA2Layout(graph, {
+    settings: {
+      ...settings,
+      slowDown: (settings.slowDown ?? 1) * 4, // gentle drift, not a jolt
+      gravity: 0.5,
+    },
+  })
+  fa2.start()
+  fa2Timer = setTimeout(stopOrganicSettle, SETTLE_DURATION_MS)
+}
 
 // Custom label renderer with dark background plate — uses Georgia for consistency
 function drawLabelWithBg(
@@ -321,6 +407,52 @@ function drawLabelWithBg(
   context.fill()
 
   context.fillStyle = color
+  context.fillText(data.label, x, y)
+}
+
+// Hover plate — warm-white parchment plate + dark ink text, ALWAYS
+// readable regardless of the node's labelColor. Sigma's default hover
+// renderer draws a white plate but inherits the node's label color —
+// our white labels became white-on-white (invisible).
+function drawHoverWithBg(
+  context: CanvasRenderingContext2D,
+  data: Record<string, any>,
+  settings: Record<string, any>,
+): void {
+  if (!data.label) return
+  const size = settings.labelSize
+  const font = settings.labelFont
+  const weight = settings.labelWeight
+
+  context.font = `${weight} ${size}px ${font}`
+  const textWidth = context.measureText(data.label).width
+  const x = data.x + data.size + 3
+  const y = data.y + size / 3
+
+  const px = 6, r = 3
+  const rx = x - px, ry = y - size - 1
+  const rw = textWidth + px * 2, rh = size + 7
+
+  context.save()
+  context.shadowColor = 'rgba(0, 0, 0, 0.5)'
+  context.shadowBlur = 8
+  context.shadowOffsetY = 2
+  context.fillStyle = 'rgba(244, 238, 224, 0.97)'
+  context.beginPath()
+  context.moveTo(rx + r, ry)
+  context.lineTo(rx + rw - r, ry)
+  context.quadraticCurveTo(rx + rw, ry, rx + rw, ry + r)
+  context.lineTo(rx + rw, ry + rh - r)
+  context.quadraticCurveTo(rx + rw, ry + rh, rx + rw - r, ry + rh)
+  context.lineTo(rx + r, ry + rh)
+  context.quadraticCurveTo(rx, ry + rh, rx, ry + rh - r)
+  context.lineTo(rx, ry + r)
+  context.quadraticCurveTo(rx, ry, rx + r, ry)
+  context.closePath()
+  context.fill()
+  context.restore()
+
+  context.fillStyle = 'rgba(20, 17, 10, 0.95)'
   context.fillText(data.label, x, y)
 }
 
@@ -434,6 +566,7 @@ function unfocusNode() {
 function initSigma() {
   if (!sigmaContainer.value || !graphData.value) return
 
+  stopOrganicSettle()
   if (renderer) {
     renderer.kill()
     renderer = null
@@ -501,9 +634,13 @@ function initSigma() {
     defaultEdgeType: 'line',
     edgeProgramClasses: { line: EdgeLineProgram },
     enableEdgeEvents: false,
-    drawLabel: drawLabelWithBg,
+    // Sigma v3 keys — the old `drawLabel` key was silently ignored, so the
+    // custom plate renderer never ran: focused labels rendered #000-on-dark
+    // (invisible) and hover used sigma's default white-plate + white text.
+    defaultDrawNodeLabel: drawLabelWithBg,
+    defaultDrawNodeHover: drawHoverWithBg,
     renderLabels: true,
-    labelColor: { attribute: 'labelColor', defaultValue: 'rgba(255, 255, 255, 0.7)' },
+    labelColor: { attribute: 'labelColor', color: 'rgba(255, 255, 255, 0.7)' },
     labelSize: 11,
     labelFont: 'Georgia, "Palatino Linotype", Palatino, serif',
     labelWeight: '500',
@@ -514,7 +651,7 @@ function initSigma() {
     defaultEdgeColor: '#242438',
     stagePadding: 40,
     zIndex: true,
-    enableNodeHoverHighlighting: false,
+    hideEdgesOnMove: true,
 
     nodeReducer(node, data) {
       const res = { ...data }
@@ -538,9 +675,9 @@ function initSigma() {
           res.labelColor = 'rgba(255, 255, 255, 0.92)'
           res.labelBgColor = 'rgba(10, 10, 14, 0.82)'
         } else {
-          res.color = 'rgba(60, 60, 70, 0.15)'
-          res.size = 1.5
-          res.label = ''
+          // Unrelated nodes vanish entirely — the focused subgraph gets
+          // the whole stage (and the renderer skips thousands of quads).
+          res.hidden = true
         }
         return res
       }
@@ -558,9 +695,7 @@ function initSigma() {
           res.labelColor = 'rgba(255, 255, 255, 0.92)'
           res.labelBgColor = 'rgba(10, 10, 14, 0.82)'
         } else {
-          res.color = 'rgba(60, 60, 70, 0.15)'
-          res.size = 1.5
-          res.label = ''
+          res.hidden = true
         }
         return res
       }
@@ -643,18 +778,32 @@ function initSigma() {
     },
   })
 
+  // Entity-view hover only restyles the hovered node + its edges, so a
+  // partial refresh skips re-running reducers across thousands of nodes —
+  // this is where most of the hover stutter came from.
   renderer.on('enterNode', ({ node }) => {
     hoveredNode = node
     hoveredNeighbors.clear()
     if (graph) graph.forEachNeighbor(node, (n) => hoveredNeighbors.add(n))
     sigmaContainer.value!.style.cursor = 'pointer'
-    renderer?.refresh()
+    renderer?.refresh({
+      partialGraph: { nodes: [node], edges: graph?.edges(node) ?? [] },
+      skipIndexation: true,
+    })
   })
   renderer.on('leaveNode', () => {
+    const prev = hoveredNode
     hoveredNode = null
     hoveredNeighbors.clear()
     sigmaContainer.value!.style.cursor = 'default'
-    renderer?.refresh()
+    if (prev && graph?.hasNode(prev)) {
+      renderer?.refresh({
+        partialGraph: { nodes: [prev], edges: graph.edges(prev) },
+        skipIndexation: true,
+      })
+    } else {
+      renderer?.refresh()
+    }
   })
 
   renderer.on('clickNode', async ({ node }) => {
@@ -674,6 +823,7 @@ function initSigma() {
 function initCommunitySigma() {
   if (!sigmaContainer.value || !communityGraphData.value) return
 
+  stopOrganicSettle()
   if (renderer) {
     renderer.kill()
     renderer = null
@@ -724,9 +874,10 @@ function initCommunitySigma() {
     defaultEdgeType: 'line',
     edgeProgramClasses: { line: EdgeLineProgram },
     enableEdgeEvents: false,
-    drawLabel: drawLabelWithBg,
+    defaultDrawNodeLabel: drawLabelWithBg,
+    defaultDrawNodeHover: drawHoverWithBg,
     renderLabels: true,
-    labelColor: { attribute: 'labelColor', defaultValue: 'rgba(255, 255, 255, 0.85)' },
+    labelColor: { attribute: 'labelColor', color: 'rgba(255, 255, 255, 0.85)' },
     labelSize: 13,
     labelFont: 'Georgia, "Palatino Linotype", Palatino, serif',
     labelWeight: '600',
@@ -737,7 +888,6 @@ function initCommunitySigma() {
     defaultEdgeColor: '#26263e',
     stagePadding: 60,
     zIndex: true,
-    enableNodeHoverHighlighting: false,
 
     nodeReducer(node, data) {
       const res = { ...data }
@@ -815,6 +965,7 @@ async function drillIntoCommunity(communityId: number) {
   await nextTick()
   requestAnimationFrame(() => {
     initSigma()
+    startOrganicSettle() // drill subsets are small — let them breathe in
     loading.value = false
   })
 }
@@ -831,6 +982,7 @@ async function switchToCommunityView() {
   await nextTick()
   requestAnimationFrame(() => {
     initCommunitySigma()
+    startOrganicSettle()
     loading.value = false
   })
 }
@@ -983,7 +1135,9 @@ watch(viewMode, async (mode) => {
 
 const graphStale = ref(false)
 useSSE((evt) => {
-  if (['memory_created', 'memory_deleted'].includes(evt.type)) {
+  // Only entity-graph changes matter here. memory_created fires on every
+  // write (session logs, scheduler jobs) and cried wolf constantly.
+  if (evt.type === 'entities_changed') {
     graphStale.value = true
   }
 })
@@ -1017,6 +1171,7 @@ onMounted(async () => {
   } else {
     initSigma()
   }
+  startOrganicSettle()
   loading.value = false
 
   if (sigmaContainer.value) {
@@ -1047,6 +1202,7 @@ async function maybeApplyFocusFromQuery() {
 }
 
 onUnmounted(() => {
+  stopOrganicSettle()
   renderer?.kill()
   resizeObserver?.disconnect()
   window.removeEventListener('resize', computeDrawerMetrics)
