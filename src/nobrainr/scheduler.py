@@ -153,7 +153,7 @@ LLM_JOB_TIMEOUT_OVERRIDES = {
     # to 180m so the long-tail variance (network blips, GPU contention
     # from quality_scoring) stops killing otherwise-healthy runs. Batch
     # size is also being cut 15→10 in config so per-run work shrinks.
-    "chatgpt_distill": 180 * 60,
+    "chatgpt_distill": 240 * 60,  # 4h: long-tail monster convos (up to 581 msgs / 30 windows each) need headroom to finish a small batch without a misleading timeout status
     "community_detection": 90 * 60,  # 42k entities + 50 community summaries = slow
     # quality_scoring: batch=60 × ~90s queue-wait per call when entity extraction
     # is competing for llama-server = 5400s >> 30min default. 60min survives the
