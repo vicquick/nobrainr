@@ -226,7 +226,7 @@ class Settings(BaseSettings):
     # timeout (per-call work scales linearly, GPU contention from concurrent
     # quality_scoring tripled the worst-case). Batch 10 keeps run time well
     # under the (now 180m) ceiling with headroom for one slow conversation.
-    chatgpt_distill_batch_size: int = 10
+    chatgpt_distill_batch_size: int = 4  # final 43 long-tail convos (avg 269 msgs) need a small batch to finish inside the run window
     chatgpt_distill_concurrency: int = 1
     chatgpt_distill_model: str = "qwen3.6:35b"
     # Fact extraction (NEW — Mem0-style atomic facts)
