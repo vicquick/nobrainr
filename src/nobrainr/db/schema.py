@@ -145,6 +145,23 @@ CREATE INDEX IF NOT EXISTS idx_memories_content_trgm
 CREATE INDEX IF NOT EXISTS idx_memories_created_at
     ON memories (created_at DESC);
 
+-- Exact-content dedup gate for importer/batch inserts (store_memory
+-- skip_if_duplicate) and the write-queue classifier. md5 over content is
+-- IMMUTABLE so it can be indexed directly; sha256 needs convert_to() which
+-- is only STABLE.
+CREATE INDEX IF NOT EXISTS idx_memories_source_ref_md5
+    ON memories (source_ref, md5(content));
+
+-- Ingest-time vs event-time (2026-06-11): created_at is event-time and can
+-- be backdated by importers (ChatGPT convos carry their original date), so
+-- "rows added recently" queries against created_at are wrong for retention
+-- and anomaly logic. inserted_at is the wall-clock insert. Backfill for
+-- pre-existing rows comes from the UUIDv7 id prefix
+-- (scripts/migrations/2026-06-11-inserted-at-backfill.sql).
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS inserted_at timestamptz DEFAULT now();
+CREATE INDEX IF NOT EXISTS idx_memories_inserted_at
+    ON memories (inserted_at DESC);
+
 -- Raw conversation archives
 CREATE TABLE IF NOT EXISTS conversations_raw (
     id              uuid DEFAULT uuidv7() PRIMARY KEY,

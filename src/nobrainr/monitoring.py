@@ -207,6 +207,83 @@ async def check_system_resources() -> dict:
     return result
 
 
+async def check_pipeline_anomalies() -> list[str]:
+    """Detect memory-pipeline pathologies that container health checks miss.
+
+    Added 2026-06-11 after the chatgpt_distill timeout loop ran for ~4 weeks
+    unnoticed: the job timed out on 80 of 94 runs while re-inserting ~10k
+    duplicate memories per week, and every container stayed "healthy".
+
+    Two signals:
+    - A scheduler job whose recent runs are mostly timeouts (>=4 of last 5).
+      One timeout is long-tail variance; a streak means the job never
+      completes and is likely redoing (and re-storing) the same work.
+    - Insert volume per source_type far above its 30-day norm (>3x the daily
+      median and >500/day), measured on inserted_at so backdated created_at
+      can't mask a flood.
+    """
+    from nobrainr.db.pool import get_pool
+
+    warnings: list[str] = []
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            timeout_rows = await conn.fetch(
+                """
+                SELECT task_name,
+                       count(*) FILTER (WHERE status = 'timeout') AS timeouts,
+                       count(*) AS runs
+                FROM (
+                    SELECT task_name, status,
+                           row_number() OVER (PARTITION BY task_name ORDER BY created_at DESC) AS rn
+                    FROM scheduler_runs
+                    WHERE status IN ('ok', 'timeout', 'error')
+                ) recent
+                WHERE rn <= 5
+                GROUP BY task_name
+                HAVING count(*) FILTER (WHERE status = 'timeout') >= 4
+                """,
+            )
+            for row in timeout_rows:
+                warnings.append(
+                    f"Scheduler job '{row['task_name']}' timed out on "
+                    f"{row['timeouts']} of its last {row['runs']} runs — it is "
+                    f"likely looping without completing (check for re-processed work)"
+                )
+
+            flood_rows = await conn.fetch(
+                """
+                WITH daily AS (
+                    SELECT source_type, inserted_at::date AS day, count(*) AS n
+                    FROM memories
+                    WHERE inserted_at > now() - interval '30 days'
+                    GROUP BY 1, 2
+                ),
+                norm AS (
+                    SELECT source_type,
+                           percentile_cont(0.5) WITHIN GROUP (ORDER BY n) AS median_n
+                    FROM daily
+                    WHERE day < current_date
+                    GROUP BY source_type
+                )
+                SELECT d.source_type, d.n, norm.median_n
+                FROM daily d
+                JOIN norm USING (source_type)
+                WHERE d.day = current_date
+                  AND d.n > 500
+                  AND d.n > 3 * norm.median_n
+                """,
+            )
+            for row in flood_rows:
+                warnings.append(
+                    f"Insert flood: source_type '{row['source_type']}' added "
+                    f"{row['n']} memories today vs 30d median {int(row['median_n'])}/day"
+                )
+    except Exception:
+        logger.exception("Pipeline anomaly check failed")
+    return warnings
+
+
 async def monitor_health() -> dict:
     """Scheduler job entry point: check health, store anomalies as memories.
 
@@ -254,6 +331,11 @@ async def monitor_health() -> dict:
 
     # Process resource warnings
     for warning in resources["warnings"]:
+        anomalies.append(warning)
+        logger.warning("Monitoring alert: %s", warning)
+
+    # Process memory-pipeline anomalies (job timeout loops, insert floods)
+    for warning in await check_pipeline_anomalies():
         anomalies.append(warning)
         logger.warning("Monitoring alert: %s", warning)
 
