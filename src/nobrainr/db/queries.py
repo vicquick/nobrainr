@@ -41,6 +41,7 @@ async def store_memory(
     metadata: dict | None = None,
     fts_context: str | None = None,
     event_ts: "datetime | None" = None,
+    skip_if_duplicate: bool = False,
 ) -> dict:
     """Insert a new memory row.
 
@@ -50,18 +51,50 @@ async def store_memory(
     event*, not *when the LLM pipeline finished processing it*. Without
     this, a memory enqueued 2 days ago but dequeued today shows up as
     "today" on the dashboard — misleading for historical recall.
+
+    skip_if_duplicate (2026-06-11): importers and batch pipelines call this
+    directly, bypassing the write-queue dedup classifier — re-runs used to
+    insert the same learning verbatim (the chatgpt_distill duplicate flood).
+    When True, an exact-content twin under the same source_ref short-circuits
+    to the existing row (uses idx_memories_source_ref_md5). The write-queue
+    path keeps its own richer classifier and leaves this off.
     """
     from nobrainr.config import settings
+    from nobrainr.utils.quality import heuristic_quality_score
     from nobrainr.utils.tags import canonicalize_tags
+
+    # Score-at-insert: every row gets a heuristic quality_score immediately
+    # so tiering/archiving/ranking never see a NULL blind spot. The LLM
+    # quality_scoring job refines rows flagged quality_heuristic later.
+    heuristic_score = heuristic_quality_score(
+        content, category=category, confidence=confidence,
+    )
+    metadata = {**(metadata or {}), "quality_heuristic": True}
 
     pool = await get_pool()
     async with pool.acquire() as conn:
+        if skip_if_duplicate:
+            existing = await conn.fetchrow(
+                """
+                SELECT id, created_at FROM memories
+                WHERE source_ref IS NOT DISTINCT FROM $1
+                  AND md5(content) = md5($2)
+                LIMIT 1
+                """,
+                source_ref, content,
+            )
+            if existing:
+                return {
+                    "id": str(existing["id"]),
+                    "created_at": existing["created_at"].isoformat(),
+                    "duplicate": True,
+                }
         row = await conn.fetchrow(
             """
             INSERT INTO memories (content, summary, embedding, source_type, source_machine,
                                   source_ref, tags, category, confidence, metadata,
-                                  embedding_model, fts_context, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, COALESCE($13, now()))
+                                  embedding_model, fts_context, created_at, quality_score)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, COALESCE($13, now()), $14)
             RETURNING id, created_at
             """,
             content,
@@ -77,6 +110,7 @@ async def store_memory(
             settings.embedding_model,
             fts_context,
             event_ts,
+            heuristic_score,
         )
         result = {"id": str(row["id"]), "created_at": row["created_at"].isoformat()}
         publish("memory_created", {"id": result["id"]})
@@ -2226,16 +2260,33 @@ async def archive_stale_memories(limit: int = 50) -> int:
         return count
 
 
-async def archive_chatgpt_low_quality(limit: int = 500) -> int:
+async def archive_chatgpt_low_quality(limit: int | None = None) -> int:
     """Archive low-importance ChatGPT memories based on conversation age.
 
     Applied 30 days after import so memories have time to accumulate retrieval
     reinforcement before being judged. Protected categories (security,
     architecture, infrastructure, patterns, insight) use a looser threshold
     so domain knowledge survives regardless of access frequency.
+
+    limit (2026-06-11): when None, scales with the last 7 days of chatgpt
+    inflow (floor 500/day) so retention keeps pace with ingestion instead of
+    falling behind a fixed cap — the May/June duplicate flood outran the old
+    hardcoded 500/day for weeks. The age window uses inserted_at, not
+    created_at: created_at is backdated to the conversation's original date,
+    which made the 30-day reinforcement window trivially true for every
+    imported memory.
     """
     pool = await get_pool()
     async with pool.acquire() as conn:
+        if limit is None:
+            inflow = await conn.fetchval(
+                """
+                SELECT count(*) FROM memories
+                WHERE source_type = 'chatgpt'
+                  AND inserted_at > now() - interval '7 days'
+                """,
+            )
+            limit = max(500, (inflow or 0) // 7)
         async with conn.transaction():
             await _set_provenance(
                 conn,
@@ -2250,7 +2301,7 @@ async def archive_chatgpt_low_quality(limit: int = 500) -> int:
                     SELECT id FROM memories
                     WHERE source_type = 'chatgpt'
                       AND category != '_archived'
-                      AND created_at < now() - interval '30 days'
+                      AND inserted_at < now() - interval '30 days'
                       AND (
                         (date_trunc('year', created_at) <= '2024-01-01' AND importance < 0.5) OR
                         (date_trunc('year', created_at) >= '2025-01-01'
@@ -2275,13 +2326,15 @@ async def get_unscored_memories(limit: int = 20) -> list[dict]:
             """
             SELECT id, content, summary, source_type, category, tags
             FROM memories
-            WHERE quality_score IS NULL
+            WHERE (quality_score IS NULL OR metadata->>'quality_heuristic' = 'true')
               AND category != '_archived'
               AND content IS NOT NULL
               AND length(content) > 20
-            -- Importance-first: likely-valuable knowledge gets validated
-            -- quality early; bulk-import filler waits its turn.
-            ORDER BY COALESCE(importance, 0.5) DESC, created_at DESC
+            -- NULL scores first (no signal at all), then heuristic-scored
+            -- rows awaiting LLM refinement. Importance-first within each:
+            -- likely-valuable knowledge gets validated quality early.
+            ORDER BY (quality_score IS NULL) DESC,
+                     COALESCE(importance, 0.5) DESC, created_at DESC
             LIMIT $1
             """,
             limit,
@@ -2306,7 +2359,8 @@ async def update_quality_score(
             SET quality_score = $2,
                 quality_specificity = $3,
                 quality_actionability = $4,
-                quality_self_containment = $5
+                quality_self_containment = $5,
+                metadata = metadata - 'quality_heuristic'
             WHERE id = $1
             """,
             UUID(memory_id),
