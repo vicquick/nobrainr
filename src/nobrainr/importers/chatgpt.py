@@ -363,6 +363,57 @@ async def distill_conversations(
     results = {"processed": 0, "distilled": 0, "skipped": 0, "windows_processed": 0}
     lock = asyncio.Lock()
 
+    async def _resume_window(convo_id: str, metadata: dict, total_windows: int) -> int:
+        """Return the window index to resume from (0 = start fresh).
+
+        Prefers the explicit checkpoint written after each completed window.
+        Falls back to scanning already-stored memories for this conversation —
+        that drains conversations that were partially distilled before
+        checkpointing existed, instead of re-running them from window 0.
+        Both paths are only trusted when the stored total_windows matches the
+        current windowing (window layout is deterministic per message list).
+        """
+        progress = (metadata or {}).get("distill_progress") or {}
+        if progress.get("total_windows") == total_windows:
+            return int(progress.get("next_window", 0))
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT max((metadata->>'window_index')::int) AS max_done
+                FROM memories
+                WHERE metadata->>'conversation_id' = $1
+                  AND (metadata->>'total_windows')::int = $2
+                """,
+                convo_id, total_windows,
+            )
+        if row and row["max_done"] is not None:
+            return row["max_done"] + 1
+        return 0
+
+    async def _checkpoint_window(
+        convo_id: str, next_window: int, total_windows: int, distilled_so_far: int,
+    ) -> None:
+        """Persist per-window progress so a scheduler timeout never restarts
+        the conversation from window 0 (the 2026-05/06 duplicate flood)."""
+        pool = await get_pool()
+        from uuid import UUID
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE conversations_raw
+                SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb
+                WHERE id = $2
+                """,
+                json.dumps({"distill_progress": {
+                    "next_window": next_window,
+                    "total_windows": total_windows,
+                    "distilled_so_far": distilled_so_far,
+                }}),
+                UUID(convo_id),
+            )
+
     async def _distill_one(row):
         convo_id = str(row["id"])
         title = row["title"] or "Untitled"
@@ -398,8 +449,27 @@ async def distill_conversations(
                     results["processed"] += 1
                 return
 
+            start_window = await _resume_window(convo_id, metadata, len(windows))
+            if start_window >= len(windows):
+                # Everything was already distilled in a previous (interrupted) run
+                progress = (metadata or {}).get("distill_progress") or {}
+                await _mark_distilled(
+                    convo_id, int(progress.get("distilled_so_far", 0)), windows=len(windows),
+                )
+                async with lock:
+                    results["processed"] += 1
+                return
+            if start_window > 0:
+                logger.info(
+                    "Resuming '%s' from window %d/%d", title, start_window + 1, len(windows),
+                )
+                progress = (metadata or {}).get("distill_progress") or {}
+                local_distilled = int(progress.get("distilled_so_far", 0))
+
             # Process each window
             for window_idx, window_text in enumerate(windows):
+                if window_idx < start_window:
+                    continue
                 if len(window_text.strip()) < 100:
                     continue
 
@@ -466,8 +536,13 @@ async def distill_conversations(
                             "total_windows": len(windows),
                         },
                         event_ts=event_ts,
+                        skip_if_duplicate=True,
                     )
                     local_distilled += 1
+
+                await _checkpoint_window(
+                    convo_id, window_idx + 1, len(windows), local_distilled,
+                )
 
                 # Yield between windows to let live requests through
                 from nobrainr.config import settings as _s
@@ -489,6 +564,16 @@ async def distill_conversations(
                 results["windows_processed"] += local_windows
                 results["processed"] += 1
 
+        except asyncio.CancelledError:
+            # Scheduler timeout. CancelledError is BaseException so the
+            # except-Exception below never sees it — before checkpointing
+            # existed, this path silently dropped _mark_distilled and the
+            # conversation was re-distilled from window 0 every cycle.
+            # Progress is already persisted per-window; just propagate.
+            logger.warning(
+                "Distillation of '%s' cancelled at window checkpoint, will resume", title,
+            )
+            raise
         except Exception as e:
             err_msg = f"{type(e).__name__}: {e}" or "unknown error"
             logger.warning("Distillation failed for '%s': %s", title, err_msg, exc_info=True)
@@ -521,7 +606,7 @@ async def _mark_distilled(
         await conn.execute(
             """
             UPDATE conversations_raw
-            SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb
+            SET metadata = (COALESCE(metadata, '{}'::jsonb) - 'distill_progress') || $1::jsonb
             WHERE id = $2
             """,
             json.dumps({
