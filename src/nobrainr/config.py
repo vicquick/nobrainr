@@ -26,6 +26,21 @@ class Settings(BaseSettings):
     ]
     embedding_dimensions: int = 1024
 
+    # GPU yield (2026-06-13). llama-swap runs one exclusive "chat" slot:
+    # qwen3-8b (live apps: bimavo wizard, MCP tools) XOR qwen3.6-27b
+    # (scheduler: distill, extraction, scoring). A scheduler call while the
+    # 8b is resident would evict it mid-conversation and cost two ~35s
+    # swaps per exchange. Instead, scheduler calls poll llama-swap
+    # /running and defer while any model listed here is loaded. The 8b's
+    # llama-swap ttl (900s) bounds how long after the last live request
+    # the scheduler stays parked; max_wait caps the defer so background
+    # jobs degrade to slow instead of starving forever under constant
+    # live load. Empty list disables the check (plain llama-server has
+    # no /running endpoint and is also handled by the try/except).
+    gpu_yield_models: list[str] = ["qwen3-8b"]
+    gpu_yield_max_wait_s: float = 900.0
+    gpu_yield_poll_s: float = 15.0
+
     # MCP Server
     host: str = "0.0.0.0"
     port: int = 8420
