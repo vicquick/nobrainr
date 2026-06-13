@@ -40,6 +40,7 @@ Why the defaults below look the way they do:
 
 import asyncio
 import collections as _collections
+import datetime as _dt
 import json
 import logging
 import random
@@ -138,20 +139,34 @@ def _mark_live_call() -> None:
     _last_live_call_ts = time.monotonic()
 
 
-# GPU-yield residency cache. The /running poll is cheap but every
+# GPU-yield activity cache. The /api/metrics poll is cheap but every
 # scheduler call passes through here; a short cache keeps it to at most
 # one HTTP round-trip per TTL window even under batch fan-out.
 _gpu_yield_cache: tuple[float, bool] = (0.0, False)
 _GPU_YIELD_CACHE_TTL_S = 10.0
 
 
-async def _live_model_resident() -> bool:
-    """True when llama-swap reports a gpu_yield model on the chat slot.
+def _parse_metrics_ts(raw: str) -> _dt.datetime | None:
+    """llama-swap timestamps carry nanosecond precision which
+    ``fromisoformat`` rejects; second precision is plenty here."""
+    try:
+        return _dt.datetime.fromisoformat(raw.split(".")[0]).replace(
+            tzinfo=_dt.timezone.utc
+        )
+    except ValueError:
+        return None
 
-    Requesting the 27b while the 8b is resident evicts it mid-conversation
-    (exclusive group), so scheduler calls treat 8b-residency as "a live app
-    owns the GPU" and defer. Plain llama-server has no /running endpoint —
-    any error means no llama-swap, so the check degrades to a no-op.
+
+async def _live_model_active() -> bool:
+    """True when a gpu_yield model served a request recently.
+
+    Requesting the 27b while a live app is mid-conversation on the 8b
+    evicts it (exclusive chat slot) and costs two ~35s swaps per exchange.
+    Request-recency from llama-swap /api/metrics is the signal — residency
+    alone flips back as soon as one scheduler call slips through, while
+    recency keeps the park alive across the gaps between user exchanges.
+    Plain llama-server has no /api/metrics — any error degrades the check
+    to a no-op.
     """
     global _gpu_yield_cache
     if not settings.gpu_yield_models:
@@ -162,14 +177,19 @@ async def _live_model_resident() -> bool:
     busy = False
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{settings.llm_server_url}/running")
+            resp = await client.get(f"{settings.llm_server_url}/api/metrics")
             resp.raise_for_status()
             yield_set = set(settings.gpu_yield_models)
-            busy = any(
-                entry.get("model") in yield_set
-                and entry.get("state") in ("ready", "starting")
-                for entry in resp.json().get("running", [])
+            cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(
+                seconds=settings.gpu_yield_recent_s
             )
+            for entry in resp.json():
+                if entry.get("model") not in yield_set:
+                    continue
+                ts = _parse_metrics_ts(entry.get("timestamp", ""))
+                if ts is not None and ts >= cutoff:
+                    busy = True
+                    break
     except Exception:
         busy = False
     _gpu_yield_cache = (time.monotonic(), busy)
@@ -185,14 +205,14 @@ async def _wait_for_live_quiet(caller_kind: str) -> None:
         if remaining <= 0:
             break
         await asyncio.sleep(min(_LIVE_COOLDOWN_POLL_S, remaining))
-    # GPU yield: park while a live-preferred model holds the chat slot.
-    # The 8b's llama-swap ttl evicts it after idle, clearing the check;
-    # max_wait bounds the park under sustained live load.
+    # GPU yield: park while a live-preferred model served requests
+    # recently. The park clears recent_s after the last live request;
+    # max_wait bounds it under sustained live load.
     waited = 0.0
-    while waited < settings.gpu_yield_max_wait_s and await _live_model_resident():
+    while waited < settings.gpu_yield_max_wait_s and await _live_model_active():
         if waited == 0.0:
             logger.info(
-                "scheduler LLM call parked: live model %s resident on GPU chat slot",
+                "scheduler LLM call parked: live model %s active on GPU chat slot",
                 settings.gpu_yield_models,
             )
         await asyncio.sleep(settings.gpu_yield_poll_s)
