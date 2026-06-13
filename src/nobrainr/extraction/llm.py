@@ -138,6 +138,44 @@ def _mark_live_call() -> None:
     _last_live_call_ts = time.monotonic()
 
 
+# GPU-yield residency cache. The /running poll is cheap but every
+# scheduler call passes through here; a short cache keeps it to at most
+# one HTTP round-trip per TTL window even under batch fan-out.
+_gpu_yield_cache: tuple[float, bool] = (0.0, False)
+_GPU_YIELD_CACHE_TTL_S = 10.0
+
+
+async def _live_model_resident() -> bool:
+    """True when llama-swap reports a gpu_yield model on the chat slot.
+
+    Requesting the 27b while the 8b is resident evicts it mid-conversation
+    (exclusive group), so scheduler calls treat 8b-residency as "a live app
+    owns the GPU" and defer. Plain llama-server has no /running endpoint —
+    any error means no llama-swap, so the check degrades to a no-op.
+    """
+    global _gpu_yield_cache
+    if not settings.gpu_yield_models:
+        return False
+    checked_at, busy = _gpu_yield_cache
+    if time.monotonic() - checked_at < _GPU_YIELD_CACHE_TTL_S:
+        return busy
+    busy = False
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{settings.llm_server_url}/running")
+            resp.raise_for_status()
+            yield_set = set(settings.gpu_yield_models)
+            busy = any(
+                entry.get("model") in yield_set
+                and entry.get("state") in ("ready", "starting")
+                for entry in resp.json().get("running", [])
+            )
+    except Exception:
+        busy = False
+    _gpu_yield_cache = (time.monotonic(), busy)
+    return busy
+
+
 async def _wait_for_live_quiet(caller_kind: str) -> None:
     """If this is a scheduler call and a live call fired recently, yield."""
     if caller_kind != "scheduler":
@@ -145,8 +183,20 @@ async def _wait_for_live_quiet(caller_kind: str) -> None:
     while True:
         remaining = _LIVE_COOLDOWN_S - (time.monotonic() - _last_live_call_ts)
         if remaining <= 0:
-            return
+            break
         await asyncio.sleep(min(_LIVE_COOLDOWN_POLL_S, remaining))
+    # GPU yield: park while a live-preferred model holds the chat slot.
+    # The 8b's llama-swap ttl evicts it after idle, clearing the check;
+    # max_wait bounds the park under sustained live load.
+    waited = 0.0
+    while waited < settings.gpu_yield_max_wait_s and await _live_model_resident():
+        if waited == 0.0:
+            logger.info(
+                "scheduler LLM call parked: live model %s resident on GPU chat slot",
+                settings.gpu_yield_models,
+            )
+        await asyncio.sleep(settings.gpu_yield_poll_s)
+        waited += settings.gpu_yield_poll_s
 
 # ──────────────────────────────────────────────
 # Retry + timeout policy (see module docstring for rationale)
