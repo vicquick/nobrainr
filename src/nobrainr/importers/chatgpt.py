@@ -261,6 +261,31 @@ async def import_chatgpt_export(
 # Phase 2: LLM distillation (multi-pass)
 # ──────────────────────────────────────────────
 
+def _split_long_content(content: str, target: int = 500) -> list[str]:
+    """Split message content longer than 2000 chars into ~target-char pieces.
+
+    Prefers paragraph boundaries; hard-cuts single paragraphs that exceed
+    4x target so no piece outgrows the window builder's per-message
+    truncation threshold.
+    """
+    if len(content) <= 2000:
+        return [content] if content else []
+    parts: list[str] = []
+    buf = ""
+    for para in content.split("\n\n"):
+        if buf and len(buf) + len(para) + 2 > target:
+            parts.append(buf)
+            buf = para
+        else:
+            buf = f"{buf}\n\n{para}" if buf else para
+        while len(buf) > target * 4:
+            parts.append(buf[: target * 4])
+            buf = buf[target * 4 :]
+    if buf:
+        parts.append(buf)
+    return parts
+
+
 def _sliding_windows(
     messages: list[dict],
     window_size: int = 8,
@@ -288,6 +313,21 @@ def _sliding_windows(
     relevant = [m for m in messages if m.get("role") in ("user", "assistant")]
     if not relevant:
         return []
+
+    # Explode long messages into paragraph-sized pieces (2026-06-13).
+    # Windows advance by message index, so a 2-message conversation with a
+    # 100KB answer used to collapse into ONE window with both messages
+    # truncated to 1800 chars — >95% of the densest single-exchange
+    # technical conversations never reached the LLM. Splitting long
+    # messages into ~500-char pieces lets the existing message-indexed
+    # windowing cover them: 8 pieces/window, step 6 → ~3KB of fresh
+    # content per window with natural overlap, max_windows still bounds
+    # total LLM cost per conversation.
+    exploded: list[dict] = []
+    for m in relevant:
+        for piece in _split_long_content(m.get("content", "").strip()):
+            exploded.append({"role": m["role"], "content": piece})
+    relevant = exploded
 
     # Short conversations: single window
     full_text = ""
@@ -377,6 +417,17 @@ async def distill_conversations(
         if progress.get("total_windows") == total_windows:
             return int(progress.get("next_window", 0))
 
+        # Deliberate re-distill (e.g. after a model upgrade): the operator
+        # clears `distilled` and sets `redistill` on the conversation. The
+        # memories-table fallback below would otherwise see the OLD model's
+        # window indexes and skip straight past the end — re-marking the
+        # conversation distilled without a single LLM call. The marker says
+        # "old memories don't count, start from window 0". Checkpoints
+        # written during the re-run take the fast path above, so timeout
+        # resume still works; _mark_distilled clears the marker at the end.
+        if (metadata or {}).get("redistill"):
+            return 0
+
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -429,11 +480,15 @@ async def distill_conversations(
         local_windows = 0
 
         try:
-            # Pre-filter: skip trivial conversations without LLM call
+            # Pre-filter: skip trivial conversations without LLM call.
+            # Content length only (2026-06-13) — the old `< 3 messages`
+            # condition skipped 440 single-exchange conversations of up to
+            # 106KB (one question + one long technical answer), which are
+            # some of the densest knowledge sources in the corpus.
             relevant_msgs = [m for m in messages if m.get("role") in ("user", "assistant")]
             total_content = sum(len(m.get("content", "")) for m in relevant_msgs)
 
-            if len(relevant_msgs) < 3 or total_content < 200:
+            if not relevant_msgs or total_content < 200:
                 await _mark_distilled(convo_id, 0)
                 async with lock:
                     results["skipped"] += 1
@@ -606,7 +661,7 @@ async def _mark_distilled(
         await conn.execute(
             """
             UPDATE conversations_raw
-            SET metadata = (COALESCE(metadata, '{}'::jsonb) - 'distill_progress') || $1::jsonb
+            SET metadata = (COALESCE(metadata, '{}'::jsonb) - 'distill_progress' - 'redistill') || $1::jsonb
             WHERE id = $2
             """,
             json.dumps({
