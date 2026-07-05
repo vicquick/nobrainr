@@ -327,6 +327,13 @@ class Settings(BaseSettings):
     # search queries, search-trace retention.
     observability_interval_hours: float = 24.0
     search_trace_retention_days: int = 90
+    # Live search enhancements (HyDE/expand/decompose) call the 27b on the
+    # LIVE path. Their old 15-30s timeouts assumed an idle GPU; under
+    # distill contention every auto-routed "how/why" query blocked the
+    # full 30s and returned tier C anyway. If the model can't draft in
+    # this many seconds, the enhancement isn't worth it — degrade to
+    # plain hybrid. (2026-07-05, found the day auto_route went default-on.)
+    live_enhancement_timeout_s: float = 6.0
     # Auto-optimize (search quality self-improvement)
     auto_optimize_interval_hours: float = 12.0
     # Co-occurrence relationship inference
