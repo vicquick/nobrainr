@@ -274,6 +274,10 @@ class Scheduler:
         self._running = True
         self._write_queue_running = True
 
+        # Imported here (not module top) to avoid a circular import —
+        # scheduler_jobs imports from this module's siblings at load time.
+        from nobrainr import scheduler_jobs
+
         # Non-LLM jobs (existing)
         self._tasks = [
             asyncio.create_task(
