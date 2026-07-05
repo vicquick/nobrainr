@@ -439,3 +439,51 @@ async def get_community_members(community_id: int) -> list[dict]:
             }
             for r in rows
         ]
+
+
+async def assign_new_entities_incremental() -> dict:
+    """Assign community-less entities via single-step label propagation.
+
+    The Zep/Graphiti dynamic-extension pattern (arxiv 2501.13956 §2.4):
+    a new entity joins the community held by the plurality of its graph
+    neighbors. Pure SQL, no igraph, no LLM — runs in seconds where full
+    Leiden on 72k entities blows a 90-minute timeout. Repeated runs
+    propagate assignments outward one hop at a time; the weekly full
+    Leiden run corrects the accumulated drift.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        assigned = await conn.fetchval("""
+            WITH votes AS (
+                SELECT e.id AS entity_id, n.community_id AS cid,
+                       count(*) AS votes, sum(r.confidence) AS conf
+                FROM entities e
+                JOIN entity_relations r
+                  ON r.valid = true
+                 AND (r.source_entity_id = e.id OR r.target_entity_id = e.id)
+                JOIN entities n
+                  ON n.id = CASE WHEN r.source_entity_id = e.id
+                                 THEN r.target_entity_id
+                                 ELSE r.source_entity_id END
+                WHERE e.community_id IS NULL
+                  AND n.community_id IS NOT NULL
+                GROUP BY e.id, n.community_id
+            ),
+            best AS (
+                SELECT DISTINCT ON (entity_id) entity_id, cid
+                FROM votes
+                ORDER BY entity_id, votes DESC, conf DESC
+            ),
+            upd AS (
+                UPDATE entities e
+                SET community_id = b.cid
+                FROM best b
+                WHERE e.id = b.entity_id
+                RETURNING e.id
+            )
+            SELECT count(*) FROM upd
+        """)
+        remaining = await conn.fetchval(
+            "SELECT count(*) FROM entities WHERE community_id IS NULL"
+        )
+    return {"assigned": int(assigned or 0), "still_unassigned": int(remaining or 0)}
