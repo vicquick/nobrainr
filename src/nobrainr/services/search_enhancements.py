@@ -42,7 +42,7 @@ async def generate_hyde_document(query: str) -> str | None:
             ),
             temperature=0.3,
             num_ctx=1024,
-            timeout=30.0,
+            timeout=settings.live_enhancement_timeout_s,
             max_tokens=256,
         )
         if result and len(result) > 20:
@@ -87,7 +87,7 @@ async def decompose_query(query: str) -> list[str]:
             schema=DECOMPOSE_SCHEMA,
             temperature=0.2,
             num_ctx=512,
-            timeout=15.0,
+            timeout=settings.live_enhancement_timeout_s,
             caller_kind="live",
             think=False,
         )
