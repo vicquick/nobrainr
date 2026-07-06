@@ -343,6 +343,25 @@ class Settings(BaseSettings):
     # this many seconds, the enhancement isn't worth it — degrade to
     # plain hybrid. (2026-07-05, found the day auto_route went default-on.)
     live_enhancement_timeout_s: float = 6.0
+
+    # deep_recall (2026-07-06) — bounded multi-hop recall loop:
+    # search → LLM reads the hits and emits ONE follow-up query naming
+    # the bridging entity/aspect → search again → rerank the union
+    # against the original query. Built after the include_related A/B
+    # came back negative (entity-shared neighbors are too noisy a join
+    # at relation F1 0.03); the loop reads *content* to find the bridge
+    # instead of trusting graph edges. Deliberate tool, not the default
+    # search path — expected latency 10-30s.
+    deep_recall_max_hops: int = 2          # total search rounds (1 = plain search)
+    deep_recall_per_hop_limit: int = 8     # results fetched per hop
+    # Follow-up generation runs on the always-loaded CPU model
+    # (qwen3-8b-cpu via llama-swap), NOT the contended 27b: during the
+    # 2026-07-06 A/B every 27b follow-up call starved (76/76 ReadTimeouts
+    # at 12s under scheduler load) and the loop silently degraded to
+    # plain search. Query reformulation is an easy task; the CPU model
+    # answers in 10-20s regardless of GPU state.
+    deep_recall_followup_model: str = "qwen3-8b-cpu"
+    deep_recall_followup_timeout_s: float = 25.0
     # Auto-optimize (search quality self-improvement)
     auto_optimize_interval_hours: float = 12.0
     # Co-occurrence relationship inference
