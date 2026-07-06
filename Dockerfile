@@ -17,11 +17,20 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Copy project files
 COPY pyproject.toml .
+COPY uv.lock .
 COPY README.md .
 COPY src/ src/
 
-# Install dependencies
-RUN uv pip install --system --no-cache .
+# Install dependencies FROM THE LOCKFILE (2026-07-06). The old unlocked
+# `uv pip install .` re-resolved on every build; a fresh numpy release
+# made the resolver backtrack to numba 0.53/llvmlite 0.36 (py<=3.9
+# relics that cannot build on 3.12) and every deploy failed. Export the
+# frozen lock to requirements form, install pinned, then install the
+# project itself without re-resolving.
+RUN uv export --frozen --no-dev --no-emit-project --format requirements-txt -o /tmp/requirements.txt && \
+    uv pip install --system --no-cache -r /tmp/requirements.txt && \
+    uv pip install --system --no-cache --no-deps . && \
+    rm /tmp/requirements.txt
 
 # Run as non-root user
 RUN useradd --create-home --shell /bin/bash nobrainr
