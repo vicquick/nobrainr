@@ -301,6 +301,17 @@ async def rerank(
             try:
                 return await _rerank_http(query, results, limit)
             except Exception:
+                if not settings.reranker_inprocess_fallback:
+                    # One transient sidecar failure must NOT lazy-load a
+                    # 2GB CrossEncoder into this process (killed the eval
+                    # runner under swap pressure, 2026-07-06 — see config
+                    # docstring). RRF order is the graceful degradation
+                    # everywhere else; use it here too.
+                    logger.warning(
+                        "http reranker failed and in-process fallback is "
+                        "disabled — returning RRF order"
+                    )
+                    return results[:limit]
                 logger.exception(
                     "TEI reranker failed, falling through to sentence-transformers"
                 )
