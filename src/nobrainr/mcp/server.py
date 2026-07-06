@@ -616,7 +616,7 @@ async def memory_search(
     decompose: bool = False,
     date_from: str | None = None,
     date_to: str | None = None,
-    auto_route: bool = False,
+    auto_route: bool = True,
     include_related: bool = False,
 ) -> list[dict]:
     """Semantic search across all memories, ranked by relevance (similarity + recency + importance).
@@ -645,13 +645,14 @@ async def memory_search(
             calculate the absolute date client-side and pass it here.
         date_to: ISO 8601 upper bound on created_at (inclusive). Same format as
             date_from. Combine with date_from for a date range.
-        auto_route: When True, analyze the query shape and automatically pick
-            the best retrieval strategy (hybrid / hyde / decompose / expand) —
-            agents don't have to choose. Uses a lightweight heuristic based
-            on query length, comma/and count, and question prefix. Zero
-            added latency. When True, the selected flags OVERRIDE whatever
-            was passed explicitly for hybrid/expand/hyde/decompose (Phase
-            B G2, v6.7).
+        auto_route: When True (default since 2026-07-05), analyze the query
+            shape and automatically pick the best retrieval strategy
+            (hybrid / hyde / decompose / expand) — agents don't have to
+            choose. Uses a lightweight heuristic based on query length,
+            comma/and count, and question prefix. Zero added latency.
+            Routing only applies when the caller left all strategy flags
+            at their defaults — an explicitly-set expand/hyde/decompose
+            (or hybrid=False) always wins over the router.
     """
     import asyncio
     from datetime import datetime
@@ -674,10 +675,13 @@ async def memory_search(
     def _over(frac: float) -> bool:
         return _elapsed() > _budget_s * frac
 
-    # Auto-routing query planner — Phase B G2 (v6.7). When enabled, pick the
-    # best retrieval strategy for this query shape. Overrides any explicit
-    # hybrid/expand/hyde/decompose flags. See _auto_route_query for rules.
-    if auto_route:
+    # Auto-routing query planner — Phase B G2 (v6.7), default-on since
+    # 2026-07-05. Pick the best retrieval strategy for this query shape,
+    # but only when the caller left every strategy flag at its default —
+    # an explicit expand/hyde/decompose or hybrid=False is a deliberate
+    # choice and always wins over the router.
+    _caller_chose_strategy = expand or hyde or decompose or not hybrid
+    if auto_route and not _caller_chose_strategy:
         routing = _auto_route_query(query)
         hybrid = routing.get("hybrid", True)
         expand = routing.get("expand", False)
@@ -928,7 +932,55 @@ async def memory_search(
     except Exception:
         pass
 
+    # Persist the trace (2026-07-05). Real queries are the golden-set
+    # mining source (memory_outcomes captured query text on only 2 of
+    # 101k rows) and the empty-query observability signal. Fire-and-forget.
+    asyncio.create_task(
+        _persist_search_trace(
+            trace_id=trace_id,
+            query=query,
+            results=results,
+            quality_tier=quality_tier,
+            elapsed_ms=elapsed_ms,
+            strategy={
+                "hybrid": hybrid, "expand": expand, "hyde": hyde,
+                "decompose": decompose, "auto_route": auto_route,
+                "limit": limit,
+            },
+        )
+    )
+
     return results
+
+
+async def _persist_search_trace(
+    *, trace_id: str, query: str, results: list[dict],
+    quality_tier: str, elapsed_ms: int, strategy: dict,
+) -> None:
+    """Best-effort INSERT of one search trace row. Never raises."""
+    try:
+        import json as _json
+        from uuid import UUID as _UUID
+        from nobrainr.db.pool import get_pool
+        pool = await get_pool()
+        top = [r["id"] for r in results[:10]]
+        top_score = float(results[0].get("relevance") or results[0].get("similarity") or 0.0) if results else None
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO search_traces
+                    (trace_id, query, result_count, top_ids, top_score,
+                     quality_tier, elapsed_ms, strategy)
+                VALUES ($1, $2, $3, $4::uuid[], $5, $6, $7, $8::jsonb)
+                ON CONFLICT (trace_id) DO NOTHING
+                """,
+                _UUID(trace_id), query[:1000], len(results),
+                [_UUID(str(t)) for t in top], top_score,
+                quality_tier, elapsed_ms, _json.dumps(strategy),
+            )
+    except Exception:
+        import logging
+        logging.getLogger("nobrainr").debug("search trace persist failed", exc_info=True)
 
 
 # ──────────────────────────────────────────────

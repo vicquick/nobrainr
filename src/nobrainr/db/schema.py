@@ -440,6 +440,27 @@ CREATE TABLE IF NOT EXISTS eval_golden_queries (
 CREATE INDEX IF NOT EXISTS idx_eval_golden_active
     ON eval_golden_queries (active) WHERE active;
 
+-- Every live memory_search call, persisted (2026-07-05). Two consumers:
+-- (1) golden-set mining — real queries beat synthetic ones and
+--     memory_outcomes only captures query_text on explicit feedback
+--     (2 distinct queries in 101k rows as of July 2026);
+-- (2) observability — consistently-empty queries and latency trends,
+--     which previously lived only in a 2048-point in-memory ring buffer.
+-- Written fire-and-forget from memory_search; loss under crash is fine.
+CREATE TABLE IF NOT EXISTS search_traces (
+    trace_id        uuid PRIMARY KEY,
+    query           text NOT NULL,
+    result_count    int NOT NULL,
+    top_ids         uuid[] DEFAULT '{{}}'::uuid[],
+    top_score       real,
+    quality_tier    text,
+    elapsed_ms      int,
+    strategy        jsonb DEFAULT '{{}}'::jsonb,
+    created_at      timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_search_traces_created
+    ON search_traces (created_at DESC);
+
 -- One row per full eval sweep. per_query holds the breakdown so we can
 -- tell WHICH query regressed, not just that the mean recall dropped.
 CREATE TABLE IF NOT EXISTS eval_runs (

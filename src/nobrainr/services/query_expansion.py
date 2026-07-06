@@ -6,6 +6,8 @@ then all variants are searched and results fused via RRF.
 
 import logging
 
+from nobrainr.config import settings
+
 from nobrainr.extraction.llm import ollama_chat
 
 logger = logging.getLogger("nobrainr")
@@ -46,7 +48,7 @@ async def expand_query(query: str) -> list[str]:
             schema=EXPANSION_SCHEMA,
             temperature=0.3,
             num_ctx=512,
-            timeout=15.0,
+            timeout=settings.live_enhancement_timeout_s,
             keep_alive="24h",
             think=False,
             caller_kind="live",
