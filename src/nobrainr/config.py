@@ -82,6 +82,15 @@ class Settings(BaseSettings):
     # local sentence-transformers (then flashrank) on HTTP failure so
     # the reranker stays available if the sidecar is mid-deploy.
     reranker_backend: str = "http"
+    # When the http sidecar fails, may the process lazy-load the 2GB
+    # in-process sentence-transformers CrossEncoder as a fallback?
+    # Default OFF (2026-07-06): one transient HTTP timeout used to pull
+    # 2GB into WHATEVER process was searching — the standalone eval
+    # runner did exactly that and died when host swap was exhausted.
+    # Degrading to RRF order (tier C) is the designed graceful path;
+    # opt back in per-process via NOBRAINR_RERANKER_INPROCESS_FALLBACK=1.
+    # An explicit reranker_backend="sentence-transformers" still works.
+    reranker_inprocess_fallback: bool = False
     # URL of the TEI sidecar. Resolved in-cluster via Docker DNS on the
     # `mcp` network (alias `reranker`). Override with NOBRAINR_RERANKER_URL
     # if routing differs per deploy.
