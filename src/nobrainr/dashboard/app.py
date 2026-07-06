@@ -205,7 +205,16 @@ async def lifespan(app):
     async def _warm_reranker():
         try:
             from nobrainr.services import reranker
-            if settings.reranker_enabled:
+            # Only warm the in-process CrossEncoder when it can actually be
+            # used (2026-07-06): with backend="http" and the in-process
+            # fallback disabled, warming loaded 2GB into the server for a
+            # path that never runs — it was the single biggest chunk of
+            # this process's chronic ~1.8GB swap footprint.
+            _inprocess_possible = (
+                settings.reranker_backend != "http"
+                or settings.reranker_inprocess_fallback
+            )
+            if settings.reranker_enabled and _inprocess_possible:
                 model = await asyncio.to_thread(reranker._get_st_reranker)
                 # Sample inference to warm CUDA kernels
                 await asyncio.to_thread(
