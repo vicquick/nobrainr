@@ -111,15 +111,14 @@ class Settings(BaseSettings):
     # gives up and returns pre-rerank order. Keeps interactive search
     # responsive under any batch load.
     reranker_queue_timeout_s: float = 10.0
-    # Max candidates sent to the cross-encoder. BGE-reranker-v2-m3 on CPU
-    # Candle is ~1-2s per real-memory text; 8 fits reliably inside the 20s
-    # search_hard_timeout_s even under GPU/CPU contention from extraction.
-    # Replaces the old "full 150 candidates Anthropic recipe" approach which
-    # worked only with GPU — blocked here by Qwen3.6-35B VRAM reservation.
-    # 4-branch RRF already does strong upstream selection so the quality
-    # delta vs 150 is modest on this hybrid pipeline. Raise to 30+ if TEI
-    # gets a GPU slot (requires reducing Qwen --ctx-size to free VRAM).
-    reranker_max_candidates: int = 8
+    # Max candidates sent to the cross-encoder. 8 was the CPU-era cap
+    # (BGE on CPU Candle = 1-2s/doc). Since llama-swap serves the reranker
+    # GGUF on GPU (measured 2026-07-05: 50 docs in 0.87s via /v1/rerank),
+    # a wide rerank is affordable again — this is the Anthropic recipe's
+    # main quality lever and directly targets the recall@10 regression
+    # (0.70→0.51 as corpus grew 48k→72k). The search_rerank_budget_frac
+    # guard still degrades to RRF order if the GPU is contended.
+    reranker_max_candidates: int = 50
     # RRF candidate pool: how many DB results to retrieve per branch before
     # fusion. 6× gives 300 candidates for limit=50 — ample diversity for RRF
     # without forcing the HNSW index to traverse thousands of nodes.
@@ -308,8 +307,33 @@ class Settings(BaseSettings):
 
     # System pulse (autonomous health transmissions)
     system_pulse_interval_hours: float = 24.0
-    # Community detection (GraphRAP)
-    community_detection_interval_hours: float = 6.0  # balanced
+    # Community detection (GraphRAG). Full Leiden went 6h→weekly on
+    # 2026-07-05: at 72k entities it blew the 90-min timeout on ~half its
+    # runs (4 timeouts / 48h). The cheap community_assign job below keeps
+    # new entities covered between full runs via single-step label
+    # propagation (the Zep/Graphiti dynamic-extension pattern), so weekly
+    # full refreshes only correct the slow drift.
+    community_detection_interval_hours: float = 168.0
+    # Incremental community assignment — pure SQL, assigns NULL-community
+    # entities to the plurality community among their graph neighbors.
+    community_assign_interval_hours: float = 6.0
+    # Procedural memory distillation (2026-07-05, Memp/Foundry pattern) —
+    # reviews recent lesson-like memories and distills repeatable
+    # procedures (when-to-use + ordered steps) into procedural_memories.
+    procedural_distill_interval_hours: float = 24.0
+    procedural_distill_batch_size: int = 25   # source memories reviewed/run
+    procedural_distill_max_new: int = 8       # new procedures cap/run
+    # Memory observability (2026-07-05) — written-never-read stats, empty
+    # search queries, search-trace retention.
+    observability_interval_hours: float = 24.0
+    search_trace_retention_days: int = 90
+    # Live search enhancements (HyDE/expand/decompose) call the 27b on the
+    # LIVE path. Their old 15-30s timeouts assumed an idle GPU; under
+    # distill contention every auto-routed "how/why" query blocked the
+    # full 30s and returned tier C anyway. If the model can't draft in
+    # this many seconds, the enhancement isn't worth it — degrade to
+    # plain hybrid. (2026-07-05, found the day auto_route went default-on.)
+    live_enhancement_timeout_s: float = 6.0
     # Auto-optimize (search quality self-improvement)
     auto_optimize_interval_hours: float = 12.0
     # Co-occurrence relationship inference

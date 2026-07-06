@@ -2513,3 +2513,211 @@ async def observation_consolidate() -> dict:
         "candidates": len(threads),
         "ran_at": datetime.now().isoformat(),
     }
+
+
+# ──────────────────────────────────────────────
+# Community assignment — incremental (2026-07-05)
+# ──────────────────────────────────────────────
+async def community_assign() -> dict:
+    """Assign new entities to communities via label propagation (SQL-only)."""
+    from nobrainr.services.communities import assign_new_entities_incremental
+
+    result = await assign_new_entities_incremental()
+    result["ran_at"] = datetime.now().isoformat()
+    return result
+
+
+# ──────────────────────────────────────────────
+# Memory observability (2026-07-05)
+# ──────────────────────────────────────────────
+# The 2026 survey (arxiv 2603.07670 §7) imports database-engineering
+# practice into agent memory: analyze written-but-never-read records and
+# consistently-empty queries to find write-path waste and retrieval
+# blind spots. This job computes both and prunes old search traces.
+async def memory_observability() -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        never_read = await conn.fetch("""
+            SELECT source_type, count(*) AS n
+            FROM memories
+            WHERE tier < 3 AND access_count = 0
+              AND inserted_at < now() - interval '14 days'
+            GROUP BY source_type ORDER BY n DESC LIMIT 10
+        """)
+        empty_queries = await conn.fetch("""
+            SELECT query, count(*) AS n
+            FROM search_traces
+            WHERE result_count = 0
+              AND created_at > now() - interval '7 days'
+            GROUP BY query ORDER BY n DESC LIMIT 15
+        """)
+        thin = await conn.fetchrow("""
+            SELECT count(*) FILTER (WHERE result_count = 0) AS empty,
+                   count(*) FILTER (WHERE quality_tier NOT IN ('A','B')) AS degraded,
+                   count(*) AS total,
+                   percentile_cont(0.95) WITHIN GROUP (ORDER BY elapsed_ms) AS p95_ms
+            FROM search_traces
+            WHERE created_at > now() - interval '7 days'
+        """)
+        pruned = await conn.fetchval(
+            """
+            WITH del AS (
+                DELETE FROM search_traces
+                WHERE created_at < now() - make_interval(days => $1)
+                RETURNING 1
+            ) SELECT count(*) FROM del
+            """,
+            settings.search_trace_retention_days,
+        )
+    return {
+        "never_read_by_source": {r["source_type"]: r["n"] for r in never_read},
+        "empty_queries_7d": [dict(r) for r in empty_queries],
+        "search_7d": dict(thin) if thin else {},
+        "traces_pruned": int(pruned or 0),
+        "ran_at": datetime.now().isoformat(),
+    }
+
+
+# ──────────────────────────────────────────────
+# Procedural memory distillation (2026-07-05)
+# ──────────────────────────────────────────────
+# Memp (arxiv 2508.06433) + MS Foundry (Build 2026) pattern: distill
+# lesson-like memories into structured procedures capturing "when to use"
+# (task context, preconditions, signals) and "what to do" (ordered steps,
+# required checks, tool usage). Procedures built by a strong model
+# transfer their gains to weaker models — the strategic point of the
+# whole exercise. Sources are flagged via metadata.procedural_reviewed
+# so each memory is considered exactly once.
+PROCEDURAL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "procedures": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "when_to_use": {"type": "string"},
+                    "steps": {"type": "array", "items": {"type": "string"}},
+                    "checks": {"type": "array", "items": {"type": "string"}},
+                    "source_index": {"type": "integer"},
+                    "confidence": {"type": "number"},
+                },
+                "required": ["title", "when_to_use", "steps", "source_index", "confidence"],
+            },
+        }
+    },
+    "required": ["procedures"],
+}
+
+_PROCEDURAL_SYSTEM = (
+    "You review an engineer's memory notes and extract repeatable PROCEDURES "
+    "— only when a note describes a multi-step way of doing something that "
+    "will recur (deploys, recoveries, migrations, debugging recipes, config "
+    "rituals). Most notes contain NO procedure; return them in no entry. "
+    "Never invent steps not grounded in the note. Do not duplicate any "
+    "EXISTING PROCEDURE title. steps are imperative commands/actions in "
+    "execution order; checks are verifications that confirm success. "
+    "confidence: 0.9 = note is explicit step-by-step, 0.5 = steps inferred."
+)
+
+
+async def procedural_distill() -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, content, summary, category, tags
+            FROM memories
+            WHERE tier < 3
+              AND quality_score >= 0.5
+              AND category IN ('debugging','infrastructure','ops','tooling',
+                               'deployment','architecture','pattern')
+              AND (metadata->>'procedural_reviewed') IS NULL
+              AND length(content) BETWEEN 200 AND 6000
+            ORDER BY inserted_at DESC
+            LIMIT $1
+            """,
+            settings.procedural_distill_batch_size,
+        )
+        existing_titles = [
+            r["title"] for r in await conn.fetch(
+                "SELECT title FROM procedural_memories WHERE active AND title IS NOT NULL"
+            )
+        ]
+    if not rows:
+        return {"reviewed": 0, "created": 0, "ran_at": datetime.now().isoformat()}
+
+    created = 0
+    reviewed_ids: list = []
+    pack_size = 5
+    for start in range(0, len(rows), pack_size):
+        pack = rows[start:start + pack_size]
+        notes = "\n\n".join(
+            f"[{i}] ({r['category']}) {(r['summary'] or '')[:200]}\n{r['content'][:1500]}"
+            for i, r in enumerate(pack)
+        )
+        user = (
+            f"EXISTING PROCEDURES (do not duplicate):\n"
+            f"{chr(10).join('- ' + t for t in existing_titles[-80:]) or '(none)'}\n\n"
+            f"MEMORY NOTES:\n{notes}\n\n"
+            "Extract procedures. source_index = the [N] of the note each "
+            "procedure came from."
+        )
+        try:
+            await _yield_to_live_requests()
+            resp = await ollama_chat(
+                system=_PROCEDURAL_SYSTEM, user=user,
+                schema=PROCEDURAL_SCHEMA, temperature=0.2,
+            )
+        except Exception:
+            logger.exception("procedural_distill LLM call failed")
+            continue
+        reviewed_ids.extend(r["id"] for r in pack)
+        for proc in (resp or {}).get("procedures", []):
+            if created >= settings.procedural_distill_max_new:
+                break
+            title = (proc.get("title") or "").strip()[:200]
+            steps = [s.strip() for s in proc.get("steps", []) if s.strip()]
+            if not title or len(steps) < 2 or float(proc.get("confidence", 0)) < 0.5:
+                continue
+            if any(title.lower() == t.lower() for t in existing_titles):
+                continue
+            idx = int(proc.get("source_index", 0))
+            src_id = str(pack[idx]["id"]) if 0 <= idx < len(pack) else None
+            checks = [c.strip() for c in proc.get("checks", []) if c.strip()]
+            content = (
+                f"WHEN TO USE: {proc.get('when_to_use','').strip()}\n\n"
+                "STEPS:\n" + "\n".join(f"{n}. {s}" for n, s in enumerate(steps, 1))
+                + ("\n\nCHECKS:\n" + "\n".join(f"- {c}" for c in checks) if checks else "")
+            )
+            try:
+                await queries.store_procedural_memory(
+                    content, title=title, scope="global", priority=40,
+                    tags=["auto-distilled", "procedure"],
+                    metadata={
+                        "source_memory_id": src_id,
+                        "distill_confidence": proc.get("confidence"),
+                        "distilled_by": "procedural_distill",
+                    },
+                )
+                existing_titles.append(title)
+                created += 1
+            except Exception:
+                logger.exception("procedural store failed for %r", title)
+
+    if reviewed_ids:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE memories
+                SET metadata = COALESCE(metadata,'{}'::jsonb)
+                    || '{"procedural_reviewed": true}'::jsonb
+                WHERE id = ANY($1::uuid[])
+                """,
+                reviewed_ids,
+            )
+    return {
+        "reviewed": len(reviewed_ids), "created": created,
+        "ran_at": datetime.now().isoformat(),
+    }

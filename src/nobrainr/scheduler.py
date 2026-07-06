@@ -78,6 +78,11 @@ SQL_JOB_DELAYS: dict[str, float] = {
     # for minutes. Keep out of the first 30min so interactive callers
     # have a predictable warm-up.
     "retrieval_eval": 3600,
+    # Incremental community label-propagation — cheap SQL, run early so
+    # entities created since the last (weekly) full Leiden get covered.
+    "community_assign": 480,
+    # Observability report + search-trace pruning — no rush.
+    "memory_observability": 2400,
 }
 
 # Staggered initial delays for LLM jobs (seconds).
@@ -131,6 +136,9 @@ LLM_JOB_DELAYS = {
     "contextual_prefix_backfill": 5 * 60,
     # Tier-2 lesson tagger — classifies memories the SQL backfill missed.
     "lesson_classifier": 38 * 60,
+    # Procedural distillation (Memp/Foundry pattern) — meta-priority,
+    # after the graph and quality phases have settled.
+    "procedural_distill": 40 * 60,
     # Fact-augmented key expansion (LongMemEval pattern)
     "key_expansion": 7 * 60,
     # Two-layer commonplace: backfill embeddings for raw conversations
@@ -217,6 +225,8 @@ class Scheduler:
             {"name": "bridge_detection", "interval_hours": 6.0, "type": "sql"},
             {"name": "retrieval_eval", "interval_hours": settings.retrieval_eval_interval_hours, "type": "sql"},
             {"name": "extraction_eval", "interval_hours": settings.extraction_eval_interval_hours, "type": "sql"},
+            {"name": "community_assign", "interval_hours": settings.community_assign_interval_hours, "type": "sql"},
+            {"name": "memory_observability", "interval_hours": settings.observability_interval_hours, "type": "sql"},
             {"name": "monitor_health", "interval_hours": settings.monitoring_interval_hours, "type": "system"},
             {"name": "email_digest", "interval_hours": 24.0, "type": "system"},
             {"name": "knowledge_digest", "interval_hours": 24.0, "type": "system"},
@@ -248,6 +258,7 @@ class Scheduler:
             {"name": "lesson_classifier", "interval_hours": settings.lesson_classifier_interval_hours, "type": "llm"},
             {"name": "conversation_embedding_backfill", "interval_hours": 1.0, "type": "llm"},
             {"name": "observation_consolidate", "interval_hours": 0.5, "type": "llm"},
+            {"name": "procedural_distill", "interval_hours": settings.procedural_distill_interval_hours, "type": "llm"},
         ]
         # github_sync is classified as "external" — it's network IO + embeddings only
         # (commit import uses skip_dedup=True, and extraction is fire-and-forget async).
@@ -262,6 +273,10 @@ class Scheduler:
             return
         self._running = True
         self._write_queue_running = True
+
+        # Imported here (not module top) to avoid a circular import —
+        # scheduler_jobs imports from this module's siblings at load time.
+        from nobrainr import scheduler_jobs
 
         # Non-LLM jobs (existing)
         self._tasks = [
@@ -326,6 +341,20 @@ class Scheduler:
                     "retrieval_eval",
                     self._job_retrieval_eval,
                     settings.retrieval_eval_interval_hours * 3600,
+                )
+            ),
+            asyncio.create_task(
+                self._run_periodic(
+                    "community_assign",
+                    scheduler_jobs.community_assign,
+                    settings.community_assign_interval_hours * 3600,
+                )
+            ),
+            asyncio.create_task(
+                self._run_periodic(
+                    "memory_observability",
+                    scheduler_jobs.memory_observability,
+                    settings.observability_interval_hours * 3600,
                 )
             ),
             asyncio.create_task(
@@ -431,6 +460,8 @@ class Scheduler:
              1.0 * 3600),  # every 1h; 10 conv/run, ~4h to drain 2362 backlog
             ("observation_consolidate", scheduler_jobs.observation_consolidate,
              0.5 * 3600),  # every 30min; auto-idles when no thread has 5+ fresh obs
+            ("procedural_distill", scheduler_jobs.procedural_distill,
+             settings.procedural_distill_interval_hours * 3600),
         ]
 
         for name, job_func, interval in llm_jobs:
