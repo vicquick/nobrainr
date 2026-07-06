@@ -984,6 +984,165 @@ async def _persist_search_trace(
 
 
 # ──────────────────────────────────────────────
+# Tool: deep_recall (2026-07-06)
+# ──────────────────────────────────────────────
+# Bounded multi-hop recall loop: search → LLM reads the hits and emits
+# ONE follow-up query naming the missing bridge → search again → rerank
+# the union against the original question. Built after the
+# include_related A/B came back NEGATIVE (entity-shared graph neighbors
+# are too noisy a join at relation F1 0.03): this loop reads memory
+# CONTENT to find the bridge instead of trusting graph edges — the
+# Letta finding that tool-surface beats retrieval internals, applied.
+# Deliberate tool for multi-hop questions; expected latency 10-30s.
+
+_DEEP_RECALL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "complete": {
+            "type": "boolean",
+            "description": "True if the retrieved notes fully answer the question.",
+        },
+        "followup_query": {
+            "type": "string",
+            "description": (
+                "If not complete: ONE different search query targeting the "
+                "missing piece. Name the concrete entity/system/aspect the "
+                "notes point to but don't cover. Empty string if complete."
+            ),
+        },
+        "reason": {"type": "string"},
+    },
+    "required": ["complete", "followup_query"],
+}
+
+
+@mcp.tool()
+async def deep_recall(
+    query: str,
+    limit: int = 10,
+    max_hops: int | None = None,
+    min_hops: int = 1,
+) -> dict:
+    """Multi-hop memory recall for questions whose answer spans SEVERAL memories.
+
+    Runs a bounded search→read→refine→search loop: after the first search
+    an LLM reads the hits and, if the question isn't fully covered, emits
+    one follow-up query naming the missing bridge (entity, system, aspect);
+    the union of all hops is cross-encoder-reranked against the original
+    question. Use memory_search for direct lookups (fast); use this when
+    the question connects two things ("how does X relate to Y", "what did
+    the fix for X mean for Y") — expected latency 10-30s.
+
+    Args:
+        query: The multi-hop question.
+        limit: Max memories returned after final rerank (default 10).
+        max_hops: Search rounds cap (default from config, 2).
+        min_hops: Force at least this many search rounds — the
+            completeness judge is lenient (fired hop 2 on only 26/80
+            multihop goldens), so pass min_hops=2 when you KNOW the
+            question spans multiple memories.
+
+    Returns:
+        {"memories": [...], "hop_queries": [...], "complete": bool}
+        — memories in reranked order, each row shaped like memory_search
+        output plus "recall_hop" (which round found it).
+    """
+    import asyncio as _aio
+
+    from nobrainr.extraction.llm import ollama_chat
+    from nobrainr.services.reranker import rerank as _rerank
+
+    hops = max_hops or settings.deep_recall_max_hops
+    per_hop = settings.deep_recall_per_hop_limit
+    fn = memory_search.fn if hasattr(memory_search, "fn") else memory_search
+
+    seen: dict[str, dict] = {}
+    hop_queries: list[str] = [query]
+    complete = False
+
+    for hop in range(max(1, hops)):
+        try:
+            # auto_route=False: hop searches must be plain hybrid+rerank —
+            # HyDE/decompose inside the loop would add a contended-GPU LLM
+            # call per hop on top of the follow-up call (145 HyDE timeouts
+            # in the 2026-07-06 A/B run under load).
+            res = await fn(query=hop_queries[-1], limit=per_hop, auto_route=False)
+        except Exception:
+            logging.getLogger("nobrainr").exception("deep_recall hop %d search failed", hop)
+            break
+        for r in res:
+            rid = str(r["id"])
+            if rid not in seen:
+                r["recall_hop"] = hop
+                seen[rid] = r
+
+        if hop >= hops - 1 or not seen:
+            break
+
+        # Read the accumulated notes; decide whether a bridge is missing.
+        notes = "\n".join(
+            f"[{i}] {(r.get('summary') or r.get('content') or '')[:280]}"
+            for i, r in enumerate(list(seen.values())[:12])
+        )
+        _force = hop + 1 < min_hops
+        try:
+            verdict = await ollama_chat(
+                system=(
+                    "You check whether retrieved memory notes fully answer a "
+                    "question. If something is missing, emit ONE follow-up "
+                    "search query for exactly the missing piece: for "
+                    "multi-part questions, the uncovered part (its own "
+                    "keywords, not the whole question); for bridge "
+                    "questions, the entity/system the notes point to but "
+                    "don't explain — use concrete names from the notes. "
+                    "Never repeat the original query."
+                    + (
+                        " The caller requires another search round: treat the "
+                        "notes as incomplete and always emit a follow-up query."
+                        if _force else ""
+                    )
+                ),
+                user=f"Question: {query}\n\nRetrieved notes:\n{notes}",
+                schema=_DEEP_RECALL_SCHEMA,
+                temperature=0.2,
+                model=settings.deep_recall_followup_model,
+                timeout=settings.deep_recall_followup_timeout_s,
+                caller_kind="live",
+                think=False,
+            )
+        except Exception:
+            # GPU contended — return what hop 0 found rather than block.
+            break
+        if verdict.get("complete") and not _force:
+            complete = True
+            break
+        follow = (verdict.get("followup_query") or "").strip()
+        if not follow or follow.lower() == query.lower():
+            break
+        hop_queries.append(follow)
+
+    union = list(seen.values())
+    if len(union) > limit:
+        # Global cross-encoder rerank against the ORIGINAL question.
+        # A/B'd against per-hop slot allocation (2026-07-06): slots
+        # LOST (0.356 vs 0.406) — hop-1 noise displaced good hop-0
+        # hits. The reranker keeps the union honest.
+        try:
+            union = await _aio.wait_for(
+                _rerank(query, union, limit=limit),
+                timeout=settings.search_hard_timeout_s,
+            )
+        except Exception:
+            union = union[:limit]
+
+    return {
+        "memories": union[:limit],
+        "hop_queries": hop_queries,
+        "complete": complete,
+    }
+
+
+# ──────────────────────────────────────────────
 # Tool: memory_aggregate (Phase L, v6.13, 2026-04-12)
 # ──────────────────────────────────────────────
 # Supermemory-inspired Aggregation pattern. Instead of re-ranking N
