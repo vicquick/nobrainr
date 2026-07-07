@@ -17,8 +17,9 @@ The response must have exactly two keys: "entities" (array) and "relationships" 
 
 Entity entity_types: person, project, technology, concept, file, config, error, location, \
 organization, service, database, command, container, package.
-Relationship relationship_types: uses, depends_on, fixes, part_of, created_by, \
-deployed_on, configured_with, replaces, conflicts_with, runs_on, implements.
+Relationship relationship_types (CLOSED LIST — output must be exactly one of): \
+uses, depends_on, fixes, part_of, created_by, deployed_on, configured_with, \
+replaces, conflicts_with, runs_on, implements, causes, tests.
 
 ENTITY RULES:
 - Extract ONLY proper nouns, named tools, named projects, named technologies, named people.

@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from nobrainr.db.pool import get_pool
+from nobrainr.extraction.models import normalize_relationship
 from nobrainr.extraction.llm import ollama_chat
 
 logger = logging.getLogger("nobrainr")
@@ -157,6 +158,7 @@ async def _fetch_incumbent(conn, memory_id: str) -> dict | None:
             JOIN entities h ON h.id = er.source_entity_id
             JOIN entities t ON t.id = er.target_entity_id
             WHERE er.source_memory = $1
+              AND er.valid = true
           )
         ) AS extraction
         """,
@@ -207,16 +209,26 @@ async def run_extraction_eval(
                             if e.get("name")}
             cand_entities = {_norm(e.get("name", "")) for e in candidate.get("entities", [])
                              if e.get("name")}
-            inc_rels = {
-                (_norm(r.get("head", "")), r.get("predicate", ""), _norm(r.get("tail", "")))
-                for r in incumbent.get("relationships", [])
-                if r.get("head") and r.get("tail")
-            }
-            cand_rels = {
-                (_norm(r.get("head", "")), r.get("predicate", ""), _norm(r.get("tail", "")))
-                for r in candidate.get("relationships", [])
-                if r.get("head") and r.get("tail")
-            }
+            # P2a (2026-07-07): normalize predicates onto the closed
+            # vocabulary on BOTH sides before comparing — the raw string
+            # compare made spelling drift ("depends-on" vs "depends_on",
+            # inverse forms) count as misses, understating relation F1.
+            def _rel_tuples(rels):
+                out = set()
+                for r in rels:
+                    if not (r.get("head") and r.get("tail")):
+                        continue
+                    norm = normalize_relationship(
+                        r.get("predicate", ""), r.get("head", ""), r.get("tail", ""),
+                    )
+                    if norm is None:
+                        continue
+                    pred, head, tail = norm
+                    out.add((_norm(head), pred, _norm(tail)))
+                return out
+
+            inc_rels = _rel_tuples(incumbent.get("relationships", []))
+            cand_rels = _rel_tuples(candidate.get("relationships", []))
             ent_f1 = _f1(inc_entities, cand_entities)
             rel_f1 = _f1(inc_rels, cand_rels)
             judge = await _judge_equivalence(content, incumbent, candidate, candidate_model)
