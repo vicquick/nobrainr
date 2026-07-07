@@ -16,6 +16,7 @@ from nobrainr.db.queries import (
 )
 from nobrainr.embeddings.ollama import embed_batch, embed_text
 from nobrainr.extraction.extractor import extract_entities
+from nobrainr.extraction.models import normalize_relationship
 
 logger = logging.getLogger("nobrainr")
 
@@ -222,12 +223,22 @@ async def process_memory(
                 )
 
         for rel in result.relationships:
+            # Closed predicate vocabulary (P2a, 2026-07-07): normalize the
+            # type onto the canonical list, swapping direction for inverse
+            # predicates; drop anything unmappable. Grammar-constrained
+            # decoding already enforces the enum on the main path — this
+            # covers the salvage-parser path and legacy callers.
+            norm = normalize_relationship(rel.relationship_type, rel.source, rel.target)
+            if norm is None:
+                continue
+            rel_type, src_name, tgt_name = norm
+
             # Skip relationships involving filtered noise entities
-            if rel.source not in clean_names or rel.target not in clean_names:
+            if src_name not in clean_names or tgt_name not in clean_names:
                 continue
 
-            source_id = entity_id_map.get(rel.source)
-            target_id = entity_id_map.get(rel.target)
+            source_id = entity_id_map.get(src_name)
+            target_id = entity_id_map.get(tgt_name)
 
             if not source_id or not target_id:
                 continue
@@ -235,7 +246,7 @@ async def process_memory(
             await store_entity_relation(
                 source_id,
                 target_id,
-                rel.relationship_type,
+                rel_type,
                 confidence=rel.confidence,
                 source_memory=memory_id,
             )
