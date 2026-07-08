@@ -247,6 +247,12 @@ CREATE INDEX IF NOT EXISTS idx_entities_type
 CREATE INDEX IF NOT EXISTS idx_entities_name_trgm
     ON entities USING gin (canonical_name gin_trgm_ops);
 
+-- Alnum-collapsed lookup for insert-time fuzzy entity resolution
+-- (P2b-lite, 2026-07-08): punctuation/case twins reuse the existing
+-- entity instead of forking. See find_or_create_entity.
+CREATE INDEX IF NOT EXISTS idx_entities_alnum
+    ON entities (entity_type, (regexp_replace(canonical_name, '[^a-z0-9]', '', 'g')));
+
 -- ──────────────────────────────────────────────
 -- Entity-memory junction
 -- ──────────────────────────────────────────────
