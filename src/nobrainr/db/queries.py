@@ -2529,6 +2529,34 @@ async def find_or_create_entity(
             )
             return str(row["id"])
 
+        # Fuzzy fallback (P2b-lite, 2026-07-08): punctuation/case variants
+        # ("try...catch" vs "try/catch", "SRID 4326" vs "SRID=4326") were
+        # the #1 source of duplicate entities — 1,908 twin groups existed
+        # at ship time. Reuse an entity whose ALNUM-COLLAPSED canonical
+        # name matches exactly (same type). Deliberately NOT a trigram
+        # threshold: live sampling showed ≥0.9 similarity also pairs
+        # version/district-distinct names ("Innenstadt" vs "Innenstadt I",
+        # "QGIS 3" vs "QGIS 4") whose alnum forms differ — exact alnum
+        # equality collapses punctuation twins only. Backed by the
+        # idx_entities_alnum expression index.
+        row = await conn.fetchrow(
+            """
+            SELECT id FROM entities
+            WHERE entity_type = $2
+              AND regexp_replace(canonical_name, '[^a-z0-9]', '', 'g')
+                  = regexp_replace($1, '[^a-z0-9]', '', 'g')
+            ORDER BY mention_count DESC
+            LIMIT 1
+            """,
+            canonical, entity_type,
+        )
+        if row:
+            await conn.execute(
+                "UPDATE entities SET mention_count = mention_count + 1 WHERE id = $1",
+                row["id"],
+            )
+            return str(row["id"])
+
         # Create new
         vec = np.array(embedding, dtype=np.float32) if embedding else None
         row = await conn.fetchrow(
