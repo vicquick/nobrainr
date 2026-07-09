@@ -2867,15 +2867,19 @@ _PROBE_SYSTEM = (
     "10.10.10.12). Given memory notes stating CURRENT system facts, emit a "
     "probe that mechanically re-checks the claim:\n"
     "- http: a curl-able GET URL (VPN/localhost only) — probe_command is the URL\n"
-    "- file: a host file path — probe_command is the path\n"
+    "- file: an absolute HOST filesystem path; the probe CATS the file and "
+    "matches expected_regex against its CONTENT (never ls/stat output). "
+    "Container-internal paths like /app/... are NOT reachable\n"
     "- sql: a read-only SELECT against the nobrainr db\n"
     "- shell: ONLY when nothing else works (stored disabled for review)\n"
     "expected_regex must match the probe output IF the claim still holds. "
     "claim_pattern is a case-insensitive regex matching the memory text that "
     "makes the claim (so future memories with the same claim inherit the "
     "probe). Set checkable=false when the note isn't mechanically checkable "
-    "(opinions, history, external-world facts). NEVER write commands that "
-    "modify anything."
+    "(opinions, history, external-world facts) — including claims about "
+    "OTHER machines, other users' home directories, or paths inside "
+    "containers, none of which this host can check. NEVER write commands "
+    "that modify anything."
 )
 
 
