@@ -2744,7 +2744,7 @@ CLAIM_KIND_SCHEMA = {
                         "enum": [
                             "code-state", "infra-state", "preference",
                             "incident-fix", "design-decision", "historical",
-                            "reference", "fact",
+                            "reference", "fact", "plan",
                         ],
                     },
                 },
@@ -2765,6 +2765,8 @@ _CLAIM_KIND_SYSTEM = (
     "- historical: a record of something that happened (no current-state claim)\n"
     "- reference: external knowledge/documentation/research (true regardless of our systems)\n"
     "- fact: a standalone verifiable fact not covered above\n"
+    "- plan: prescriptive FUTURE intent (will/schedule/day-7/phase-2 "
+    "wording) — something to be done, not something that is\n"
     "Pick the kind whose STALENESS MODEL fits: would this become wrong when "
     "our systems change (code/infra-state), or is it a permanent record "
     "(incident-fix/historical/reference)?"
@@ -2976,3 +2978,153 @@ async def stability_reinforce() -> dict:
     """Retrieval-through-use reinforcement: top-ranked hits gain stability."""
     n = await queries.reinforce_stability_from_traces(hours=24)
     return {"reinforced": n, "ran_at": datetime.now().isoformat()}
+
+
+# ──────────────────────────────────────────────
+# Reconciliation sweeper (L1.5 lifecycle, 2026-07-09)
+# ──────────────────────────────────────────────
+# The plan-vs-reality class: a memory describes intended-or-past state,
+# reality moved on, and nothing reconciles them — probes can't verify
+# intent and contradiction detection doesn't fire (reality ignores a
+# plan, it doesn't contradict it). Discovered live when a 2026-05
+# pre-flash plan (Seedvault/Syncthing, never executed) surfaced as
+# "memory of the day" while the actual stack (rsync) lived in a newer
+# memory sharing the same entities. This job walks old, unverified,
+# unsuperseded stale-prone memories, gathers NEWER memories sharing
+# their entities, and asks the LLM which is current — writing real
+# superseded_by chains (queries.supersede_memory) so the trust formula
+# and search filters see it.
+RECONCILE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {
+            "type": "string",
+            "enum": ["still_current", "superseded", "executed_plan", "unclear"],
+        },
+        "newer_index": {
+            "type": "integer",
+            "description": "When superseded: which newer note [N] replaces it.",
+        },
+        "reason": {"type": "string"},
+    },
+    "required": ["status", "reason"],
+}
+
+_RECONCILE_SYSTEM = (
+    "You reconcile an OLD memory note against NEWER notes that mention the "
+    "same entities. Verdicts:\n"
+    "- superseded: a newer note describes the same topic's CURRENT state "
+    "and the old note is outdated (pick newer_index)\n"
+    "- executed_plan: the old note was a plan/intent whose outcome (done, "
+    "changed, or abandoned) the newer notes show — it is now history\n"
+    "- still_current: the old note remains accurate; newer notes are about "
+    "different aspects\n"
+    "- unclear: cannot tell from these notes\n"
+    "Be conservative: only 'superseded' when the newer note genuinely "
+    "covers the same claim."
+)
+
+
+async def reconciliation_sweep() -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        candidates = await conn.fetch(
+            """
+            SELECT m.id, left(COALESCE(m.summary,'') || ' | ' || m.content, 700) AS text,
+                   m.created_at::date AS cdate
+            FROM memories m
+            WHERE m.tier < 3
+              AND m.superseded_by IS NULL
+              AND m.verified_at IS NULL
+              AND m.claim_kind IN ('plan', 'infra-state', 'code-state', 'fact')
+              AND m.created_at < now() - interval '30 days'
+              AND COALESCE((m.metadata->>'last_reconciled')::date, '1970-01-01')
+                  < (now() - interval '60 days')::date
+            ORDER BY m.access_count DESC, m.created_at ASC
+            LIMIT $1
+            """,
+            settings.reconciliation_batch_size,
+        )
+    if not candidates:
+        return {"checked": 0, "superseded": 0, "historicized": 0,
+                "ran_at": datetime.now().isoformat()}
+
+    checked = superseded = historicized = 0
+    for cand in candidates:
+        async with pool.acquire() as conn:
+            newer = await conn.fetch(
+                """
+                SELECT n.id, left(COALESCE(n.summary,'') || ' | ' || n.content, 500) AS text,
+                       n.created_at::date AS cdate, count(*) AS shared
+                FROM entity_memories em_old
+                JOIN entity_memories em_new ON em_new.entity_id = em_old.entity_id
+                JOIN memories n ON n.id = em_new.memory_id
+                WHERE em_old.memory_id = $1
+                  AND n.id <> $1
+                  AND n.superseded_by IS NULL
+                  AND n.created_at > (SELECT created_at + interval '14 days'
+                                      FROM memories WHERE id = $1)
+                GROUP BY n.id, n.summary, n.content, n.created_at
+                HAVING count(*) >= 2
+                ORDER BY count(*) DESC, n.created_at DESC
+                LIMIT 3
+                """,
+                cand["id"],
+            )
+        if not newer:
+            continue
+        newer_txt = "\n\n".join(
+            f"[{i}] ({n['cdate']}) {n['text']}" for i, n in enumerate(newer)
+        )
+        try:
+            await _yield_to_live_requests()
+            verdict = await ollama_chat(
+                system=_RECONCILE_SYSTEM,
+                user=(f"OLD note ({cand['cdate']}):\n{cand['text']}\n\n"
+                      f"NEWER notes sharing its entities:\n{newer_txt}"),
+                schema=RECONCILE_SCHEMA,
+                temperature=0.1,
+            )
+        except Exception:
+            logger.exception("reconciliation LLM call failed")
+            continue
+        checked += 1
+        status = (verdict or {}).get("status")
+        reason = ((verdict or {}).get("reason") or "")[:300]
+        async with pool.acquire() as conn:
+            if status == "superseded":
+                idx = int(verdict.get("newer_index", 0))
+                if 0 <= idx < len(newer):
+                    ok = await queries.supersede_memory(
+                        str(cand["id"]), str(newer[idx]["id"]),
+                        reason=f"reconciliation sweep: {reason}",
+                    )
+                    if ok:
+                        superseded += 1
+                        continue
+            elif status == "executed_plan":
+                await conn.execute(
+                    """
+                    UPDATE memories
+                    SET claim_kind = 'historical',
+                        metadata = COALESCE(metadata,'{}'::jsonb)
+                            || jsonb_build_object('reconciled', 'executed_plan',
+                                                  'reconcile_reason', $2)
+                    WHERE id = $1
+                    """,
+                    cand["id"], reason,
+                )
+                historicized += 1
+                continue
+            # still_current / unclear → stamp so we don't re-check for 60d
+            await conn.execute(
+                """
+                UPDATE memories
+                SET metadata = COALESCE(metadata,'{}'::jsonb)
+                    || jsonb_build_object('last_reconciled', now()::date::text)
+                WHERE id = $1
+                """,
+                cand["id"],
+            )
+    return {"checked": checked, "superseded": superseded,
+            "historicized": historicized, "ran_at": datetime.now().isoformat()}
