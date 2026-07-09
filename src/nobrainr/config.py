@@ -356,6 +356,11 @@ class Settings(BaseSettings):
     probe_generator_interval_hours: float = 24.0
     probe_generator_batch_size: int = 15
     stability_reinforce_interval_hours: float = 12.0
+    # Reconciliation sweeper (2026-07-09): old unverified stale-prone
+    # memories vs newer same-entity memories → supersede/historicize.
+    # The anti-recurrence for plan-vs-reality drift.
+    reconciliation_interval_hours: float = 12.0
+    reconciliation_batch_size: int = 20
 
     # deep_recall (2026-07-06) — bounded multi-hop recall loop:
     # search → LLM reads the hits and emits ONE follow-up query naming
