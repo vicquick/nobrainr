@@ -5032,3 +5032,31 @@ async def reinforce_stability_from_traces(hours: int = 24) -> int:
             hours,
         )
     return int(n or 0)
+
+
+async def supersede_memory(old_id: str, new_id: str, *, reason: str | None = None) -> bool:
+    """Mark old_id as superseded by new_id — on the COLUMN, not metadata.
+
+    (2026-07-09) The old supersede backlink wrote metadata jsonb only, and
+    on the queued write path often nothing at all: 387 memories claimed
+    metadata.supersedes while just 4 superseded_by columns were ever set.
+    Search filters (`superseded_by IS NULL`) and the trust formula
+    (contradiction_safety → 0.0) read the COLUMN, so broken chains left
+    stale versions ranking as current truth. updated_at is bumped so the
+    6h recompute_trust_scores pass picks the row up.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE memories
+            SET superseded_by = $2,
+                updated_at = now(),
+                metadata = COALESCE(metadata, '{}'::jsonb)
+                    || jsonb_build_object('superseded_by', $2::text,
+                                          'superseded_reason', COALESCE($3, 'superseded'))
+            WHERE id = $1 AND superseded_by IS NULL AND id <> $2
+            """,
+            UUID(str(old_id)), UUID(str(new_id)), reason,
+        )
+    return result.endswith("1")
