@@ -1667,8 +1667,12 @@ async def decay_stability() -> int:
             """
             SELECT id
             FROM memories
-            WHERE (last_accessed_at IS NULL AND created_at < now() - interval '7 days')
-               OR (last_accessed_at < now() - interval '7 days')
+            WHERE ((last_accessed_at IS NULL AND created_at < now() - interval '7 days')
+               OR (last_accessed_at < now() - interval '7 days'))
+              -- L1 lifecycle (2026-07-09): reference/historical knowledge is
+              -- valuable even if touched once — its worth is availability,
+              -- not frequency. Disuse-decay applies to WORKING knowledge only.
+              AND (claim_kind IS NULL OR claim_kind NOT IN ('reference', 'historical'))
             """
         )
 
@@ -4993,3 +4997,38 @@ async def get_extraction_pending_count() -> int:
         return await conn.fetchval(
             "SELECT count(*) FROM memories WHERE extraction_status IS NULL OR extraction_status = 'failed'"
         )
+
+
+async def reinforce_stability_from_traces(hours: int = 24) -> int:
+    """Verify-through-use (L1, 2026-07-09): retrieval reinforces stability.
+
+    stability previously only DECAYED (5%/cycle after 7d idle) — nothing
+    ever pushed it back up, so every memory ratcheted toward the 0.1
+    floor. Memories that surfaced in the top-5 of a quality-tier A/B
+    search in the window get +0.05 (capped 1.0): knowledge that keeps
+    proving retrievable-and-relevant earns longer verification intervals
+    and slower decay, per the FSRS/spaced-repetition model.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        n = await conn.fetchval(
+            """
+            WITH used AS (
+                SELECT DISTINCT unnest(top_ids[1:5]) AS mid
+                FROM search_traces
+                WHERE created_at > now() - make_interval(hours => $1)
+                  AND quality_tier IN ('A', 'B')
+                  AND result_count > 0
+            ),
+            upd AS (
+                UPDATE memories m
+                SET stability = LEAST(1.0, COALESCE(m.stability, 0.5) + 0.05)
+                FROM used u
+                WHERE m.id = u.mid
+                RETURNING m.id
+            )
+            SELECT count(*) FROM upd
+            """,
+            hours,
+        )
+    return int(n or 0)
