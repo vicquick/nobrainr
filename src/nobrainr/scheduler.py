@@ -144,6 +144,7 @@ LLM_JOB_DELAYS = {
     # L1 trust flywheel (2026-07-09)
     "claim_kind_classifier": 9 * 60,
     "probe_generator": 42 * 60,
+    "reconciliation_sweep": 44 * 60,
     # Fact-augmented key expansion (LongMemEval pattern)
     "key_expansion": 7 * 60,
     # Two-layer commonplace: backfill embeddings for raw conversations
@@ -267,6 +268,7 @@ class Scheduler:
             {"name": "procedural_distill", "interval_hours": settings.procedural_distill_interval_hours, "type": "llm"},
             {"name": "claim_kind_classifier", "interval_hours": settings.claim_kind_interval_hours, "type": "llm"},
             {"name": "probe_generator", "interval_hours": settings.probe_generator_interval_hours, "type": "llm"},
+            {"name": "reconciliation_sweep", "interval_hours": settings.reconciliation_interval_hours, "type": "llm"},
         ]
         # github_sync is classified as "external" — it's network IO + embeddings only
         # (commit import uses skip_dedup=True, and extraction is fire-and-forget async).
@@ -481,6 +483,8 @@ class Scheduler:
              settings.claim_kind_interval_hours * 3600),
             ("probe_generator", scheduler_jobs.probe_generator,
              settings.probe_generator_interval_hours * 3600),
+            ("reconciliation_sweep", scheduler_jobs.reconciliation_sweep,
+             settings.reconciliation_interval_hours * 3600),
         ]
 
         for name, job_func, interval in llm_jobs:
