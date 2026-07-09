@@ -2721,3 +2721,258 @@ async def procedural_distill() -> dict:
         "reviewed": len(reviewed_ids), "created": created,
         "ran_at": datetime.now().isoformat(),
     }
+
+
+# ──────────────────────────────────────────────
+# Claim-kind classifier (L1 lifecycle, 2026-07-09)
+# ──────────────────────────────────────────────
+# 61% of active memories had claim_kind NULL (the 2026-04-27 trust layer
+# shipped the column + consumers but the backfill script never existed).
+# claim_kind drives per-kind staleness TTLs, probe targeting, and the
+# reference-class disuse-decay exemption — this job feeds all of it.
+CLAIM_KIND_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "classifications": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer"},
+                    "claim_kind": {
+                        "type": "string",
+                        "enum": [
+                            "code-state", "infra-state", "preference",
+                            "incident-fix", "design-decision", "historical",
+                            "reference", "fact",
+                        ],
+                    },
+                },
+                "required": ["index", "claim_kind"],
+            },
+        }
+    },
+    "required": ["classifications"],
+}
+
+_CLAIM_KIND_SYSTEM = (
+    "Classify each memory note into exactly one claim_kind:\n"
+    "- code-state: how code/config IS right now (changes when code changes)\n"
+    "- infra-state: how infrastructure IS right now (ports, containers, versions)\n"
+    "- preference: a person's preference or working style\n"
+    "- incident-fix: a problem that WAS diagnosed/fixed (past event + solution)\n"
+    "- design-decision: a choice that was made and why\n"
+    "- historical: a record of something that happened (no current-state claim)\n"
+    "- reference: external knowledge/documentation/research (true regardless of our systems)\n"
+    "- fact: a standalone verifiable fact not covered above\n"
+    "Pick the kind whose STALENESS MODEL fits: would this become wrong when "
+    "our systems change (code/infra-state), or is it a permanent record "
+    "(incident-fix/historical/reference)?"
+)
+
+
+async def claim_kind_classifier() -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, left(COALESCE(summary, '') || ' | ' || content, 500) AS text
+            FROM memories
+            WHERE claim_kind IS NULL AND tier < 3
+              AND length(content) > 50
+            ORDER BY tier ASC, access_count DESC
+            LIMIT $1
+            """,
+            settings.claim_kind_batch_size,
+        )
+    if not rows:
+        return {"classified": 0, "ran_at": datetime.now().isoformat()}
+
+    classified = 0
+    pack_size = 10
+    for start in range(0, len(rows), pack_size):
+        pack = rows[start:start + pack_size]
+        notes = "\n".join(f"[{i}] {r['text']}" for i, r in enumerate(pack))
+        try:
+            await _yield_to_live_requests()
+            resp = await ollama_chat(
+                system=_CLAIM_KIND_SYSTEM,
+                user=f"Memory notes:\n{notes}",
+                schema=CLAIM_KIND_SCHEMA,
+                temperature=0.1,
+            )
+        except Exception:
+            logger.exception("claim_kind_classifier LLM call failed")
+            continue
+        updates = []
+        for c in (resp or {}).get("classifications", []):
+            idx = int(c.get("index", -1))
+            kind = c.get("claim_kind")
+            if 0 <= idx < len(pack) and kind:
+                updates.append((pack[idx]["id"], kind))
+        if updates:
+            async with pool.acquire() as conn:
+                for mid, kind in updates:
+                    await conn.execute(
+                        "UPDATE memories SET claim_kind = $1 WHERE id = $2 AND claim_kind IS NULL",
+                        kind, mid,
+                    )
+            classified += len(updates)
+    return {"classified": classified, "ran_at": datetime.now().isoformat()}
+
+
+# ──────────────────────────────────────────────
+# Verification probe generator (L1 lifecycle, 2026-07-09)
+# ──────────────────────────────────────────────
+# The probe pool was frozen at 262 hand-seeded rows — no code path ever
+# created probes, so verified coverage sat at 0.7% for months while the
+# corpus grew. This job proposes probes for the WORKING SET: checkable
+# claims (infra-state / code-state / fact) with real usage and no
+# existing probe coverage.
+#
+# SAFETY: probe_command strings are LLM-generated and executed by the
+# hourly nobrainr-verify cron as root. Auto-enabled types are limited to
+# http (curl GET), file (cat), and sql (SELECT-only, and the verify cron
+# runs sql probes read-only). shell probes are stored DISABLED with
+# notes='auto-generated, pending operator review' — never auto-run.
+PROBE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "probes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "source_index": {"type": "integer"},
+                    "probe_name": {"type": "string"},
+                    "claim_pattern": {"type": "string"},
+                    "probe_type": {"type": "string", "enum": ["http", "file", "sql", "shell"]},
+                    "probe_command": {"type": "string"},
+                    "expected_regex": {"type": "string"},
+                    "max_staleness_days": {"type": "integer"},
+                    "checkable": {"type": "boolean"},
+                },
+                "required": ["source_index", "probe_name", "claim_pattern",
+                             "probe_type", "probe_command", "expected_regex",
+                             "checkable"],
+            },
+        }
+    },
+    "required": ["probes"],
+}
+
+_PROBE_SYSTEM = (
+    "You design verification probes for a knowledge base on host 'bimavo' "
+    "(Ubuntu, Docker via Coolify, PostgreSQL 'nobrainr' db, services on "
+    "<vpn-host>). Given memory notes stating CURRENT system facts, emit a "
+    "probe that mechanically re-checks the claim:\n"
+    "- http: a curl-able GET URL (VPN/localhost only) — probe_command is the URL\n"
+    "- file: an absolute HOST filesystem path; the probe CATS the file and "
+    "matches expected_regex against its CONTENT (never ls/stat output). "
+    "Container-internal paths like /app/... are NOT reachable\n"
+    "- sql: a read-only SELECT against the nobrainr db\n"
+    "- shell: ONLY when nothing else works (stored disabled for review)\n"
+    "expected_regex must match the probe output IF the claim still holds. "
+    "claim_pattern is a case-insensitive regex matching the memory text that "
+    "makes the claim (so future memories with the same claim inherit the "
+    "probe). Set checkable=false when the note isn't mechanically checkable "
+    "(opinions, history, external-world facts) — including claims about "
+    "OTHER machines, other users' home directories, or paths inside "
+    "containers, none of which this host can check. NEVER write commands "
+    "that modify anything."
+)
+
+
+async def probe_generator() -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT m.id, left(COALESCE(m.summary,'') || ' | ' || m.content, 600) AS text
+            FROM memories m
+            WHERE m.claim_kind IN ('infra-state', 'code-state', 'fact')
+              AND m.tier <= 1
+              AND m.superseded_by IS NULL
+              AND m.verified_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM verification_log vl WHERE vl.memory_id = m.id
+              )
+            ORDER BY m.access_count DESC, m.importance DESC
+            LIMIT $1
+            """,
+            settings.probe_generator_batch_size,
+        )
+    if not rows:
+        return {"proposed": 0, "auto_enabled": 0, "ran_at": datetime.now().isoformat()}
+
+    proposed = auto_enabled = 0
+    pack_size = 5
+    for start in range(0, len(rows), pack_size):
+        pack = rows[start:start + pack_size]
+        notes = "\n\n".join(f"[{i}] {r['text']}" for i, r in enumerate(pack))
+        try:
+            await _yield_to_live_requests()
+            resp = await ollama_chat(
+                system=_PROBE_SYSTEM,
+                user=f"Memory notes:\n{notes}",
+                schema=PROBE_SCHEMA,
+                temperature=0.2,
+            )
+        except Exception:
+            logger.exception("probe_generator LLM call failed")
+            continue
+        for p in (resp or {}).get("probes", []):
+            if not p.get("checkable"):
+                continue
+            name = (p.get("probe_name") or "").strip()[:100]
+            cmd = (p.get("probe_command") or "").strip()
+            ptype = p.get("probe_type")
+            pattern = (p.get("claim_pattern") or "").strip()
+            regex = (p.get("expected_regex") or "").strip()
+            if not (name and cmd and pattern and regex):
+                continue
+            # Hard safety gate beyond the prompt.
+            is_safe = (
+                (ptype == "http" and cmd.startswith(("http://10.", "http://127.", "http://localhost")))
+                or (ptype == "file" and cmd.startswith("/") and " " not in cmd)
+                or (ptype == "sql" and cmd.lstrip().lower().startswith("select"))
+            )
+            enabled = bool(is_safe)
+            note = ("auto-generated " + datetime.now().date().isoformat()
+                    + ("" if is_safe else " — UNSAFE TYPE, pending operator review"))
+            idx = int(p.get("source_index", 0))
+            kind_row = pack[idx]["id"] if 0 <= idx < len(pack) else None
+            try:
+                async with pool.acquire() as conn:
+                    inserted = await conn.fetchval(
+                        """
+                        INSERT INTO verification_probes
+                            (probe_name, claim_pattern, probe_type, probe_command,
+                             expected_regex, claim_kind, max_staleness_days,
+                             enabled, notes)
+                        SELECT $1, $2, $3, $4, $5, m.claim_kind,
+                               COALESCE($6, 30), $7, $8
+                        FROM memories m WHERE m.id = $9
+                        ON CONFLICT (probe_name) DO NOTHING
+                        RETURNING id
+                        """,
+                        name, pattern, ptype, cmd, regex,
+                        p.get("max_staleness_days"), enabled, note, kind_row,
+                    )
+                if inserted:
+                    proposed += 1
+                    if enabled:
+                        auto_enabled += 1
+            except Exception:
+                logger.exception("probe insert failed for %r", name)
+    return {"proposed": proposed, "auto_enabled": auto_enabled,
+            "ran_at": datetime.now().isoformat()}
+
+
+# ──────────────────────────────────────────────
+# Stability reinforcement (L1 lifecycle, 2026-07-09)
+# ──────────────────────────────────────────────
+async def stability_reinforce() -> dict:
+    """Retrieval-through-use reinforcement: top-ranked hits gain stability."""
+    n = await queries.reinforce_stability_from_traces(hours=24)
+    return {"reinforced": n, "ran_at": datetime.now().isoformat()}
