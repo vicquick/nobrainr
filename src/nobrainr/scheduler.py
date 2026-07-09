@@ -83,6 +83,8 @@ SQL_JOB_DELAYS: dict[str, float] = {
     "community_assign": 480,
     # Observability report + search-trace pruning — no rush.
     "memory_observability": 2400,
+    # Verify-through-use stability reinforcement — cheap SQL.
+    "stability_reinforce": 1500,
 }
 
 # Staggered initial delays for LLM jobs (seconds).
@@ -139,6 +141,9 @@ LLM_JOB_DELAYS = {
     # Procedural distillation (Memp/Foundry pattern) — meta-priority,
     # after the graph and quality phases have settled.
     "procedural_distill": 40 * 60,
+    # L1 trust flywheel (2026-07-09)
+    "claim_kind_classifier": 9 * 60,
+    "probe_generator": 42 * 60,
     # Fact-augmented key expansion (LongMemEval pattern)
     "key_expansion": 7 * 60,
     # Two-layer commonplace: backfill embeddings for raw conversations
@@ -227,6 +232,7 @@ class Scheduler:
             {"name": "extraction_eval", "interval_hours": settings.extraction_eval_interval_hours, "type": "sql"},
             {"name": "community_assign", "interval_hours": settings.community_assign_interval_hours, "type": "sql"},
             {"name": "memory_observability", "interval_hours": settings.observability_interval_hours, "type": "sql"},
+            {"name": "stability_reinforce", "interval_hours": settings.stability_reinforce_interval_hours, "type": "sql"},
             {"name": "monitor_health", "interval_hours": settings.monitoring_interval_hours, "type": "system"},
             {"name": "email_digest", "interval_hours": 24.0, "type": "system"},
             {"name": "knowledge_digest", "interval_hours": 24.0, "type": "system"},
@@ -259,6 +265,8 @@ class Scheduler:
             {"name": "conversation_embedding_backfill", "interval_hours": 1.0, "type": "llm"},
             {"name": "observation_consolidate", "interval_hours": 0.5, "type": "llm"},
             {"name": "procedural_distill", "interval_hours": settings.procedural_distill_interval_hours, "type": "llm"},
+            {"name": "claim_kind_classifier", "interval_hours": settings.claim_kind_interval_hours, "type": "llm"},
+            {"name": "probe_generator", "interval_hours": settings.probe_generator_interval_hours, "type": "llm"},
         ]
         # github_sync is classified as "external" — it's network IO + embeddings only
         # (commit import uses skip_dedup=True, and extraction is fire-and-forget async).
@@ -355,6 +363,13 @@ class Scheduler:
                     "memory_observability",
                     scheduler_jobs.memory_observability,
                     settings.observability_interval_hours * 3600,
+                )
+            ),
+            asyncio.create_task(
+                self._run_periodic(
+                    "stability_reinforce",
+                    scheduler_jobs.stability_reinforce,
+                    settings.stability_reinforce_interval_hours * 3600,
                 )
             ),
             asyncio.create_task(
@@ -462,6 +477,10 @@ class Scheduler:
              0.5 * 3600),  # every 30min; auto-idles when no thread has 5+ fresh obs
             ("procedural_distill", scheduler_jobs.procedural_distill,
              settings.procedural_distill_interval_hours * 3600),
+            ("claim_kind_classifier", scheduler_jobs.claim_kind_classifier,
+             settings.claim_kind_interval_hours * 3600),
+            ("probe_generator", scheduler_jobs.probe_generator,
+             settings.probe_generator_interval_hours * 3600),
         ]
 
         for name, job_func, interval in llm_jobs:

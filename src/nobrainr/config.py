@@ -344,6 +344,19 @@ class Settings(BaseSettings):
     # plain hybrid. (2026-07-05, found the day auto_route went default-on.)
     live_enhancement_timeout_s: float = 6.0
 
+    # L1 trust flywheel (2026-07-09). claim_kind_classifier feeds the
+    # starved per-kind machinery (61% of active memories were NULL);
+    # probe_generator unfreezes the hand-seeded 262-probe pool by
+    # proposing probes for the checkable working set (http/file/
+    # SELECT-sql auto-enabled, shell stored disabled for review);
+    # stability_reinforce closes the verify-through-use loop (top-5
+    # tier-A/B retrievals gain stability — previously decay-only).
+    claim_kind_interval_hours: float = 6.0
+    claim_kind_batch_size: int = 60
+    probe_generator_interval_hours: float = 24.0
+    probe_generator_batch_size: int = 15
+    stability_reinforce_interval_hours: float = 12.0
+
     # deep_recall (2026-07-06) — bounded multi-hop recall loop:
     # search → LLM reads the hits and emits ONE follow-up query naming
     # the bridging entity/aspect → search again → rerank the union
