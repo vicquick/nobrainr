@@ -661,7 +661,15 @@ async def send_knowledge_digest() -> dict:
             WHERE quality_score >= 0.6 AND superseded_by IS NULL
               AND category != '_archived'
               AND source_type IN ('manual','affine_memos','docx','session','agent_learning','synthesis')
-            ORDER BY (quality_score * (0.5 + 0.5 * random())) DESC
+              -- L1 (2026-07-09): never headline an UNVERIFIED current-state
+              -- claim — a stale pre-flash plan surfaced as "memory of the
+              -- day" as if it were standing procedure. Timeless kinds
+              -- (reference/historical/incident-fix/...) and still-NULL
+              -- kinds stay eligible; infra/code/fact claims must have
+              -- been verified to be featured.
+              AND NOT (claim_kind IN ('infra-state', 'code-state', 'fact')
+                       AND verified_at IS NULL)
+            ORDER BY (COALESCE(trust_score, 0.5) * quality_score * (0.5 + 0.5 * random())) DESC
             LIMIT 1
             """
         )
