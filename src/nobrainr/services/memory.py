@@ -354,13 +354,23 @@ async def store_memory_with_extraction(
         event_ts=event_ts,
     )
 
-    # For SUPERSEDE, backlink the archived memory
+    # For SUPERSEDE, backlink the archived memory. (2026-07-09) Two bugs
+    # fixed: metadata arrives as a JSON STRING on the queued-write path
+    # (asyncpg jsonb), so .get() never fired; and the backlink wrote
+    # metadata jsonb instead of the superseded_by COLUMN that search
+    # filters and the trust formula actually read. 387 claimed chains vs
+    # 4 real columns at discovery.
+    if isinstance(metadata, str):
+        try:
+            import json as _json
+            metadata = _json.loads(metadata)
+        except Exception:
+            metadata = None
     if metadata and metadata.get("supersedes"):
         old_id = metadata["supersedes"]
         try:
-            await queries.update_memory(
-                old_id,
-                metadata={"superseded_by": result["id"]},
+            await queries.supersede_memory(
+                old_id, result["id"], reason="explicit supersedes at store",
             )
         except Exception:
             logger.warning("Failed to backlink superseded memory %s", old_id)
