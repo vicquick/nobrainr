@@ -484,6 +484,9 @@ CREATE TABLE IF NOT EXISTS context_cards (
     source_max_updated timestamptz,         -- newest source memory's updated_at at build time (staleness trigger)
     trust_score     real,                   -- min trust of contributing memories
     built_at        timestamptz DEFAULT now(),
+    published_accuracy real,                -- M1: supported/(supported+contradicted) from card_factcheck
+    factcheck       jsonb,                  -- M1: per-claim verdicts (claim, verdict, via, reason)
+    factchecked_at  timestamptz,
     UNIQUE (subject_type, subject_key)
 );
 CREATE INDEX IF NOT EXISTS idx_context_cards_subject

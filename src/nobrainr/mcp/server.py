@@ -356,6 +356,7 @@ async def session_brief(task: str, limit: int = 5) -> dict:
             rows = await conn.fetch(
                 """
                 SELECT title, body, subject_type, subject_key, trust_score, built_at,
+                       published_accuracy,
                        GREATEST(
                          similarity(lower(subject_key), lower($1)),
                          similarity(lower(title), lower($1)),
@@ -374,7 +375,10 @@ async def session_brief(task: str, limit: int = 5) -> dict:
         return {"cards": [], "count": 0, "error": "brief lookup failed"}
     cards = [
         {"title": r["title"], "brief": r["body"], "subject": r["subject_key"],
-         "trust_score": r["trust_score"], "built_at": str(r["built_at"])}
+         "trust_score": r["trust_score"], "built_at": str(r["built_at"]),
+         # M1: fact-checked accuracy (supported/(supported+contradicted)).
+         # None = not yet checked. Treat < 0.7 as "verify before relying".
+         "published_accuracy": r["published_accuracy"]}
         for r in rows if (r["score"] or 0) > 0.05
     ]
     return {"cards": cards, "count": len(cards)}
