@@ -467,6 +467,30 @@ CREATE TABLE IF NOT EXISTS search_traces (
 CREATE INDEX IF NOT EXISTS idx_search_traces_created
     ON search_traces (created_at DESC);
 
+-- Learned-context cards (C1, 2026-07-14). "System-delivers, not
+-- agent-searches": one pre-thought, trust-filtered brief per subject
+-- (entity / project / community) replaces N search round-trips at
+-- session start. Distilled by the card_builder scheduler job from the
+-- subject's highest-trust active memories (superseded/low-trust
+-- dropped), refreshed when the underlying memories change. Served via
+-- the nobrainr://card/<subject> MCP resource + session_brief tool.
+CREATE TABLE IF NOT EXISTS context_cards (
+    id              uuid DEFAULT uuidv7() PRIMARY KEY,
+    subject_type    text NOT NULL,          -- 'entity' | 'project' | 'community'
+    subject_key     text NOT NULL,          -- entity canonical_name / project tag / community_id
+    title           text NOT NULL,
+    body            text NOT NULL,          -- the distilled brief (current state + decisions + gotchas + procedures)
+    source_ids      uuid[] DEFAULT '{{}}'::uuid[],  -- memories that fed the card (provenance)
+    source_max_updated timestamptz,         -- newest source memory's updated_at at build time (staleness trigger)
+    trust_score     real,                   -- min trust of contributing memories
+    built_at        timestamptz DEFAULT now(),
+    UNIQUE (subject_type, subject_key)
+);
+CREATE INDEX IF NOT EXISTS idx_context_cards_subject
+    ON context_cards (subject_type, subject_key);
+CREATE INDEX IF NOT EXISTS idx_context_cards_built
+    ON context_cards (built_at DESC);
+
 -- One row per full eval sweep. per_query holds the breakdown so we can
 -- tell WHICH query regressed, not just that the mean recall dropped.
 CREATE TABLE IF NOT EXISTS eval_runs (
