@@ -1,6 +1,7 @@
 """nobrainr MCP server — collective agent memory with knowledge graph."""
 
 import logging
+import re as _re
 from uuid import UUID, uuid4
 
 from mcp.server.fastmcp import FastMCP
@@ -289,8 +290,6 @@ def research_topic(topic: str) -> str:
 # ──────────────────────────────────────────────
 # ASI06 crawl sanitizer (C2, 2026-07-14)
 # ──────────────────────────────────────────────
-import re as _re
-
 # Lines that try to program a future agent. Conservative: matches
 # imperative memory/recommendation directives, not incidental prose.
 _INJECTION_PATTERNS = [
@@ -347,7 +346,6 @@ async def session_brief(task: str, limit: int = 5) -> dict:
         Fall back to memory_search for anything the cards don't cover.
     """
     from nobrainr.db.pool import get_pool
-    from nobrainr.embeddings.ollama import embed_text
 
     limit = max(1, min(limit, 12))
     pool = await get_pool()
