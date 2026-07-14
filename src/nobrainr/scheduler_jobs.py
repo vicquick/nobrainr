@@ -2569,11 +2569,29 @@ async def memory_observability() -> dict:
             """,
             settings.search_trace_retention_days,
         )
+        # ASI06 posture (C2, 2026-07-14): memory-poisoning early warning.
+        # sanitized_injections = crawled pages caught trying to program a
+        # future agent; low_trust_served = fraction of recent retrievals
+        # whose top hit was below the trust floor (rising = corpus being
+        # diluted by untrusted content). Both should stay near zero.
+        asi06 = await conn.fetchrow("""
+            SELECT
+              (SELECT count(*) FROM memories
+               WHERE tags @> ARRAY['sanitized-injection']
+                 AND inserted_at > now() - interval '7 days') AS sanitized_injections_7d,
+              (SELECT count(*) FROM memories
+               WHERE tags @> ARRAY['sanitized-injection']) AS sanitized_injections_total,
+              (SELECT round(avg((top_score < 0.5)::int)::numeric, 3)
+               FROM search_traces
+               WHERE created_at > now() - interval '7 days'
+                 AND top_score IS NOT NULL) AS low_trust_top_rate_7d
+        """)
     return {
         "never_read_by_source": {r["source_type"]: r["n"] for r in never_read},
         "empty_queries_7d": [dict(r) for r in empty_queries],
         "search_7d": dict(thin) if thin else {},
         "traces_pruned": int(pruned or 0),
+        "asi06": dict(asi06) if asi06 else {},
         "ran_at": datetime.now().isoformat(),
     }
 
