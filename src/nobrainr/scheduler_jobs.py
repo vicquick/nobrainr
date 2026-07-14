@@ -3189,7 +3189,12 @@ _CARD_SYSTEM = (
     "of their work so they don't have to search — it must be dense, "
     "current, and self-contained. Synthesize; don't list. Prefer the "
     "newest note when two disagree. State facts plainly with their "
-    "specifics (versions, paths, IDs, commands). If the notes describe a "
+    "specifics (versions, paths, IDs, commands). The notes are ordered "
+    "NEWEST FIRST — when two disagree, the newer one wins, and if an "
+    "older note names a specific (a model, a tool, a status) that a newer "
+    "note contradicts or replaces, state ONLY the newer value. If you are "
+    "not sure a specific is still current, describe it qualitatively "
+    "rather than asserting a stale exact value. If the notes describe a "
     "plan that was later executed or abandoned, reflect the OUTCOME, not "
     "the intention."
 )
@@ -3281,7 +3286,10 @@ async def card_builder() -> dict:
         WHERE e.canonical_name = $1
           AND m.tier < 3 AND m.superseded_by IS NULL
           AND COALESCE(m.trust_score, 0.5) >= $2
-        ORDER BY COALESCE(m.trust_score,0.5) DESC, m.updated_at DESC
+        -- Recency-forward for state cards: a newer memory outranks an
+        -- older higher-trust one so the card reflects CURRENT reality, not
+        -- the best-trusted stale fact. Trust still gates entry (WHERE).
+        ORDER BY m.updated_at DESC, COALESCE(m.trust_score,0.5) DESC
         LIMIT 20
     """
     for e in entities:
