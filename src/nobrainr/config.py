@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     # Brave Search API (web discovery — Brave discovers URLs, crawl4ai extracts)
     brave_api_key: str = ""
     brave_search_url: str = "https://api.search.brave.com/res/v1/web/search"
+    # Monthly query budget mirroring the Brave dashboard free-tier cap
+    # ($5 credits ≈ 1000 queries). Past this, web_search returns a clean
+    # "quota exhausted" error instead of Brave's 401/429. 0 = no block
+    # (usage is still counted for visibility).
+    brave_monthly_query_cap: int = 1000
 
     # Speaches (OpenAI-compatible whisper API)
     speaches_url: str = "http://speaches:8000"
