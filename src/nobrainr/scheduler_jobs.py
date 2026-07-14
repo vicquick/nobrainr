@@ -3501,12 +3501,14 @@ async def _factcheck_card(pool, card, probes: list[dict]) -> dict:
         await conn.execute(
             """
             UPDATE context_cards
-            SET published_accuracy = $2, factcheck = $3::jsonb,
+            SET published_accuracy = $2::real, factcheck = $3::jsonb,
                 factchecked_at = now(),
                 -- below the bar → clear the staleness stamp so
                 -- card_builder rebuilds this card on its next run
+                -- (explicit ::real casts: $2 appears in both an assignment
+                -- and a comparison — asyncpg can't deduce one type for it)
                 source_max_updated = CASE
-                    WHEN $2 IS NOT NULL AND $2 < $4 THEN NULL
+                    WHEN $2::real IS NOT NULL AND $2::real < $4::real THEN NULL
                     ELSE source_max_updated END
             WHERE id = $1
             """,
