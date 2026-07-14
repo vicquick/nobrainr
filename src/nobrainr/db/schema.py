@@ -494,6 +494,13 @@ CREATE INDEX IF NOT EXISTS idx_context_cards_subject
 CREATE INDEX IF NOT EXISTS idx_context_cards_built
     ON context_cards (built_at DESC);
 
+-- Brave web_search monthly usage counter: visibility + clean early
+-- quota error (Brave dashboard is capped at the free tier).
+CREATE TABLE IF NOT EXISTS web_search_usage (
+    month   text PRIMARY KEY,   -- 'YYYY-MM'
+    queries integer NOT NULL DEFAULT 0
+);
+
 -- One row per full eval sweep. per_query holds the breakdown so we can
 -- tell WHICH query regressed, not just that the mean recall dropped.
 CREATE TABLE IF NOT EXISTS eval_runs (

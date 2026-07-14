@@ -142,3 +142,71 @@ async def test_transport_error_surfaces_as_dict():
     ):
         out = await web_search(query="q")
     assert out["error"].startswith("brave request failed")
+
+
+# ──────────────────────────────────────────────
+# monthly quota (usage counter mirrors dashboard free-tier cap)
+# ──────────────────────────────────────────────
+
+
+async def test_quota_exhausted_blocks_before_brave():
+    with (
+        patch.object(settings, "brave_api_key", "k"),
+        patch.object(settings, "brave_monthly_query_cap", 100),
+        patch.object(mcp_server, "_count_web_search_use", AsyncMock(return_value=101)),
+        patch.object(mcp_server, "_brave_search_request", AsyncMock()) as req,
+    ):
+        out = await web_search(query="q")
+    assert out["error"] == "monthly web_search quota exhausted"
+    assert out["quota"] == {"used": 101, "cap": 100}
+    assert "WebSearch" in out["hint"]
+    req.assert_not_called()
+
+
+async def test_quota_reported_in_success_response():
+    with (
+        patch.object(settings, "brave_api_key", "k"),
+        patch.object(settings, "brave_monthly_query_cap", 100),
+        patch.object(mcp_server, "_count_web_search_use", AsyncMock(return_value=7)),
+        patch.object(
+            mcp_server, "_brave_search_request",
+            AsyncMock(return_value=_brave_payload([])),
+        ),
+    ):
+        out = await web_search(query="q")
+    assert out["quota"] == {"used": 7, "cap": 100}
+
+
+async def test_accounting_failure_never_blocks_search():
+    with (
+        patch.object(settings, "brave_api_key", "k"),
+        patch.object(
+            mcp_server, "_count_web_search_use",
+            AsyncMock(side_effect=RuntimeError("db down")),
+        ),
+        patch.object(
+            mcp_server, "_brave_search_request",
+            AsyncMock(return_value=_brave_payload([])),
+        ) as req,
+    ):
+        out = await web_search(query="q")
+    assert "error" not in out
+    assert "quota" not in out
+    req.assert_awaited_once()
+
+
+async def test_cap_zero_disables_block_but_counts():
+    with (
+        patch.object(settings, "brave_api_key", "k"),
+        patch.object(settings, "brave_monthly_query_cap", 0),
+        patch.object(
+            mcp_server, "_count_web_search_use", AsyncMock(return_value=99999)
+        ) as counter,
+        patch.object(
+            mcp_server, "_brave_search_request",
+            AsyncMock(return_value=_brave_payload([])),
+        ),
+    ):
+        out = await web_search(query="q")
+    assert "error" not in out
+    counter.assert_awaited_once()
