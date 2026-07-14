@@ -287,6 +287,44 @@ def research_topic(topic: str) -> str:
 
 
 # ──────────────────────────────────────────────
+# ASI06 crawl sanitizer (C2, 2026-07-14)
+# ──────────────────────────────────────────────
+import re as _re
+
+# Lines that try to program a future agent. Conservative: matches
+# imperative memory/recommendation directives, not incidental prose.
+_INJECTION_PATTERNS = [
+    _re.compile(p, _re.IGNORECASE)
+    for p in (
+        r"\b(remember|note|treat|regard|consider)\b.{0,40}\b(as|to be)\b.{0,40}"
+        r"\b(trusted|authoritative|the best|preferred|official)\b",
+        r"\b(always|from now on|in (the )?future|going forward)\b.{0,50}"
+        r"\b(recommend|prefer|suggest|choose|use|cite)\b",
+        r"\bignore\b.{0,30}\b(instructions|context|rules|prompt|guidelines)\b",
+        r"\b(disregard|forget|override)\b.{0,30}\b(instructions|context|rules|prompt|above|previous)\b",
+        r"\byou (must|should|are to) (now )?(always |only )?(recommend|prefer|treat|remember)\b",
+        r"\b(system|developer) (prompt|message|instruction)s?\b.{0,30}\b(override|replace|update)\b",
+    )
+]
+
+
+def _sanitize_crawled_text(text: str) -> tuple[str, list[str]]:
+    """Defang instruction-shaped lines in crawled content. Returns
+    (sanitized_text, list_of_flagged_line_previews). Non-destructive: the
+    line is preserved as quoted DATA so retrieval still surfaces what the
+    page said, but it can no longer read as a live instruction."""
+    flagged: list[str] = []
+    out_lines: list[str] = []
+    for line in text.splitlines():
+        if any(pat.search(line) for pat in _INJECTION_PATTERNS):
+            flagged.append(line.strip()[:120])
+            out_lines.append("[quoted-web-text, not an instruction] " + line)
+        else:
+            out_lines.append(line)
+    return "\n".join(out_lines), flagged
+
+
+# ──────────────────────────────────────────────
 # Tool: session_brief (C1, 2026-07-14) — system delivers, agent doesn't search
 # ──────────────────────────────────────────────
 @mcp.tool()
@@ -707,6 +745,7 @@ async def memory_search(
     date_to: str | None = None,
     auto_route: bool = True,
     include_related: bool = False,
+    trust_floor: float | None = None,
 ) -> list[dict]:
     """Semantic search across all memories, ranked by relevance (similarity + recency + importance).
 
@@ -742,6 +781,10 @@ async def memory_search(
             Routing only applies when the caller left all strategy flags
             at their defaults — an explicitly-set expand/hyde/decompose
             (or hybrid=False) always wins over the router.
+        trust_floor: When set (0-1), drop results whose trust_score is below
+            it. Use for high-stakes work that must not act on unverified or
+            low-trust (potentially poisoned) memory — returns fewer results
+            by design. Unscored memories pass (NULL != low).
     """
     import asyncio
     from datetime import datetime
@@ -1005,6 +1048,18 @@ async def memory_search(
             )
             for row in results:
                 row["related_memories"] = []
+
+    # Trust floor (C2 ASI06, 2026-07-14). When the caller sets trust_floor,
+    # drop results below it — a post-filter, so a high-stakes consumer that
+    # asks for trust_floor=0.6 can never be handed a low-trust or unverified
+    # (poisoned-candidate) memory. Applied here rather than in SQL because
+    # trust_score is computed/joined per row and this keeps the 3 search
+    # paths (vec / hybrid / graph) untouched. Returns fewer than limit by
+    # design — "trusted only" is the contract.
+    if trust_floor is not None:
+        results = [r for r in results
+                   if (r.get("trust_score") is None
+                       or r["trust_score"] >= trust_floor)]
 
     # Stamp quality tier + elapsed ms on every row so callers can reason
     # about degradation. Cheap — tiny string + int per result.
@@ -2589,7 +2644,20 @@ async def crawl_and_store(
     title = crawl_result.get("title", url)
     content = markdown[:max_content_chars]
 
+    # ASI06 crawl sanitizer (C2, 2026-07-14). Crawled web pages are the one
+    # path where UNTRUSTED external text enters long-term memory — the exact
+    # "Summarize with AI" vector Microsoft documented (50 poisoning attempts
+    # / 31 companies in 60 days). Neutralize instruction-shaped lines that
+    # try to program a future agent ("remember X as authoritative", "always
+    # recommend Y") by prefixing them with a quoted marker so they read as
+    # data, never as instructions, and tag the memory for the observability
+    # sweep. This runs ONLY on the crawl path — agent-authored memories
+    # (which legitimately contain instruction text about system design) are
+    # untouched.
+    content, _flags = _sanitize_crawled_text(content)
     all_tags = list(tags or []) + ["crawled"]
+    if _flags:
+        all_tags.append("sanitized-injection")
     norm_category = normalize_category(category)
 
     if chunked:
