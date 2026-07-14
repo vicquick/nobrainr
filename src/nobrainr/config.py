@@ -361,6 +361,13 @@ class Settings(BaseSettings):
     # The anti-recurrence for plan-vs-reality drift.
     reconciliation_interval_hours: float = 12.0
     reconciliation_batch_size: int = 20
+    # Learned-context cards (C1, 2026-07-14): per-subject living briefs
+    # served at session start. Only memories >= card_min_trust feed a
+    # card; a subject needs card_min_sources memories to be worth one.
+    card_builder_interval_hours: float = 8.0
+    card_builder_batch_size: int = 25
+    card_min_trust: float = 0.55
+    card_min_sources: int = 4
 
     # deep_recall (2026-07-06) — bounded multi-hop recall loop:
     # search → LLM reads the hits and emits ONE follow-up query naming
