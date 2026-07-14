@@ -2613,6 +2613,23 @@ async def _brave_search_request(params: dict) -> dict:
         return resp.json()
 
 
+async def _count_web_search_use() -> int:
+    """Increment and return this month's web_search query count."""
+    from nobrainr.db.pool import get_pool
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            """
+            INSERT INTO web_search_usage (month, queries)
+            VALUES (to_char(now(), 'YYYY-MM'), 1)
+            ON CONFLICT (month) DO UPDATE
+                SET queries = web_search_usage.queries + 1
+            RETURNING queries
+            """
+        )
+
+
 @mcp.tool()
 async def web_search(
     query: str,
@@ -2644,6 +2661,26 @@ async def web_search(
             "error": "brave_api_key not configured",
             "hint": "set NOBRAINR_BRAVE_API_KEY on the nobrainr app",
         }
+
+    # Monthly usage counter. The Brave dashboard is capped at the free
+    # tier — past the budget the key just stops working, so fail HERE
+    # with a clean, actionable error instead of Brave's 401/429.
+    # Accounting failures never block search: DB hiccup → search anyway.
+    used = None
+    try:
+        used = await _count_web_search_use()
+    except Exception:
+        logger.warning("web_search usage accounting failed", exc_info=True)
+    cap = settings.brave_monthly_query_cap
+    if used is not None and cap > 0:
+        if used > cap:
+            return {
+                "error": "monthly web_search quota exhausted",
+                "quota": {"used": used, "cap": cap},
+                "hint": "fall back to the built-in WebSearch tool until next month",
+            }
+        if used == int(cap * 0.8):
+            logger.warning("web_search at 80%% of monthly quota (%s/%s)", used, cap)
 
     params: dict = {"q": query, "count": max(1, min(count, 20))}
     if freshness:
@@ -2679,12 +2716,15 @@ async def web_search(
             }
         )
 
-    return {
+    out = {
         "query": query,
         "count": len(results),
         "results": results,
         "note": "transient SERP — persist sources via crawl_and_store, never this list",
     }
+    if used is not None and cap > 0:
+        out["quota"] = {"used": used, "cap": cap}
+    return out
 
 
 # ──────────────────────────────────────────────
