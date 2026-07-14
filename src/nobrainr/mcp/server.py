@@ -194,6 +194,37 @@ async def entity_types_resource() -> list[dict]:
         return [{"type": r["entity_type"], "count": r["count"]} for r in rows]
 
 
+@mcp.resource("nobrainr://card/{subject}")
+async def context_card_resource(subject: str) -> dict:
+    """Learned-context card for a subject (entity name / project / community).
+
+    A pre-thought, trust-filtered brief built by the card_builder job from
+    the subject's highest-trust memories — read this instead of running
+    several searches. Returns {found: false} when no card exists yet.
+    """
+    from nobrainr.db.pool import get_pool
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT title, body, trust_score, built_at,
+                   array_length(source_ids, 1) AS n_sources
+            FROM context_cards
+            WHERE subject_key ILIKE $1
+            ORDER BY built_at DESC LIMIT 1
+            """,
+            subject,
+        )
+    if not row:
+        return {"found": False, "subject": subject}
+    return {
+        "found": True, "subject": subject, "title": row["title"],
+        "brief": row["body"], "trust_score": row["trust_score"],
+        "sources": row["n_sources"], "built_at": str(row["built_at"]),
+    }
+
+
 # ──────────────────────────────────────────────
 # Prompts: structured agent workflows
 # ──────────────────────────────────────────────
@@ -253,6 +284,64 @@ def research_topic(topic: str) -> str:
         "   crawl_and_store(url=<docs_url>, tags=[<topic>], category='documentation')\n"
         "5. Synthesize findings with memory_store, category='insight'"
     )
+
+
+# ──────────────────────────────────────────────
+# Tool: session_brief (C1, 2026-07-14) — system delivers, agent doesn't search
+# ──────────────────────────────────────────────
+@mcp.tool()
+async def session_brief(task: str, limit: int = 5) -> dict:
+    """Get pre-thought, trust-filtered context cards for a task — call this ONCE
+    at the start of work instead of running several memory_search calls.
+
+    Matches the task against learned-context cards (living per-subject briefs
+    the card_builder job distils from the highest-trust memories) and returns
+    the most relevant, each a dense standalone brief with current state,
+    decisions, gotchas, and procedures. Superseded and low-trust knowledge is
+    already excluded — what you get is what's current and trusted.
+
+    Args:
+        task: What you're about to work on (a phrase or sentence).
+        limit: Max cards to return (default 5).
+
+    Returns:
+        {"cards": [{title, brief, subject, trust_score, built_at}], "count": N}
+        Fall back to memory_search for anything the cards don't cover.
+    """
+    from nobrainr.db.pool import get_pool
+    from nobrainr.embeddings.ollama import embed_text
+
+    limit = max(1, min(limit, 12))
+    pool = await get_pool()
+    # Match cards by trigram similarity on title/subject + FTS on body —
+    # cheap, no LLM, no embedding-of-cards needed (cards are few).
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT title, body, subject_type, subject_key, trust_score, built_at,
+                       GREATEST(
+                         similarity(lower(subject_key), lower($1)),
+                         similarity(lower(title), lower($1)),
+                         ts_rank(to_tsvector('simple', body),
+                                 plainto_tsquery('simple', $1)) * 4
+                       ) AS score
+                FROM context_cards
+                ORDER BY score DESC
+                LIMIT $2
+                """,
+                task, limit,
+            )
+    except Exception:
+        import logging
+        logging.getLogger("nobrainr").exception("session_brief query failed")
+        return {"cards": [], "count": 0, "error": "brief lookup failed"}
+    cards = [
+        {"title": r["title"], "brief": r["body"], "subject": r["subject_key"],
+         "trust_score": r["trust_score"], "built_at": str(r["built_at"])}
+        for r in rows if (r["score"] or 0) > 0.05
+    ]
+    return {"cards": cards, "count": len(cards)}
 
 
 # ──────────────────────────────────────────────

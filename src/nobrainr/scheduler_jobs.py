@@ -3128,3 +3128,149 @@ async def reconciliation_sweep() -> dict:
             )
     return {"checked": checked, "superseded": superseded,
             "historicized": historicized, "ran_at": datetime.now().isoformat()}
+
+
+# ──────────────────────────────────────────────
+# Learned-context card builder (C1, 2026-07-14)
+# ──────────────────────────────────────────────
+# "System-delivers, not agent-searches." Distils a living brief per
+# subject (entity/project/community) from its highest-trust, non-
+# superseded memories — current state + key decisions + gotchas +
+# procedures, superseded facts dropped. Served at session start via the
+# nobrainr://card/{subject} resource + session_brief tool, so an agent
+# gets one pre-thought, trust-filtered brief instead of N searches.
+# Rebuilds only when the subject's newest memory changed (source_max_
+# updated), so it's cheap and self-throttling. Trust-gated: only
+# memories >= card_min_trust contribute, and reference/creative/timeless
+# knowledge is welcome (availability value) but superseded/low-trust is
+# excluded (never brief on stale or poisoned content — the ASI06 lesson).
+CARD_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "brief": {
+            "type": "string",
+            "description": (
+                "A dense standalone brief an agent can act on without "
+                "further searching. Lead with CURRENT STATE, then KEY "
+                "DECISIONS (with why), then GOTCHAS, then PROCEDURES. "
+                "Omit anything not grounded in the provided notes. Drop "
+                "outdated claims. Under 350 words."
+            ),
+        },
+    },
+    "required": ["title", "brief"],
+}
+
+_CARD_SYSTEM = (
+    "You write a living reference card for one subject from an engineer's "
+    "verified memory notes. The card is served to AI agents at the start "
+    "of their work so they don't have to search — it must be dense, "
+    "current, and self-contained. Synthesize; don't list. Prefer the "
+    "newest note when two disagree. State facts plainly with their "
+    "specifics (versions, paths, IDs, commands). If the notes describe a "
+    "plan that was later executed or abandoned, reflect the OUTCOME, not "
+    "the intention."
+)
+
+
+async def _build_card(pool, subject_type: str, subject_key: str,
+                      title_hint: str, source_sql: str, *sql_args) -> dict | None:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(source_sql, *sql_args)
+    rows = [r for r in rows if (r["content"] or "").strip()]
+    if len(rows) < 3:
+        return None  # not enough signal to be worth a card
+    src_ids = [r["id"] for r in rows]
+    newest = max((r["mupd"] for r in rows if r["mupd"]), default=None)
+    min_trust = min((r["trust_score"] or 0.5 for r in rows), default=0.5)
+
+    # Skip rebuild if unchanged since last build.
+    async with pool.acquire() as conn:
+        existing = await conn.fetchrow(
+            "SELECT source_max_updated FROM context_cards WHERE subject_type=$1 AND subject_key=$2",
+            subject_type, subject_key,
+        )
+    if existing and existing["source_max_updated"] and newest and \
+            existing["source_max_updated"] >= newest:
+        return {"skipped": True}
+
+    notes = "\n\n".join(
+        f"[{i}] ({(r['mupd'] or r['created_at']).date()}) {(r['summary'] or '')[:120]}\n{r['content'][:900]}"
+        for i, r in enumerate(rows[:20])
+    )
+    try:
+        resp = await ollama_chat(
+            system=_CARD_SYSTEM,
+            user=f"Subject: {title_hint}\n\nVerified notes:\n{notes}",
+            schema=CARD_SCHEMA, temperature=0.2,
+        )
+    except Exception:
+        logger.exception("card build LLM failed for %s/%s", subject_type, subject_key)
+        return None
+    title = (resp or {}).get("title", "").strip()[:200] or title_hint
+    brief = (resp or {}).get("brief", "").strip()
+    if len(brief) < 40:
+        return None
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO context_cards
+                (subject_type, subject_key, title, body, source_ids,
+                 source_max_updated, trust_score, built_at)
+            VALUES ($1,$2,$3,$4,$5::uuid[],$6,$7, now())
+            ON CONFLICT (subject_type, subject_key) DO UPDATE
+                SET title=EXCLUDED.title, body=EXCLUDED.body,
+                    source_ids=EXCLUDED.source_ids,
+                    source_max_updated=EXCLUDED.source_max_updated,
+                    trust_score=EXCLUDED.trust_score, built_at=now()
+            """,
+            subject_type, subject_key, title, brief, src_ids, newest, min_trust,
+        )
+    return {"built": True}
+
+
+async def card_builder() -> dict:
+    pool = await get_pool()
+    built = skipped = 0
+
+    # 1) Top active entities by memory linkage (the graph's centers of mass).
+    async with pool.acquire() as conn:
+        entities = await conn.fetch(
+            """
+            SELECT e.canonical_name, e.name, count(*) AS n
+            FROM entities e
+            JOIN entity_memories em ON em.entity_id = e.id
+            JOIN memories m ON m.id = em.memory_id
+            WHERE m.tier < 3 AND m.superseded_by IS NULL
+              AND COALESCE(m.trust_score, 0.5) >= $1
+            GROUP BY e.id, e.canonical_name, e.name
+            HAVING count(*) >= $2
+            ORDER BY count(*) DESC
+            LIMIT $3
+            """,
+            settings.card_min_trust, settings.card_min_sources,
+            settings.card_builder_batch_size,
+        )
+    ent_sql = """
+        SELECT m.id, m.content, m.summary, m.created_at, m.updated_at AS mupd, m.trust_score
+        FROM memories m
+        JOIN entity_memories em ON em.memory_id = m.id
+        JOIN entities e ON e.id = em.entity_id
+        WHERE e.canonical_name = $1
+          AND m.tier < 3 AND m.superseded_by IS NULL
+          AND COALESCE(m.trust_score, 0.5) >= $2
+        ORDER BY COALESCE(m.trust_score,0.5) DESC, m.updated_at DESC
+        LIMIT 20
+    """
+    for e in entities:
+        await _yield_to_live_requests()
+        r = await _build_card(pool, "entity", e["canonical_name"], e["name"],
+                              ent_sql, e["canonical_name"], settings.card_min_trust)
+        if r and r.get("built"):
+            built += 1
+        elif r and r.get("skipped"):
+            skipped += 1
+
+    return {"built": built, "skipped_unchanged": skipped,
+            "ran_at": datetime.now().isoformat()}
