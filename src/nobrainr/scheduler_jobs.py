@@ -3214,21 +3214,47 @@ async def _build_card(pool, subject_type: str, subject_key: str,
     # Skip rebuild if unchanged since last build.
     async with pool.acquire() as conn:
         existing = await conn.fetchrow(
-            "SELECT source_max_updated FROM context_cards WHERE subject_type=$1 AND subject_key=$2",
+            "SELECT source_max_updated, factcheck FROM context_cards "
+            "WHERE subject_type=$1 AND subject_key=$2",
             subject_type, subject_key,
         )
     if existing and existing["source_max_updated"] and newest and \
             existing["source_max_updated"] >= newest:
         return {"skipped": True}
 
+    # Self-heal (M1): claims the fact-checker refuted on the previous
+    # version must not be restated — inject them as hard negatives.
+    refuted: list[str] = []
+    if existing and existing["factcheck"]:
+        import json as _json
+
+        fc = existing["factcheck"]
+        if isinstance(fc, str):
+            try:
+                fc = _json.loads(fc)
+            except ValueError:
+                fc = {}
+        refuted = [
+            c["claim"] for c in (fc or {}).get("claims", [])
+            if c.get("verdict") == "contradicted" and c.get("claim")
+        ][:8]
+
     notes = "\n\n".join(
         f"[{i}] ({(r['mupd'] or r['created_at']).date()}) {(r['summary'] or '')[:120]}\n{r['content'][:900]}"
         for i, r in enumerate(rows[:20])
     )
+    user_prompt = f"Subject: {title_hint}\n\nVerified notes:\n{notes}"
+    if refuted:
+        user_prompt += (
+            "\n\nREFUTED CLAIMS — a fact-checker found these statements from "
+            "the previous card version to be WRONG. Do not restate them; "
+            "state the corrected fact if the notes support one, otherwise "
+            "omit the topic:\n- " + "\n- ".join(refuted)
+        )
     try:
         resp = await ollama_chat(
             system=_CARD_SYSTEM,
-            user=f"Subject: {title_hint}\n\nVerified notes:\n{notes}",
+            user=user_prompt,
             schema=CARD_SCHEMA, temperature=0.2,
         )
     except Exception:
@@ -3302,4 +3328,229 @@ async def card_builder() -> dict:
             skipped += 1
 
     return {"built": built, "skipped_unchanged": skipped,
+            "ran_at": datetime.now().isoformat()}
+
+
+# ──────────────────────────────────────────────
+# Card fact-checker (M1 HEART PLAN, 2026-07-14)
+# ──────────────────────────────────────────────
+# Cards get a published_accuracy NUMBER. Motivation: the first C1 cards
+# asserted stale specifics ("Gemma 4 26B", "Hetzner CX Gen3") as current —
+# a session-start feature that states wrong facts is worse than none.
+# Two verification lanes per checkable claim:
+#   1. probe lane (mechanical, free): if an enabled verification_probe's
+#      claim_pattern matches the claim and its latest run said
+#      verified/mismatch, that IS the verdict — live-state ground truth.
+#   2. evidence lane (LLM): hybrid-retrieve the newest relevant memories
+#      and judge supported/contradicted/unverifiable. Newest evidence wins.
+# published_accuracy = supported / (supported + contradicted).
+# Below card_min_accuracy → source_max_updated reset so card_builder
+# rebuilds, and the refuted claims are injected as "do not restate".
+CLAIMS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "claims": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "claim": {"type": "string"},
+                    "checkable": {"type": "boolean"},
+                },
+                "required": ["claim", "checkable"],
+            },
+        }
+    },
+    "required": ["claims"],
+}
+
+_CLAIMS_SYSTEM = (
+    "Extract the atomic factual claims from a reference card. Each claim "
+    "must be self-contained (name its subject explicitly, no pronouns). "
+    "checkable=true only for claims that are objectively true or false "
+    "against infrastructure state or recorded notes (versions, names, "
+    "counts, statuses, locations, configurations). checkable=false for "
+    "opinions, priorities, style, intentions, and vague qualitative "
+    "statements. Keep each claim under 30 words."
+)
+
+VERDICT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {
+            "type": "string",
+            "enum": ["supported", "contradicted", "unverifiable"],
+        },
+        "reason": {"type": "string"},
+    },
+    "required": ["verdict", "reason"],
+}
+
+_VERDICT_SYSTEM = (
+    "You judge whether a claim is still true given evidence notes from a "
+    "knowledge base, ordered NEWEST FIRST. Rules: 'contradicted' only if "
+    "the evidence explicitly conflicts with the claim — when notes "
+    "disagree, the newer note is the truth. 'supported' if the evidence "
+    "affirms it. 'unverifiable' if the evidence neither confirms nor "
+    "denies. Judge the claim as a statement about CURRENT state."
+)
+
+
+def _probe_verdict(claim: str, probes: list[dict]) -> str | None:
+    """Mechanical lane: match the claim against enabled probes' claim_patterns.
+
+    A probe whose latest run verified → 'supported'; mismatch →
+    'contradicted'. probe-error or no match → None (falls through to the
+    LLM evidence lane). Patterns are LLM-generated — invalid regexes are
+    skipped, never fatal.
+    """
+    import re
+
+    for p in probes:
+        try:
+            if not re.search(p["claim_pattern"], claim, re.IGNORECASE):
+                continue
+        except re.error:
+            continue
+        if p.get("last_result") == "verified":
+            return "supported"
+        if p.get("last_result") == "mismatch":
+            return "contradicted"
+    return None
+
+
+def _accuracy(supported: int, contradicted: int) -> float | None:
+    """supported/(supported+contradicted); None when nothing was decidable."""
+    denom = supported + contradicted
+    return round(supported / denom, 3) if denom else None
+
+
+async def _factcheck_card(pool, card, probes: list[dict]) -> dict:
+    """Verify one card's claims. Returns the factcheck result dict."""
+    import json as _json
+
+    resp = await ollama_chat(
+        system=_CLAIMS_SYSTEM,
+        user=f"Card: {card['title']}\n\n{card['body']}",
+        schema=CLAIMS_SCHEMA, temperature=0.1,
+    )
+    claims = [
+        c for c in (resp or {}).get("claims", [])
+        if isinstance(c, dict) and (c.get("claim") or "").strip()
+    ][: settings.card_factcheck_max_claims]
+
+    supported = contradicted = unverifiable = 0
+    results: list[dict] = []
+    for c in claims:
+        claim = c["claim"].strip()
+        if not c.get("checkable"):
+            results.append({"claim": claim, "verdict": "skipped", "via": "uncheckable"})
+            continue
+        await _yield_to_live_requests()
+
+        # Lane 1: mechanical — probe ground truth.
+        verdict = _probe_verdict(claim, probes)
+        via = "probe"
+        reason = "verification_probe latest run"
+
+        # Lane 2: LLM judge vs newest evidence.
+        if verdict is None:
+            via = "evidence"
+            try:
+                emb = await embed_text(claim)
+                evidence = await queries.search_memories(
+                    embedding=emb, limit=settings.card_factcheck_evidence_k,
+                    threshold=0.25, text_query=claim,
+                )
+            except Exception:
+                evidence = []
+            if not evidence:
+                verdict, reason = "unverifiable", "no evidence retrieved"
+            else:
+                evidence.sort(key=lambda m: str(m.get("updated_at") or ""), reverse=True)
+                notes = "\n\n".join(
+                    f"[{i}] ({str(m.get('updated_at') or '')[:10]}) "
+                    f"{(m.get('summary') or '')[:100]}\n{(m.get('content') or '')[:600]}"
+                    for i, m in enumerate(evidence)
+                )
+                try:
+                    j = await ollama_chat(
+                        system=_VERDICT_SYSTEM,
+                        user=f"Claim: {claim}\n\nEvidence (newest first):\n{notes}",
+                        schema=VERDICT_SCHEMA, temperature=0.1,
+                    )
+                    verdict = (j or {}).get("verdict", "unverifiable")
+                    reason = (j or {}).get("reason", "")[:200]
+                except Exception:
+                    verdict, reason = "unverifiable", "judge LLM failed"
+
+        if verdict == "supported":
+            supported += 1
+        elif verdict == "contradicted":
+            contradicted += 1
+        else:
+            unverifiable += 1
+        results.append({"claim": claim, "verdict": verdict, "via": via, "reason": reason})
+
+    accuracy = _accuracy(supported, contradicted)
+    factcheck = {
+        "supported": supported, "contradicted": contradicted,
+        "unverifiable": unverifiable, "claims": results,
+    }
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE context_cards
+            SET published_accuracy = $2, factcheck = $3::jsonb,
+                factchecked_at = now(),
+                -- below the bar → clear the staleness stamp so
+                -- card_builder rebuilds this card on its next run
+                source_max_updated = CASE
+                    WHEN $2 IS NOT NULL AND $2 < $4 THEN NULL
+                    ELSE source_max_updated END
+            WHERE id = $1
+            """,
+            card["id"], accuracy, _json.dumps(factcheck),
+            settings.card_min_accuracy,
+        )
+    return {"accuracy": accuracy, **factcheck}
+
+
+async def card_factcheck() -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        cards = await conn.fetch(
+            """
+            SELECT id, subject_key, title, body FROM context_cards
+            ORDER BY factchecked_at ASC NULLS FIRST
+            LIMIT $1
+            """,
+            settings.card_factcheck_batch_size,
+        )
+        probe_rows = await conn.fetch(
+            """
+            SELECT p.claim_pattern, l.result AS last_result
+            FROM verification_probes p
+            LEFT JOIN LATERAL (
+                SELECT result FROM verification_log
+                WHERE probe_id = p.id ORDER BY ran_at DESC LIMIT 1
+            ) l ON true
+            WHERE p.enabled
+            """
+        )
+    probes = [dict(r) for r in probe_rows]
+
+    checked = 0
+    accuracies: dict[str, float | None] = {}
+    for card in cards:
+        await _yield_to_live_requests()
+        try:
+            r = await _factcheck_card(pool, card, probes)
+        except Exception:
+            logger.exception("card_factcheck failed for %s", card["subject_key"])
+            continue
+        checked += 1
+        accuracies[card["subject_key"]] = r["accuracy"]
+
+    return {"checked": checked, "accuracies": accuracies,
             "ran_at": datetime.now().isoformat()}

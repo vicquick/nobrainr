@@ -372,6 +372,16 @@ class Settings(BaseSettings):
     card_builder_batch_size: int = 25
     card_min_trust: float = 0.55
     card_min_sources: int = 4
+    # card_factcheck (M1, 2026-07-14): cards get a published_accuracy
+    # number — checkable claims verified mechanically (probe results)
+    # or by LLM judge against the newest evidence. Below
+    # card_min_accuracy the card is scheduled for rebuild with its
+    # refuted claims injected as "do not restate".
+    card_factcheck_interval_hours: float = 12.0
+    card_factcheck_batch_size: int = 5
+    card_factcheck_max_claims: int = 12
+    card_factcheck_evidence_k: int = 6
+    card_min_accuracy: float = 0.7
 
     # deep_recall (2026-07-06) — bounded multi-hop recall loop:
     # search → LLM reads the hits and emits ONE follow-up query naming
