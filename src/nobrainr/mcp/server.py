@@ -2225,6 +2225,8 @@ async def memory_feedback(
     query_trace_id: str | None = None,
     result_rank: int | None = None,
     query_text: str | None = None,
+    agent_id: str | None = None,
+    session_id: str | None = None,
 ) -> dict:
     """Report whether a memory search result was useful. This feedback improves future search ranking.
 
@@ -2246,6 +2248,10 @@ async def memory_feedback(
             search result list. Values < 1 are dropped.
         query_text: The query text that surfaced this memory. Trimmed to 500
             chars server-side. Used for later quality diagnostics.
+        agent_id: Which agent/machine is giving feedback (C5 provenance,
+            2026-07-14) — lets us attribute which memories informed which
+            agent's work, feeding trust and future learned-manager training.
+        session_id: The session this feedback belongs to.
     """
     try:
         _validate_uuid(memory_id)
@@ -2258,6 +2264,8 @@ async def memory_feedback(
         query_trace_id=query_trace_id,
         query_text=query_text,
         result_rank=result_rank,
+        agent_id=agent_id,
+        session_id=session_id,
     )
     return {"status": "recorded", **result}
 

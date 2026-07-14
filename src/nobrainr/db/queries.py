@@ -1672,7 +1672,7 @@ async def decay_stability() -> int:
               -- L1 lifecycle (2026-07-09): reference/historical knowledge is
               -- valuable even if touched once — its worth is availability,
               -- not frequency. Disuse-decay applies to WORKING knowledge only.
-              AND (claim_kind IS NULL OR claim_kind NOT IN ('reference', 'historical'))
+              AND (claim_kind IS NULL OR claim_kind NOT IN ('reference', 'historical', 'creative'))
             """
         )
 
