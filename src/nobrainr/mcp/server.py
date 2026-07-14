@@ -2592,6 +2592,98 @@ async def _crawl4ai_screenshot(url: str) -> str | None:
 
 
 # ──────────────────────────────────────────────
+# Tool: web_search (Brave Search API)
+# ──────────────────────────────────────────────
+async def _brave_search_request(params: dict) -> dict:
+    """GET the Brave web-search endpoint. Split out for testability."""
+    import httpx
+
+    headers = {
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip",
+        "X-Subscription-Token": settings.brave_api_key,
+    }
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(settings.brave_search_url, params=params, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
+
+
+@mcp.tool()
+async def web_search(
+    query: str,
+    count: int = 8,
+    freshness: str | None = None,
+    country: str | None = None,
+    offset: int = 0,
+) -> dict:
+    """Search the web via the Brave Search API (independent index, not a Google/Bing proxy).
+
+    Discovery tool — returns a ranked, TRANSIENT list of URLs + snippets.
+    Results are never persisted (Brave storage-rights terms): to keep a
+    source, crawl the page itself with crawl_and_store. The intended
+    pipeline is web_search (discover) -> crawl_page / crawl_and_store
+    (extract + persist).
+
+    Args:
+        query: Search query. Include the current year for time-sensitive topics.
+        count: Number of results (1-20, default 8).
+        freshness: Age filter: 'pd' (24h), 'pw' (week), 'pm' (month), 'py' (year),
+            or a range 'YYYY-MM-DDtoYYYY-MM-DD'.
+        country: 2-letter country code to localize results (e.g. 'DE', 'US').
+        offset: Pagination offset (page number, 0-9).
+    """
+    import httpx
+
+    if not settings.brave_api_key:
+        return {
+            "error": "brave_api_key not configured",
+            "hint": "set NOBRAINR_BRAVE_API_KEY on the nobrainr app",
+        }
+
+    params: dict = {"q": query, "count": max(1, min(count, 20))}
+    if freshness:
+        params["freshness"] = freshness
+    if country:
+        params["country"] = country
+    if offset:
+        params["offset"] = offset
+
+    try:
+        data = await _brave_search_request(params)
+    except httpx.HTTPStatusError as e:
+        return {
+            "error": f"brave api HTTP {e.response.status_code}",
+            "detail": e.response.text[:300],
+        }
+    except Exception as e:  # noqa: BLE001 — surface transport errors to the caller
+        return {"error": f"brave request failed: {e}"}
+
+    results = []
+    for r in data.get("web", {}).get("results", []):
+        # ASI06: SERP snippets are third-party text entering agent context —
+        # run them through the same injection filter as crawled content.
+        title, _ = _sanitize_crawled_text(r.get("title") or "")
+        snippet, _ = _sanitize_crawled_text(r.get("description") or "")
+        results.append(
+            {
+                "title": title,
+                "url": r.get("url"),
+                "snippet": snippet,
+                "age": r.get("age") or r.get("page_age"),
+                "language": r.get("language"),
+            }
+        )
+
+    return {
+        "query": query,
+        "count": len(results),
+        "results": results,
+        "note": "transient SERP — persist sources via crawl_and_store, never this list",
+    }
+
+
+# ──────────────────────────────────────────────
 # Tool: crawl_and_store
 # ──────────────────────────────────────────────
 @mcp.tool()

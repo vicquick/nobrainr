@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     crawl4ai_url: str = "http://crawl4ai:11235"
     crawl4ai_api_token: str = ""
 
+    # Brave Search API (web discovery — Brave discovers URLs, crawl4ai extracts)
+    brave_api_key: str = ""
+    brave_search_url: str = "https://api.search.brave.com/res/v1/web/search"
+
     # Speaches (OpenAI-compatible whisper API)
     speaches_url: str = "http://speaches:8000"
     speaches_model: str = "whisper-large-v3"
