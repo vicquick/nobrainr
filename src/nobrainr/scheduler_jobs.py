@@ -2762,7 +2762,7 @@ CLAIM_KIND_SCHEMA = {
                         "enum": [
                             "code-state", "infra-state", "preference",
                             "incident-fix", "design-decision", "historical",
-                            "reference", "fact", "plan",
+                            "reference", "fact", "plan", "creative",
                         ],
                     },
                 },
@@ -2785,6 +2785,9 @@ _CLAIM_KIND_SYSTEM = (
     "- fact: a standalone verifiable fact not covered above\n"
     "- plan: prescriptive FUTURE intent (will/schedule/day-7/phase-2 "
     "wording) — something to be done, not something that is\n"
+    "- creative: the author's own personal writing — poetry, ideas, "
+    "aphorisms, reflections, personal goals, formulations, philosophy. "
+    "Not a system fact; never goes stale; its value is that it exists\n"
     "Pick the kind whose STALENESS MODEL fits: would this become wrong when "
     "our systems change (code/infra-state), or is it a permanent record "
     "(incident-fix/historical/reference)?"
