@@ -351,7 +351,10 @@ class Settings(BaseSettings):
     # full 30s and returned tier C anyway. If the model can't draft in
     # this many seconds, the enhancement isn't worth it — degrade to
     # plain hybrid. (2026-07-05, found the day auto_route went default-on.)
-    live_enhancement_timeout_s: float = 6.0
+    # 6.0 → 2.5 (2026-07-22): under GPU contention an enhancement that
+    # needs >2.5s costs more latency than its recall gain — degrade to
+    # plain hybrid+rerank instead. Scheduler/eval paths set their own.
+    live_enhancement_timeout_s: float = 2.5
 
     # L1 trust flywheel (2026-07-09). claim_kind_classifier feeds the
     # starved per-kind machinery (61% of active memories were NULL);
