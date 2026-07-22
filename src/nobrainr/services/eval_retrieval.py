@@ -75,6 +75,25 @@ def _reciprocal_rank(returned: list[str], expected: set[str]) -> float:
     return 0.0
 
 
+#: Top-hit similarity/relevance above this = the system is "confident" —
+#: an abstention question answered confidently is a fabrication risk.
+ABSTENTION_CONFIDENCE_BAR = 0.55
+
+
+def _abstention_passes(results: list[dict]) -> bool:
+    """True if the system correctly does NOT confidently answer.
+
+    Pass: empty results, or the best hit's similarity/relevance stays
+    under ABSTENTION_CONFIDENCE_BAR. A high-confidence top hit on a
+    fact that never existed is the failure this metric exists to catch.
+    """
+    if not results:
+        return True
+    top = results[0]
+    score = top.get("similarity") or top.get("relevance") or 0.0
+    return score < ABSTENTION_CONFIDENCE_BAR
+
+
 def _recall_at_k(returned: list[str], expected: set[str], k: int) -> float:
     if not expected:
         return 0.0
@@ -130,12 +149,19 @@ async def run_retrieval_eval(
         return {"status": "no_golden_set", "query_count": 0}
 
     per_query: list[QueryEval] = []
+    abstention_pass = abstention_total = 0
     for g in goldens:
         expected = set(g["expected_ids"])
+        is_abstention = "abstention" in (g.get("tags") or [])
         try:
             results = await search_fn(g["query"], k)
         except Exception:
             logger.exception("eval search failed for query %s", g["id"])
+            if is_abstention:
+                # a failed search abstains by definition — but count it as
+                # an error-pass so a broken pipeline can't ace abstention
+                abstention_total += 1
+                continue
             # Record a zeroed row so the query isn't silently skipped.
             per_query.append(
                 QueryEval(
@@ -148,6 +174,14 @@ async def run_retrieval_eval(
                     ndcg_at_k=0.0,
                 )
             )
+            continue
+        if is_abstention:
+            # BEAM/LoCoMo `_abs` pattern: the fact does NOT exist in the
+            # corpus. Correct behavior = return nothing confident. Pass if
+            # no results, or the top hit is below the confidence bar.
+            abstention_total += 1
+            if _abstention_passes(results):
+                abstention_pass += 1
             continue
         returned_ids = [r["id"] for r in results]
         per_query.append(
@@ -173,6 +207,13 @@ async def run_retrieval_eval(
         "reranker_backend": settings.reranker_backend,
         "embedding_model": settings.embedding_model,
         "chat_model": settings.chat_model or settings.extraction_model,
+        # abstention (golden-v3): correct-decline rate on facts that do
+        # not exist in the corpus. None until abstention goldens are seeded.
+        "abstention_total": abstention_total,
+        "abstention_rate": (
+            round(abstention_pass / abstention_total, 4)
+            if abstention_total else None
+        ),
     }
 
     pool = await get_pool()
