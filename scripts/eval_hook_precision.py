@@ -117,11 +117,74 @@ def mine_transcripts(root: str, sample: int) -> list[tuple[str, str]]:
     return pairs[:sample]
 
 
+def judge_batch(pairs: list[tuple[str, str]]) -> list[bool | None]:
+    """ONE LLM call for all pairs — under GPU contention, 40 sequential
+    calls each wait in llama-swap's queue and time out; a single call
+    queues once. GPU prompt processing makes the long prompt cheap."""
+    numbered = "\n\n".join(
+        f"[{i}] PROMPT: {p[:250]}\nSNIPPET: {s[:250]}"
+        for i, (p, s) in enumerate(pairs)
+    )
+    schema = {
+        "type": "object",
+        "properties": {"verdicts": {
+            "type": "array",
+            "items": {"type": "object", "properties": {
+                "i": {"type": "integer"},
+                "relevant": {"type": "boolean"},
+            }, "required": ["i", "relevant"]},
+        }},
+        "required": ["verdicts"],
+    }
+    body = json.dumps({
+        "model": LLM_MODEL, "temperature": 0.0, "max_tokens": 1200,
+        "response_format": {"type": "json_schema", "json_schema": {
+            "name": "verdicts", "strict": True, "schema": schema}},
+        "messages": [
+            {"role": "system", "content": _JUDGE_SYSTEM + " Judge EVERY numbered pair. Output JSON only."},
+            {"role": "user", "content": numbered},
+        ],
+    }).encode()
+    import time
+
+    content = None
+    for attempt, backoff in enumerate((0, 30, 90, 180), start=1):
+        if backoff:
+            print(f"  busy (429) — retry {attempt} in {backoff}s", flush=True)
+            time.sleep(backoff)
+        req = urllib.request.Request(
+            LLM_URL, data=body, headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=600) as r:
+                content = json.load(r)["choices"][0]["message"]["content"]
+            break
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                continue
+            print(f"batch judge failed: {e}", flush=True)
+            return [None] * len(pairs)
+        except Exception as e:
+            print(f"batch judge failed: {e}", flush=True)
+            return [None] * len(pairs)
+    if content is None:
+        print("batch judge failed: still 429 after retries", flush=True)
+        return [None] * len(pairs)
+    try:
+        verdicts = {v["i"]: bool(v["relevant"])
+                    for v in json.loads(content).get("verdicts", [])}
+    except Exception as e:
+        print(f"batch judge parse failed: {e}", flush=True)
+        return [None] * len(pairs)
+    return [verdicts.get(i) for i in range(len(pairs))]
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--baseline", action="store_true")
     ap.add_argument("--transcripts", default=os.path.expanduser("~/.claude/projects/-root"))
     ap.add_argument("--sample", type=int, default=40)
+    ap.add_argument("--per-call", action="store_true",
+                    help="one LLM call per pair (only when GPU is idle)")
     args = ap.parse_args()
 
     pairs = mine_transcripts(args.transcripts, args.sample)
@@ -130,8 +193,11 @@ def main() -> None:
         return
 
     relevant = irrelevant = skipped = 0
-    for i, (prompt, snippet) in enumerate(pairs):
-        v = judge(prompt, snippet)
+    if args.per_call:
+        verdicts = [judge(p, s) for p, s in pairs]
+    else:
+        verdicts = judge_batch(pairs)
+    for i, ((prompt, snippet), v) in enumerate(zip(pairs, verdicts)):
         if v is True:
             relevant += 1
         elif v is False:

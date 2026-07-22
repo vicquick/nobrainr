@@ -408,6 +408,13 @@ class Settings(BaseSettings):
     # plain search. Query reformulation is an easy task; the CPU model
     # answers in 10-20s regardless of GPU state.
     deep_recall_followup_model: str = "qwen3-8b-cpu"
+    # evidence_gather (LME-V2 AgentRunbook-C pattern, 2026-07-22): bounded
+    # agentic loop with search + read-by-id + read-only SQL over the
+    # memory substrate. LME-V2: agentic gathering 72.5% vs best RAG 48.5%.
+    evidence_gather_max_steps: int = 5
+    evidence_gather_model: str = "qwen3-8b-cpu"  # 27b starves under load
+    evidence_gather_sql_timeout_ms: int = 3000
+    evidence_gather_sql_row_cap: int = 50
     deep_recall_followup_timeout_s: float = 25.0
     # Auto-optimize (search quality self-improvement)
     auto_optimize_interval_hours: float = 12.0
