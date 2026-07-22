@@ -903,6 +903,71 @@ async def api_smart_recall(request: Request) -> JSONResponse:
     return JSONResponse(results)
 
 
+async def api_brief(request: Request) -> JSONResponse:
+    """One-call session brief for hooks (hook v3, 2026-07-22).
+
+    Returns fact-checked context cards + trust-floored memories in a single
+    response so the UserPromptSubmit hook makes ONE request instead of two
+    raw searches. Cards are the accuracy-stamped layer (card_factcheck);
+    memories are hybrid hits post-filtered by trust_score. No LLM, no
+    auto-route — this path must stay instant.
+
+    Params: q (task/prompt text), cards (max, default 2), memories (max,
+    default 5), trust_floor (default 0.6), min_accuracy (default 0.5 —
+    cards below it are excluded; unchecked cards pass with accuracy null).
+    """
+    q = request.query_params.get("q", "").strip()
+    if not q:
+        return JSONResponse({"cards": [], "memories": []})
+    n_cards = min(int(request.query_params.get("cards", "2")), 5)
+    n_mem = min(int(request.query_params.get("memories", "5")), 12)
+    trust_floor = float(request.query_params.get("trust_floor", "0.6"))
+    min_accuracy = float(request.query_params.get("min_accuracy", "0.5"))
+
+    from nobrainr.db.pool import get_pool
+    pool = await get_pool()
+    try:
+        async with pool.acquire() as conn:
+            card_rows = await conn.fetch(
+                """
+                SELECT title, body, subject_key, trust_score, published_accuracy,
+                       GREATEST(
+                         similarity(lower(subject_key), lower($1)),
+                         similarity(lower(title), lower($1)),
+                         ts_rank(to_tsvector('simple', body),
+                                 plainto_tsquery('simple', $1)) * 4
+                       ) AS score
+                FROM context_cards
+                WHERE published_accuracy IS NULL OR published_accuracy >= $3
+                ORDER BY score DESC
+                LIMIT $2
+                """,
+                q, n_cards, min_accuracy,
+            )
+    except Exception:
+        card_rows = []
+    cards = [
+        {"title": r["title"], "brief": r["body"], "subject": r["subject_key"],
+         "accuracy": r["published_accuracy"]}
+        for r in card_rows if (r["score"] or 0) > 0.05
+    ]
+
+    memories: list = []
+    try:
+        embedding = await embed_text(q)
+        hits = await queries.search_memories(
+            embedding=embedding, limit=n_mem * 3, threshold=0.25, text_query=q,
+        )
+        memories = [
+            h for h in hits
+            if (h.get("trust_score") is None or h["trust_score"] >= trust_floor)
+        ][:n_mem]
+    except Exception:
+        pass  # cards alone still brief the agent
+
+    return JSONResponse({"cards": cards, "memories": memories})
+
+
 async def api_memory_source(request: Request) -> JSONResponse:
     """Resolve a memory's raw source — the "view origin" link.
 
@@ -2595,6 +2660,7 @@ api_routes = [
     Route("/api/scheduler/task/{task_name}", api_scheduler_task_runs, methods=["GET"]),
     Route("/api/recall", api_recall),
     Route("/api/smart-recall", api_smart_recall),
+    Route("/api/brief", api_brief),
     Route("/api/entities", api_entities),
     Route("/api/categories", api_categories),
     Route("/api/tags", api_tags),
