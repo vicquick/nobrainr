@@ -570,16 +570,21 @@ def _auto_route_query(query: str) -> dict[str, bool]:
     words = q.split()
     word_count = len(words)
 
-    # Rule 1 — long or multi-clause → decompose into sub-queries
-    if word_count >= 12 or q.count(",") >= 2 or q.count(" and ") >= 2:
+    # Rule 1 — long or multi-clause → decompose into sub-queries.
+    # Thresholds retuned 2026-07-22: at >=12 words, 80% of live traffic
+    # routed LLM-enhanced (agents write sentence-length queries) and live
+    # p95 hit 7.1s vs 2.5s on the no-llm path. Decompose is for genuinely
+    # multi-clause research queries, not every full-sentence search.
+    if word_count >= 24 or q.count(",") >= 3 or q.count(" and ") >= 3:
         return {"hybrid": True, "decompose": True}
 
-    # Rule 2 — why/how/when questions with 5+ words → HyDE
+    # Rule 2 — why/how/when questions, now >= 8 words (same retune: short
+    # conceptual questions do fine on hybrid+rerank without the HyDE tax)
     question_prefixes = (
         "why ", "how ",
         "what if ", "when did ", "when do ", "when was ",
     )
-    if any(q.startswith(p) for p in question_prefixes) and word_count >= 5:
+    if any(q.startswith(p) for p in question_prefixes) and word_count >= 8:
         return {"hybrid": True, "hyde": True}
 
     # Rule 3 — short query → pure vector + expand (fuzzy variants)
