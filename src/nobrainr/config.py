@@ -40,9 +40,19 @@ class Settings(BaseSettings):
     # list disables the check (plain llama-server has no /api/metrics
     # and is also handled by the try/except). Names must match the
     # canonical llama-swap model keys, not aliases.
+    # 2026-07-23 — bimavo-priority tuning. bimavo's user-facing assistant
+    # runs on qwen3-8b (GPU chat slot); its llama-swap TTL was raised to
+    # 1800s so a chat session stays warm. recent_s must track that window:
+    # at 600s a user pausing 10-30 min mid-session would lapse the park and
+    # let nobrainr's 27b evict their still-warm model. recent_s 1500 (just
+    # under the 1800 TTL) keeps the 27b parked for the whole session; the
+    # excel parser now runs on qwen3-8b-cpu so batch work no longer trips
+    # this GPU-slot yield. max_wait 1800 gives an actively-used session a
+    # full priority window before nobrainr's distill grabs a slice (bounded
+    # so the flywheel degrades to slow, never starves).
     gpu_yield_models: list[str] = ["qwen3-8b"]
-    gpu_yield_recent_s: float = 600.0
-    gpu_yield_max_wait_s: float = 900.0
+    gpu_yield_recent_s: float = 1500.0
+    gpu_yield_max_wait_s: float = 1800.0
     gpu_yield_poll_s: float = 15.0
 
     # MCP Server
