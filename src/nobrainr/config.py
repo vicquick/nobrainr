@@ -40,6 +40,16 @@ class Settings(BaseSettings):
     # list disables the check (plain llama-server has no /api/metrics
     # and is also handled by the try/except). Names must match the
     # canonical llama-swap model keys, not aliases.
+    # Write-time contradiction gate (T4, 2026-07-24). Dedup catches
+    # near-duplicates >= 0.78; contradictions live LOWER (0.55-0.78) and
+    # sailed through as ADD — measured inflow outran supersede 5:1. Gate
+    # judges up to 3 high-trust working-state candidates in ONE batched
+    # LLM call and supersedes immediately via the column.
+    contradiction_gate_enabled: bool = True
+    contradiction_gate_sim_min: float = 0.55
+    contradiction_gate_sim_max: float = 0.78
+    contradiction_gate_min_trust: float = 0.7
+
     # 2026-07-23 — bimavo-priority tuning. bimavo's user-facing assistant
     # runs on qwen3-8b (GPU chat slot); its llama-swap TTL was raised to
     # 1800s so a chat session stays warm. recent_s must track that window:
@@ -381,8 +391,13 @@ class Settings(BaseSettings):
     # Reconciliation sweeper (2026-07-09): old unverified stale-prone
     # memories vs newer same-entity memories → supersede/historicize.
     # The anti-recurrence for plan-vs-reality drift.
-    reconciliation_interval_hours: float = 12.0
-    reconciliation_batch_size: int = 20
+    # T1 scaling (2026-07-24): supersede throughput measured 389 per
+    # 1,918 new memories over 14d — inflow outran cleanup ~5:1 and 9/21
+    # cards sat below the 0.7 accuracy bar from inherited staleness.
+    # 12h/20 → 6h/40 quadruples sweep capacity; the write-time
+    # contradiction gate (T4) cuts the inflow side of the same ratio.
+    reconciliation_interval_hours: float = 6.0
+    reconciliation_batch_size: int = 40
     # Learned-context cards (C1, 2026-07-14): per-subject living briefs
     # served at session start. Only memories >= card_min_trust feed a
     # card; a subject needs card_min_sources memories to be worth one.
