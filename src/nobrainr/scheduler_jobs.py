@@ -2586,12 +2586,44 @@ async def memory_observability() -> dict:
                WHERE created_at > now() - interval '7 days'
                  AND top_score IS NOT NULL) AS low_trust_top_rate_7d
         """)
+    # HEART metrics pulse (M4, 2026-07-24): the one row that answers
+    # "is the knowledge base getting more correct?" — card accuracy,
+    # staleness flow (gate + sweeper vs inflow), search latency, the
+    # abstention rate from the latest eval run, and the feedback split
+    # (post-H2: sparse-true explicit signals only).
+    async with pool.acquire() as conn:
+        heart = await conn.fetchrow("""
+            SELECT
+              (SELECT round(avg(published_accuracy)::numeric, 3)
+               FROM context_cards WHERE published_accuracy IS NOT NULL) AS card_accuracy_avg,
+              (SELECT count(*) FROM context_cards
+               WHERE published_accuracy < 0.7) AS cards_below_bar,
+              (SELECT count(*) FROM memories
+               WHERE superseded_by IS NOT NULL
+                 AND updated_at > now() - interval '7 days') AS superseded_7d,
+              (SELECT count(*) FROM memories
+               WHERE created_at > now() - interval '7 days') AS new_7d,
+              (SELECT count(*) FROM memories
+               WHERE superseded_by IS NOT NULL
+                 AND metadata->>'superseded_reason' LIKE 'write-time contradiction gate%'
+                 AND updated_at > now() - interval '7 days') AS gate_supersedes_7d,
+              (SELECT round(percentile_cont(0.95) WITHIN GROUP (ORDER BY elapsed_ms)::numeric)
+               FROM search_traces
+               WHERE created_at > now() - interval '7 days') AS search_p95_ms_7d,
+              (SELECT config->>'abstention_rate' FROM eval_runs
+               ORDER BY ran_at DESC LIMIT 1) AS latest_abstention_rate,
+              (SELECT count(*) FILTER (WHERE was_useful)
+               FROM memory_outcomes
+               WHERE created_at > now() - interval '7 days'
+                 AND context NOT LIKE 'auto:%') AS explicit_useful_7d
+        """)
     return {
         "never_read_by_source": {r["source_type"]: r["n"] for r in never_read},
         "empty_queries_7d": [dict(r) for r in empty_queries],
         "search_7d": dict(thin) if thin else {},
         "traces_pruned": int(pruned or 0),
         "asi06": dict(asi06) if asi06 else {},
+        "heart_metrics": dict(heart) if heart else {},
         "ran_at": datetime.now().isoformat(),
     }
 
