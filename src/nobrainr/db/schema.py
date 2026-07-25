@@ -247,6 +247,12 @@ CREATE INDEX IF NOT EXISTS idx_entities_type
 CREATE INDEX IF NOT EXISTS idx_entities_name_trgm
     ON entities USING gin (canonical_name gin_trgm_ops);
 
+-- Alnum-collapsed lookup for insert-time fuzzy entity resolution
+-- (P2b-lite, 2026-07-08): punctuation/case twins reuse the existing
+-- entity instead of forking. See find_or_create_entity.
+CREATE INDEX IF NOT EXISTS idx_entities_alnum
+    ON entities (entity_type, (regexp_replace(canonical_name, '[^a-z0-9]', '', 'g')));
+
 -- ──────────────────────────────────────────────
 -- Entity-memory junction
 -- ──────────────────────────────────────────────
@@ -439,6 +445,61 @@ CREATE TABLE IF NOT EXISTS eval_golden_queries (
 );
 CREATE INDEX IF NOT EXISTS idx_eval_golden_active
     ON eval_golden_queries (active) WHERE active;
+
+-- Every live memory_search call, persisted (2026-07-05). Two consumers:
+-- (1) golden-set mining — real queries beat synthetic ones and
+--     memory_outcomes only captures query_text on explicit feedback
+--     (2 distinct queries in 101k rows as of July 2026);
+-- (2) observability — consistently-empty queries and latency trends,
+--     which previously lived only in a 2048-point in-memory ring buffer.
+-- Written fire-and-forget from memory_search; loss under crash is fine.
+CREATE TABLE IF NOT EXISTS search_traces (
+    trace_id        uuid PRIMARY KEY,
+    query           text NOT NULL,
+    result_count    int NOT NULL,
+    top_ids         uuid[] DEFAULT '{{}}'::uuid[],
+    top_score       real,
+    quality_tier    text,
+    elapsed_ms      int,
+    strategy        jsonb DEFAULT '{{}}'::jsonb,
+    created_at      timestamptz DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_search_traces_created
+    ON search_traces (created_at DESC);
+
+-- Learned-context cards (C1, 2026-07-14). "System-delivers, not
+-- agent-searches": one pre-thought, trust-filtered brief per subject
+-- (entity / project / community) replaces N search round-trips at
+-- session start. Distilled by the card_builder scheduler job from the
+-- subject's highest-trust active memories (superseded/low-trust
+-- dropped), refreshed when the underlying memories change. Served via
+-- the nobrainr://card/<subject> MCP resource + session_brief tool.
+CREATE TABLE IF NOT EXISTS context_cards (
+    id              uuid DEFAULT uuidv7() PRIMARY KEY,
+    subject_type    text NOT NULL,          -- 'entity' | 'project' | 'community'
+    subject_key     text NOT NULL,          -- entity canonical_name / project tag / community_id
+    title           text NOT NULL,
+    body            text NOT NULL,          -- the distilled brief (current state + decisions + gotchas + procedures)
+    source_ids      uuid[] DEFAULT '{{}}'::uuid[],  -- memories that fed the card (provenance)
+    source_max_updated timestamptz,         -- newest source memory's updated_at at build time (staleness trigger)
+    trust_score     real,                   -- min trust of contributing memories
+    built_at        timestamptz DEFAULT now(),
+    published_accuracy real,                -- M1: supported/(supported+contradicted) from card_factcheck
+    factcheck       jsonb,                  -- M1: per-claim verdicts (claim, verdict, via, reason)
+    factchecked_at  timestamptz,
+    UNIQUE (subject_type, subject_key)
+);
+CREATE INDEX IF NOT EXISTS idx_context_cards_subject
+    ON context_cards (subject_type, subject_key);
+CREATE INDEX IF NOT EXISTS idx_context_cards_built
+    ON context_cards (built_at DESC);
+
+-- Brave web_search monthly usage counter: visibility + clean early
+-- quota error (Brave dashboard is capped at the free tier).
+CREATE TABLE IF NOT EXISTS web_search_usage (
+    month   text PRIMARY KEY,   -- 'YYYY-MM'
+    queries integer NOT NULL DEFAULT 0
+);
 
 -- One row per full eval sweep. per_query holds the breakdown so we can
 -- tell WHICH query regressed, not just that the mean recall dropped.

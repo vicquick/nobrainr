@@ -2513,3 +2513,1078 @@ async def observation_consolidate() -> dict:
         "candidates": len(threads),
         "ran_at": datetime.now().isoformat(),
     }
+
+
+# ──────────────────────────────────────────────
+# Community assignment — incremental (2026-07-05)
+# ──────────────────────────────────────────────
+async def community_assign() -> dict:
+    """Assign new entities to communities via label propagation (SQL-only)."""
+    from nobrainr.services.communities import assign_new_entities_incremental
+
+    result = await assign_new_entities_incremental()
+    result["ran_at"] = datetime.now().isoformat()
+    return result
+
+
+# ──────────────────────────────────────────────
+# Memory observability (2026-07-05)
+# ──────────────────────────────────────────────
+# The 2026 survey (arxiv 2603.07670 §7) imports database-engineering
+# practice into agent memory: analyze written-but-never-read records and
+# consistently-empty queries to find write-path waste and retrieval
+# blind spots. This job computes both and prunes old search traces.
+async def memory_observability() -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        never_read = await conn.fetch("""
+            SELECT source_type, count(*) AS n
+            FROM memories
+            WHERE tier < 3 AND access_count = 0
+              AND inserted_at < now() - interval '14 days'
+            GROUP BY source_type ORDER BY n DESC LIMIT 10
+        """)
+        empty_queries = await conn.fetch("""
+            SELECT query, count(*) AS n
+            FROM search_traces
+            WHERE result_count = 0
+              AND created_at > now() - interval '7 days'
+            GROUP BY query ORDER BY n DESC LIMIT 15
+        """)
+        thin = await conn.fetchrow("""
+            SELECT count(*) FILTER (WHERE result_count = 0) AS empty,
+                   count(*) FILTER (WHERE quality_tier NOT IN ('A','B')) AS degraded,
+                   count(*) AS total,
+                   percentile_cont(0.95) WITHIN GROUP (ORDER BY elapsed_ms) AS p95_ms
+            FROM search_traces
+            WHERE created_at > now() - interval '7 days'
+        """)
+        pruned = await conn.fetchval(
+            """
+            WITH del AS (
+                DELETE FROM search_traces
+                WHERE created_at < now() - make_interval(days => $1)
+                RETURNING 1
+            ) SELECT count(*) FROM del
+            """,
+            settings.search_trace_retention_days,
+        )
+        # ASI06 posture (C2, 2026-07-14): memory-poisoning early warning.
+        # sanitized_injections = crawled pages caught trying to program a
+        # future agent; low_trust_served = fraction of recent retrievals
+        # whose top hit was below the trust floor (rising = corpus being
+        # diluted by untrusted content). Both should stay near zero.
+        asi06 = await conn.fetchrow("""
+            SELECT
+              (SELECT count(*) FROM memories
+               WHERE tags @> ARRAY['sanitized-injection']
+                 AND inserted_at > now() - interval '7 days') AS sanitized_injections_7d,
+              (SELECT count(*) FROM memories
+               WHERE tags @> ARRAY['sanitized-injection']) AS sanitized_injections_total,
+              (SELECT round(avg((top_score < 0.5)::int)::numeric, 3)
+               FROM search_traces
+               WHERE created_at > now() - interval '7 days'
+                 AND top_score IS NOT NULL) AS low_trust_top_rate_7d
+        """)
+    # HEART metrics pulse (M4, 2026-07-24): the one row that answers
+    # "is the knowledge base getting more correct?" — card accuracy,
+    # staleness flow (gate + sweeper vs inflow), search latency, the
+    # abstention rate from the latest eval run, and the feedback split
+    # (post-H2: sparse-true explicit signals only).
+    async with pool.acquire() as conn:
+        heart = await conn.fetchrow("""
+            SELECT
+              (SELECT round(avg(published_accuracy)::numeric, 3)
+               FROM context_cards WHERE published_accuracy IS NOT NULL) AS card_accuracy_avg,
+              (SELECT count(*) FROM context_cards
+               WHERE published_accuracy < 0.7) AS cards_below_bar,
+              (SELECT count(*) FROM memories
+               WHERE superseded_by IS NOT NULL
+                 AND updated_at > now() - interval '7 days') AS superseded_7d,
+              (SELECT count(*) FROM memories
+               WHERE created_at > now() - interval '7 days') AS new_7d,
+              (SELECT count(*) FROM memories
+               WHERE superseded_by IS NOT NULL
+                 AND metadata->>'superseded_reason' LIKE 'write-time contradiction gate%'
+                 AND updated_at > now() - interval '7 days') AS gate_supersedes_7d,
+              (SELECT round(percentile_cont(0.95) WITHIN GROUP (ORDER BY elapsed_ms)::numeric)
+               FROM search_traces
+               WHERE created_at > now() - interval '7 days') AS search_p95_ms_7d,
+              (SELECT config->>'abstention_rate' FROM eval_runs
+               ORDER BY ran_at DESC LIMIT 1) AS latest_abstention_rate,
+              (SELECT count(*) FILTER (WHERE was_useful)
+               FROM memory_outcomes
+               WHERE created_at > now() - interval '7 days'
+                 AND context NOT LIKE 'auto:%') AS explicit_useful_7d
+        """)
+    return {
+        "never_read_by_source": {r["source_type"]: r["n"] for r in never_read},
+        "empty_queries_7d": [dict(r) for r in empty_queries],
+        "search_7d": dict(thin) if thin else {},
+        "traces_pruned": int(pruned or 0),
+        "asi06": dict(asi06) if asi06 else {},
+        "heart_metrics": dict(heart) if heart else {},
+        "ran_at": datetime.now().isoformat(),
+    }
+
+
+# ──────────────────────────────────────────────
+# Procedural memory distillation (2026-07-05)
+# ──────────────────────────────────────────────
+# Memp (arxiv 2508.06433) + MS Foundry (Build 2026) pattern: distill
+# lesson-like memories into structured procedures capturing "when to use"
+# (task context, preconditions, signals) and "what to do" (ordered steps,
+# required checks, tool usage). Procedures built by a strong model
+# transfer their gains to weaker models — the strategic point of the
+# whole exercise. Sources are flagged via metadata.procedural_reviewed
+# so each memory is considered exactly once.
+PROCEDURAL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "procedures": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "when_to_use": {"type": "string"},
+                    "steps": {"type": "array", "items": {"type": "string"}},
+                    "checks": {"type": "array", "items": {"type": "string"}},
+                    "source_index": {"type": "integer"},
+                    "confidence": {"type": "number"},
+                },
+                "required": ["title", "when_to_use", "steps", "source_index", "confidence"],
+            },
+        }
+    },
+    "required": ["procedures"],
+}
+
+_PROCEDURAL_SYSTEM = (
+    "You review an engineer's memory notes and extract repeatable PROCEDURES "
+    "— only when a note describes a multi-step way of doing something that "
+    "will recur (deploys, recoveries, migrations, debugging recipes, config "
+    "rituals). Most notes contain NO procedure; return them in no entry. "
+    "Never invent steps not grounded in the note. Do not duplicate any "
+    "EXISTING PROCEDURE title. steps are imperative commands/actions in "
+    "execution order; checks are verifications that confirm success. "
+    "confidence: 0.9 = note is explicit step-by-step, 0.5 = steps inferred."
+)
+
+
+async def procedural_distill() -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, content, summary, category, tags
+            FROM memories
+            WHERE tier < 3
+              AND quality_score >= 0.5
+              AND category IN ('debugging','infrastructure','ops','tooling',
+                               'deployment','architecture','pattern')
+              AND (metadata->>'procedural_reviewed') IS NULL
+              AND length(content) BETWEEN 200 AND 6000
+            ORDER BY inserted_at DESC
+            LIMIT $1
+            """,
+            settings.procedural_distill_batch_size,
+        )
+        existing_titles = [
+            r["title"] for r in await conn.fetch(
+                "SELECT title FROM procedural_memories WHERE active AND title IS NOT NULL"
+            )
+        ]
+    if not rows:
+        return {"reviewed": 0, "created": 0, "ran_at": datetime.now().isoformat()}
+
+    created = 0
+    reviewed_ids: list = []
+    pack_size = 5
+    for start in range(0, len(rows), pack_size):
+        pack = rows[start:start + pack_size]
+        notes = "\n\n".join(
+            f"[{i}] ({r['category']}) {(r['summary'] or '')[:200]}\n{r['content'][:1500]}"
+            for i, r in enumerate(pack)
+        )
+        user = (
+            f"EXISTING PROCEDURES (do not duplicate):\n"
+            f"{chr(10).join('- ' + t for t in existing_titles[-80:]) or '(none)'}\n\n"
+            f"MEMORY NOTES:\n{notes}\n\n"
+            "Extract procedures. source_index = the [N] of the note each "
+            "procedure came from."
+        )
+        try:
+            await _yield_to_live_requests()
+            resp = await ollama_chat(
+                system=_PROCEDURAL_SYSTEM, user=user,
+                schema=PROCEDURAL_SCHEMA, temperature=0.2,
+            )
+        except Exception:
+            logger.exception("procedural_distill LLM call failed")
+            continue
+        reviewed_ids.extend(r["id"] for r in pack)
+        for proc in (resp or {}).get("procedures", []):
+            if created >= settings.procedural_distill_max_new:
+                break
+            title = (proc.get("title") or "").strip()[:200]
+            steps = [s.strip() for s in proc.get("steps", []) if s.strip()]
+            if not title or len(steps) < 2 or float(proc.get("confidence", 0)) < 0.5:
+                continue
+            if any(title.lower() == t.lower() for t in existing_titles):
+                continue
+            idx = int(proc.get("source_index", 0))
+            src_id = str(pack[idx]["id"]) if 0 <= idx < len(pack) else None
+            checks = [c.strip() for c in proc.get("checks", []) if c.strip()]
+            content = (
+                f"WHEN TO USE: {proc.get('when_to_use','').strip()}\n\n"
+                "STEPS:\n" + "\n".join(f"{n}. {s}" for n, s in enumerate(steps, 1))
+                + ("\n\nCHECKS:\n" + "\n".join(f"- {c}" for c in checks) if checks else "")
+            )
+            try:
+                await queries.store_procedural_memory(
+                    content, title=title, scope="global", priority=40,
+                    tags=["auto-distilled", "procedure"],
+                    metadata={
+                        "source_memory_id": src_id,
+                        "distill_confidence": proc.get("confidence"),
+                        "distilled_by": "procedural_distill",
+                    },
+                )
+                existing_titles.append(title)
+                created += 1
+            except Exception:
+                logger.exception("procedural store failed for %r", title)
+
+    if reviewed_ids:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE memories
+                SET metadata = COALESCE(metadata,'{}'::jsonb)
+                    || '{"procedural_reviewed": true}'::jsonb
+                WHERE id = ANY($1::uuid[])
+                """,
+                reviewed_ids,
+            )
+    return {
+        "reviewed": len(reviewed_ids), "created": created,
+        "ran_at": datetime.now().isoformat(),
+    }
+
+
+# ──────────────────────────────────────────────
+# Claim-kind classifier (L1 lifecycle, 2026-07-09)
+# ──────────────────────────────────────────────
+# 61% of active memories had claim_kind NULL (the 2026-04-27 trust layer
+# shipped the column + consumers but the backfill script never existed).
+# claim_kind drives per-kind staleness TTLs, probe targeting, and the
+# reference-class disuse-decay exemption — this job feeds all of it.
+CLAIM_KIND_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "classifications": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer"},
+                    "claim_kind": {
+                        "type": "string",
+                        "enum": [
+                            "code-state", "infra-state", "preference",
+                            "incident-fix", "design-decision", "historical",
+                            "reference", "fact", "plan", "creative",
+                        ],
+                    },
+                },
+                "required": ["index", "claim_kind"],
+            },
+        }
+    },
+    "required": ["classifications"],
+}
+
+_CLAIM_KIND_SYSTEM = (
+    "Classify each memory note into exactly one claim_kind:\n"
+    "- code-state: how code/config IS right now (changes when code changes)\n"
+    "- infra-state: how infrastructure IS right now (ports, containers, versions)\n"
+    "- preference: a person's preference or working style\n"
+    "- incident-fix: a problem that WAS diagnosed/fixed (past event + solution)\n"
+    "- design-decision: a choice that was made and why\n"
+    "- historical: a record of something that happened (no current-state claim)\n"
+    "- reference: external knowledge/documentation/research (true regardless of our systems)\n"
+    "- fact: a standalone verifiable fact not covered above\n"
+    "- plan: prescriptive FUTURE intent (will/schedule/day-7/phase-2 "
+    "wording) — something to be done, not something that is\n"
+    "- creative: the author's own personal writing — poetry, ideas, "
+    "aphorisms, reflections, personal goals, formulations, philosophy. "
+    "Not a system fact; never goes stale; its value is that it exists\n"
+    "Pick the kind whose STALENESS MODEL fits: would this become wrong when "
+    "our systems change (code/infra-state), or is it a permanent record "
+    "(incident-fix/historical/reference)?"
+)
+
+
+async def claim_kind_classifier() -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, left(COALESCE(summary, '') || ' | ' || content, 500) AS text
+            FROM memories
+            WHERE claim_kind IS NULL AND tier < 3
+              AND length(content) > 50
+            ORDER BY tier ASC, access_count DESC
+            LIMIT $1
+            """,
+            settings.claim_kind_batch_size,
+        )
+    if not rows:
+        return {"classified": 0, "ran_at": datetime.now().isoformat()}
+
+    classified = 0
+    pack_size = 10
+    for start in range(0, len(rows), pack_size):
+        pack = rows[start:start + pack_size]
+        notes = "\n".join(f"[{i}] {r['text']}" for i, r in enumerate(pack))
+        try:
+            await _yield_to_live_requests()
+            resp = await ollama_chat(
+                system=_CLAIM_KIND_SYSTEM,
+                user=f"Memory notes:\n{notes}",
+                schema=CLAIM_KIND_SCHEMA,
+                temperature=0.1,
+            )
+        except Exception:
+            logger.exception("claim_kind_classifier LLM call failed")
+            continue
+        updates = []
+        for c in (resp or {}).get("classifications", []):
+            idx = int(c.get("index", -1))
+            kind = c.get("claim_kind")
+            if 0 <= idx < len(pack) and kind:
+                updates.append((pack[idx]["id"], kind))
+        if updates:
+            async with pool.acquire() as conn:
+                for mid, kind in updates:
+                    await conn.execute(
+                        "UPDATE memories SET claim_kind = $1 WHERE id = $2 AND claim_kind IS NULL",
+                        kind, mid,
+                    )
+            classified += len(updates)
+    return {"classified": classified, "ran_at": datetime.now().isoformat()}
+
+
+# ──────────────────────────────────────────────
+# Verification probe generator (L1 lifecycle, 2026-07-09)
+# ──────────────────────────────────────────────
+# The probe pool was frozen at 262 hand-seeded rows — no code path ever
+# created probes, so verified coverage sat at 0.7% for months while the
+# corpus grew. This job proposes probes for the WORKING SET: checkable
+# claims (infra-state / code-state / fact) with real usage and no
+# existing probe coverage.
+#
+# SAFETY: probe_command strings are LLM-generated and executed by the
+# hourly nobrainr-verify cron as root. Auto-enabled types are limited to
+# http (curl GET), file (cat), and sql (SELECT-only, and the verify cron
+# runs sql probes read-only). shell probes are stored DISABLED with
+# notes='auto-generated, pending operator review' — never auto-run.
+PROBE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "probes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "source_index": {"type": "integer"},
+                    "probe_name": {"type": "string"},
+                    "claim_pattern": {"type": "string"},
+                    "probe_type": {"type": "string", "enum": ["http", "file", "sql", "shell"]},
+                    "probe_command": {"type": "string"},
+                    "expected_regex": {"type": "string"},
+                    "max_staleness_days": {"type": "integer"},
+                    "checkable": {"type": "boolean"},
+                },
+                "required": ["source_index", "probe_name", "claim_pattern",
+                             "probe_type", "probe_command", "expected_regex",
+                             "checkable"],
+            },
+        }
+    },
+    "required": ["probes"],
+}
+
+_PROBE_SYSTEM = (
+    "You design verification probes for a knowledge base on host 'bimavo' "
+    "(Ubuntu, Docker via Coolify, PostgreSQL 'nobrainr' db, services on "
+    "10.10.10.12). Given memory notes stating CURRENT system facts, emit a "
+    "probe that mechanically re-checks the claim:\n"
+    "- http: a curl-able GET URL (VPN/localhost only) — probe_command is the URL\n"
+    "- file: an absolute HOST filesystem path; the probe CATS the file and "
+    "matches expected_regex against its CONTENT (never ls/stat output). "
+    "Container-internal paths like /app/... are NOT reachable\n"
+    "- sql: a read-only SELECT against the nobrainr db\n"
+    "- shell: ONLY when nothing else works (stored disabled for review)\n"
+    "expected_regex must match the probe output IF the claim still holds. "
+    "claim_pattern is a case-insensitive regex matching the memory text that "
+    "makes the claim (so future memories with the same claim inherit the "
+    "probe). Set checkable=false when the note isn't mechanically checkable "
+    "(opinions, history, external-world facts) — including claims about "
+    "OTHER machines, other users' home directories, or paths inside "
+    "containers, none of which this host can check. NEVER write commands "
+    "that modify anything."
+)
+
+
+async def probe_generator() -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT m.id, left(COALESCE(m.summary,'') || ' | ' || m.content, 600) AS text
+            FROM memories m
+            WHERE m.claim_kind IN ('infra-state', 'code-state', 'fact')
+              AND m.tier <= 1
+              AND m.superseded_by IS NULL
+              AND m.verified_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM verification_log vl WHERE vl.memory_id = m.id
+              )
+            ORDER BY m.access_count DESC, m.importance DESC
+            LIMIT $1
+            """,
+            settings.probe_generator_batch_size,
+        )
+    if not rows:
+        return {"proposed": 0, "auto_enabled": 0, "ran_at": datetime.now().isoformat()}
+
+    proposed = auto_enabled = 0
+    pack_size = 5
+    for start in range(0, len(rows), pack_size):
+        pack = rows[start:start + pack_size]
+        notes = "\n\n".join(f"[{i}] {r['text']}" for i, r in enumerate(pack))
+        try:
+            await _yield_to_live_requests()
+            resp = await ollama_chat(
+                system=_PROBE_SYSTEM,
+                user=f"Memory notes:\n{notes}",
+                schema=PROBE_SCHEMA,
+                temperature=0.2,
+            )
+        except Exception:
+            logger.exception("probe_generator LLM call failed")
+            continue
+        for p in (resp or {}).get("probes", []):
+            if not p.get("checkable"):
+                continue
+            name = (p.get("probe_name") or "").strip()[:100]
+            cmd = (p.get("probe_command") or "").strip()
+            ptype = p.get("probe_type")
+            pattern = (p.get("claim_pattern") or "").strip()
+            regex = (p.get("expected_regex") or "").strip()
+            if not (name and cmd and pattern and regex):
+                continue
+            # Hard safety gate beyond the prompt.
+            is_safe = (
+                (ptype == "http" and cmd.startswith(("http://10.", "http://127.", "http://localhost")))
+                or (ptype == "file" and cmd.startswith("/") and " " not in cmd)
+                or (ptype == "sql" and cmd.lstrip().lower().startswith("select"))
+            )
+            enabled = bool(is_safe)
+            note = ("auto-generated " + datetime.now().date().isoformat()
+                    + ("" if is_safe else " — UNSAFE TYPE, pending operator review"))
+            idx = int(p.get("source_index", 0))
+            kind_row = pack[idx]["id"] if 0 <= idx < len(pack) else None
+            try:
+                async with pool.acquire() as conn:
+                    inserted = await conn.fetchval(
+                        """
+                        INSERT INTO verification_probes
+                            (probe_name, claim_pattern, probe_type, probe_command,
+                             expected_regex, claim_kind, max_staleness_days,
+                             enabled, notes)
+                        SELECT $1, $2, $3, $4, $5, m.claim_kind,
+                               COALESCE($6, 30), $7, $8
+                        FROM memories m WHERE m.id = $9
+                        ON CONFLICT (probe_name) DO NOTHING
+                        RETURNING id
+                        """,
+                        name, pattern, ptype, cmd, regex,
+                        p.get("max_staleness_days"), enabled, note, kind_row,
+                    )
+                if inserted:
+                    proposed += 1
+                    if enabled:
+                        auto_enabled += 1
+            except Exception:
+                logger.exception("probe insert failed for %r", name)
+    return {"proposed": proposed, "auto_enabled": auto_enabled,
+            "ran_at": datetime.now().isoformat()}
+
+
+# ──────────────────────────────────────────────
+# Stability reinforcement (L1 lifecycle, 2026-07-09)
+# ──────────────────────────────────────────────
+async def stability_reinforce() -> dict:
+    """Retrieval-through-use reinforcement: top-ranked hits gain stability."""
+    n = await queries.reinforce_stability_from_traces(hours=24)
+    return {"reinforced": n, "ran_at": datetime.now().isoformat()}
+
+
+# ──────────────────────────────────────────────
+# Reconciliation sweeper (L1.5 lifecycle, 2026-07-09)
+# ──────────────────────────────────────────────
+# The plan-vs-reality class: a memory describes intended-or-past state,
+# reality moved on, and nothing reconciles them — probes can't verify
+# intent and contradiction detection doesn't fire (reality ignores a
+# plan, it doesn't contradict it). Discovered live when a 2026-05
+# pre-flash plan (Seedvault/Syncthing, never executed) surfaced as
+# "memory of the day" while the actual stack (rsync) lived in a newer
+# memory sharing the same entities. This job walks old, unverified,
+# unsuperseded stale-prone memories, gathers NEWER memories sharing
+# their entities, and asks the LLM which is current — writing real
+# superseded_by chains (queries.supersede_memory) so the trust formula
+# and search filters see it.
+RECONCILE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {
+            "type": "string",
+            "enum": ["still_current", "superseded", "executed_plan", "unclear"],
+        },
+        "newer_index": {
+            "type": "integer",
+            "description": "When superseded: which newer note [N] replaces it.",
+        },
+        "reason": {"type": "string"},
+    },
+    "required": ["status", "reason"],
+}
+
+_RECONCILE_SYSTEM = (
+    "You reconcile an OLD memory note against NEWER notes that mention the "
+    "same entities. Verdicts:\n"
+    "- superseded: a newer note describes the same topic's CURRENT state "
+    "and the old note is outdated (pick newer_index)\n"
+    "- executed_plan: the old note was a plan/intent whose outcome (done, "
+    "changed, or abandoned) the newer notes show — it is now history\n"
+    "- still_current: the old note remains accurate; newer notes are about "
+    "different aspects\n"
+    "- unclear: cannot tell from these notes\n"
+    "Be conservative: only 'superseded' when the newer note genuinely "
+    "covers the same claim."
+)
+
+
+async def reconciliation_sweep() -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        candidates = await conn.fetch(
+            """
+            SELECT m.id, left(COALESCE(m.summary,'') || ' | ' || m.content, 700) AS text,
+                   m.created_at::date AS cdate
+            FROM memories m
+            WHERE m.tier < 3
+              AND m.superseded_by IS NULL
+              AND m.verified_at IS NULL
+              AND m.claim_kind IN ('plan', 'infra-state', 'code-state', 'fact')
+              AND m.created_at < now() - interval '30 days'
+              AND COALESCE((m.metadata->>'last_reconciled')::date, '1970-01-01')
+                  < (now() - interval '60 days')::date
+            ORDER BY m.access_count DESC, m.created_at ASC
+            LIMIT $1
+            """,
+            settings.reconciliation_batch_size,
+        )
+    if not candidates:
+        return {"checked": 0, "superseded": 0, "historicized": 0,
+                "ran_at": datetime.now().isoformat()}
+
+    checked = superseded = historicized = 0
+    for cand in candidates:
+        async with pool.acquire() as conn:
+            newer = await conn.fetch(
+                """
+                SELECT n.id, left(COALESCE(n.summary,'') || ' | ' || n.content, 500) AS text,
+                       n.created_at::date AS cdate, count(*) AS shared
+                FROM entity_memories em_old
+                JOIN entity_memories em_new ON em_new.entity_id = em_old.entity_id
+                JOIN memories n ON n.id = em_new.memory_id
+                WHERE em_old.memory_id = $1
+                  AND n.id <> $1
+                  AND n.superseded_by IS NULL
+                  AND n.created_at > (SELECT created_at + interval '14 days'
+                                      FROM memories WHERE id = $1)
+                GROUP BY n.id, n.summary, n.content, n.created_at
+                HAVING count(*) >= 2
+                ORDER BY count(*) DESC, n.created_at DESC
+                LIMIT 3
+                """,
+                cand["id"],
+            )
+        if not newer:
+            continue
+        newer_txt = "\n\n".join(
+            f"[{i}] ({n['cdate']}) {n['text']}" for i, n in enumerate(newer)
+        )
+        try:
+            await _yield_to_live_requests()
+            verdict = await ollama_chat(
+                system=_RECONCILE_SYSTEM,
+                user=(f"OLD note ({cand['cdate']}):\n{cand['text']}\n\n"
+                      f"NEWER notes sharing its entities:\n{newer_txt}"),
+                schema=RECONCILE_SCHEMA,
+                temperature=0.1,
+            )
+        except Exception:
+            logger.exception("reconciliation LLM call failed")
+            continue
+        checked += 1
+        status = (verdict or {}).get("status")
+        reason = ((verdict or {}).get("reason") or "")[:300]
+        async with pool.acquire() as conn:
+            if status == "superseded":
+                idx = int(verdict.get("newer_index", 0))
+                if 0 <= idx < len(newer):
+                    ok = await queries.supersede_memory(
+                        str(cand["id"]), str(newer[idx]["id"]),
+                        reason=f"reconciliation sweep: {reason}",
+                    )
+                    if ok:
+                        superseded += 1
+                        continue
+            elif status == "executed_plan":
+                await conn.execute(
+                    """
+                    UPDATE memories
+                    SET claim_kind = 'historical',
+                        metadata = COALESCE(metadata,'{}'::jsonb)
+                            || jsonb_build_object('reconciled', 'executed_plan',
+                                                  'reconcile_reason', $2)
+                    WHERE id = $1
+                    """,
+                    cand["id"], reason,
+                )
+                historicized += 1
+                continue
+            # still_current / unclear → stamp so we don't re-check for 60d
+            await conn.execute(
+                """
+                UPDATE memories
+                SET metadata = COALESCE(metadata,'{}'::jsonb)
+                    || jsonb_build_object('last_reconciled', now()::date::text)
+                WHERE id = $1
+                """,
+                cand["id"],
+            )
+    return {"checked": checked, "superseded": superseded,
+            "historicized": historicized, "ran_at": datetime.now().isoformat()}
+
+
+# ──────────────────────────────────────────────
+# Learned-context card builder (C1, 2026-07-14)
+# ──────────────────────────────────────────────
+# "System-delivers, not agent-searches." Distils a living brief per
+# subject (entity/project/community) from its highest-trust, non-
+# superseded memories — current state + key decisions + gotchas +
+# procedures, superseded facts dropped. Served at session start via the
+# nobrainr://card/{subject} resource + session_brief tool, so an agent
+# gets one pre-thought, trust-filtered brief instead of N searches.
+# Rebuilds only when the subject's newest memory changed (source_max_
+# updated), so it's cheap and self-throttling. Trust-gated: only
+# memories >= card_min_trust contribute, and reference/creative/timeless
+# knowledge is welcome (availability value) but superseded/low-trust is
+# excluded (never brief on stale or poisoned content — the ASI06 lesson).
+CARD_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "brief": {
+            "type": "string",
+            "description": (
+                "A dense standalone brief an agent can act on without "
+                "further searching. Lead with CURRENT STATE, then KEY "
+                "DECISIONS (with why), then GOTCHAS, then PROCEDURES. "
+                "Omit anything not grounded in the provided notes. Drop "
+                "outdated claims. Under 350 words."
+            ),
+        },
+    },
+    "required": ["title", "brief"],
+}
+
+_CARD_SYSTEM = (
+    "You write a living reference card for one subject from an engineer's "
+    "verified memory notes. The card is served to AI agents at the start "
+    "of their work so they don't have to search — it must be dense, "
+    "current, and self-contained. Synthesize; don't list. Prefer the "
+    "newest note when two disagree. State facts plainly with their "
+    "specifics (versions, paths, IDs, commands). The notes are ordered "
+    "NEWEST FIRST — when two disagree, the newer one wins, and if an "
+    "older note names a specific (a model, a tool, a status) that a newer "
+    "note contradicts or replaces, state ONLY the newer value. If you are "
+    "not sure a specific is still current, describe it qualitatively "
+    "rather than asserting a stale exact value. If the notes describe a "
+    "plan that was later executed or abandoned, reflect the OUTCOME, not "
+    "the intention."
+)
+
+
+async def _build_card(pool, subject_type: str, subject_key: str,
+                      title_hint: str, source_sql: str, *sql_args) -> dict | None:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(source_sql, *sql_args)
+    rows = [r for r in rows if (r["content"] or "").strip()]
+    if len(rows) < 3:
+        return None  # not enough signal to be worth a card
+    src_ids = [r["id"] for r in rows]
+    newest = max((r["mupd"] for r in rows if r["mupd"]), default=None)
+    min_trust = min((r["trust_score"] or 0.5 for r in rows), default=0.5)
+
+    # Skip rebuild if unchanged since last build.
+    async with pool.acquire() as conn:
+        existing = await conn.fetchrow(
+            "SELECT source_max_updated, factcheck FROM context_cards "
+            "WHERE subject_type=$1 AND subject_key=$2",
+            subject_type, subject_key,
+        )
+    if existing and existing["source_max_updated"] and newest and \
+            existing["source_max_updated"] >= newest:
+        return {"skipped": True}
+
+    # Self-heal (M1): claims the fact-checker refuted on the previous
+    # version must not be restated — inject them as hard negatives.
+    refuted: list[str] = []
+    if existing and existing["factcheck"]:
+        import json as _json
+
+        fc = existing["factcheck"]
+        if isinstance(fc, str):
+            try:
+                fc = _json.loads(fc)
+            except ValueError:
+                fc = {}
+        refuted = [
+            c["claim"] for c in (fc or {}).get("claims", [])
+            if c.get("verdict") == "contradicted" and c.get("claim")
+        ][:8]
+
+    notes = "\n\n".join(
+        f"[{i}] ({(r['mupd'] or r['created_at']).date()}) {(r['summary'] or '')[:120]}\n{r['content'][:900]}"
+        for i, r in enumerate(rows[:20])
+    )
+    user_prompt = f"Subject: {title_hint}\n\nVerified notes:\n{notes}"
+    if refuted:
+        user_prompt += (
+            "\n\nREFUTED CLAIMS — a fact-checker found these statements from "
+            "the previous card version to be WRONG. Do not restate them; "
+            "state the corrected fact if the notes support one, otherwise "
+            "omit the topic:\n- " + "\n- ".join(refuted)
+        )
+    try:
+        resp = await ollama_chat(
+            system=_CARD_SYSTEM,
+            user=user_prompt,
+            schema=CARD_SCHEMA, temperature=0.2,
+        )
+    except Exception:
+        logger.exception("card build LLM failed for %s/%s", subject_type, subject_key)
+        return None
+    title = (resp or {}).get("title", "").strip()[:200] or title_hint
+    brief = (resp or {}).get("brief", "").strip()
+    if len(brief) < 40:
+        return None
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO context_cards
+                (subject_type, subject_key, title, body, source_ids,
+                 source_max_updated, trust_score, built_at)
+            VALUES ($1,$2,$3,$4,$5::uuid[],$6,$7, now())
+            ON CONFLICT (subject_type, subject_key) DO UPDATE
+                SET title=EXCLUDED.title, body=EXCLUDED.body,
+                    source_ids=EXCLUDED.source_ids,
+                    source_max_updated=EXCLUDED.source_max_updated,
+                    trust_score=EXCLUDED.trust_score, built_at=now()
+            """,
+            subject_type, subject_key, title, brief, src_ids, newest, min_trust,
+        )
+    return {"built": True}
+
+
+async def card_builder() -> dict:
+    pool = await get_pool()
+    built = skipped = 0
+
+    # 1) Top active entities by memory linkage (the graph's centers of mass).
+    async with pool.acquire() as conn:
+        entities = await conn.fetch(
+            """
+            SELECT e.canonical_name, e.name, count(*) AS n
+            FROM entities e
+            JOIN entity_memories em ON em.entity_id = e.id
+            JOIN memories m ON m.id = em.memory_id
+            WHERE m.tier < 3 AND m.superseded_by IS NULL
+              AND COALESCE(m.trust_score, 0.5) >= $1
+            GROUP BY e.id, e.canonical_name, e.name
+            HAVING count(*) >= $2
+            ORDER BY count(*) DESC
+            LIMIT $3
+            """,
+            settings.card_min_trust, settings.card_min_sources,
+            settings.card_builder_batch_size,
+        )
+    ent_sql = """
+        SELECT m.id, m.content, m.summary, m.created_at, m.updated_at AS mupd, m.trust_score
+        FROM memories m
+        JOIN entity_memories em ON em.memory_id = m.id
+        JOIN entities e ON e.id = em.entity_id
+        WHERE e.canonical_name = $1
+          AND m.tier < 3 AND m.superseded_by IS NULL
+          AND COALESCE(m.trust_score, 0.5) >= $2
+        -- Recency-forward for state cards: a newer memory outranks an
+        -- older higher-trust one so the card reflects CURRENT reality, not
+        -- the best-trusted stale fact. Trust still gates entry (WHERE).
+        ORDER BY m.updated_at DESC, COALESCE(m.trust_score,0.5) DESC
+        LIMIT 20
+    """
+    for e in entities:
+        await _yield_to_live_requests()
+        r = await _build_card(pool, "entity", e["canonical_name"], e["name"],
+                              ent_sql, e["canonical_name"], settings.card_min_trust)
+        if r and r.get("built"):
+            built += 1
+        elif r and r.get("skipped"):
+            skipped += 1
+
+    return {"built": built, "skipped_unchanged": skipped,
+            "ran_at": datetime.now().isoformat()}
+
+
+# ──────────────────────────────────────────────
+# Card fact-checker (M1 HEART PLAN, 2026-07-14)
+# ──────────────────────────────────────────────
+# Cards get a published_accuracy NUMBER. Motivation: the first C1 cards
+# asserted stale specifics ("Gemma 4 26B", "Hetzner CX Gen3") as current —
+# a session-start feature that states wrong facts is worse than none.
+# Two verification lanes per checkable claim:
+#   1. probe lane (mechanical, free): if an enabled verification_probe's
+#      claim_pattern matches the claim and its latest run said
+#      verified/mismatch, that IS the verdict — live-state ground truth.
+#   2. evidence lane (LLM): hybrid-retrieve the newest relevant memories
+#      and judge supported/contradicted/unverifiable. Newest evidence wins.
+# published_accuracy = supported / (supported + contradicted).
+# Below card_min_accuracy → source_max_updated reset so card_builder
+# rebuilds, and the refuted claims are injected as "do not restate".
+CLAIMS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "claims": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "claim": {"type": "string"},
+                    "checkable": {"type": "boolean"},
+                },
+                "required": ["claim", "checkable"],
+            },
+        }
+    },
+    "required": ["claims"],
+}
+
+_CLAIMS_SYSTEM = (
+    "Extract the atomic factual claims from a reference card. Each claim "
+    "must be self-contained (name its subject explicitly, no pronouns). "
+    "checkable=true only for claims that are objectively true or false "
+    "against infrastructure state or recorded notes (versions, names, "
+    "counts, statuses, locations, configurations). checkable=false for "
+    "opinions, priorities, style, intentions, and vague qualitative "
+    "statements. Keep each claim under 30 words."
+)
+
+VERDICT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {
+            "type": "string",
+            "enum": ["supported", "contradicted", "unverifiable"],
+        },
+        "reason": {"type": "string"},
+    },
+    "required": ["verdict", "reason"],
+}
+
+_VERDICT_SYSTEM = (
+    "You judge whether a claim is still true given evidence notes from a "
+    "knowledge base, ordered NEWEST FIRST. Rules: 'contradicted' only if "
+    "the evidence explicitly conflicts with the claim — when notes "
+    "disagree, the newer note is the truth. 'supported' if the evidence "
+    "affirms it. 'unverifiable' if the evidence neither confirms nor "
+    "denies. Judge the claim as a statement about CURRENT state."
+)
+
+
+def _probe_verdict(claim: str, probes: list[dict]) -> str | None:
+    """Mechanical lane: match the claim against enabled probes' claim_patterns.
+
+    A probe whose latest run verified → 'supported'; mismatch →
+    'contradicted'. probe-error or no match → None (falls through to the
+    LLM evidence lane). Patterns are LLM-generated — invalid regexes are
+    skipped, never fatal.
+    """
+    import re
+
+    for p in probes:
+        try:
+            if not re.search(p["claim_pattern"], claim, re.IGNORECASE):
+                continue
+        except re.error:
+            continue
+        if p.get("last_result") == "verified":
+            return "supported"
+        if p.get("last_result") == "mismatch":
+            return "contradicted"
+    return None
+
+
+def _accuracy(supported: int, contradicted: int) -> float | None:
+    """supported/(supported+contradicted); None when nothing was decidable."""
+    denom = supported + contradicted
+    return round(supported / denom, 3) if denom else None
+
+
+async def _factcheck_card(pool, card, probes: list[dict]) -> dict:
+    """Verify one card's claims. Returns the factcheck result dict."""
+    import json as _json
+
+    resp = await ollama_chat(
+        system=_CLAIMS_SYSTEM,
+        user=f"Card: {card['title']}\n\n{card['body']}",
+        schema=CLAIMS_SCHEMA, temperature=0.1,
+    )
+    claims = [
+        c for c in (resp or {}).get("claims", [])
+        if isinstance(c, dict) and (c.get("claim") or "").strip()
+    ][: settings.card_factcheck_max_claims]
+
+    supported = contradicted = unverifiable = 0
+    results: list[dict] = []
+    for c in claims:
+        claim = c["claim"].strip()
+        if not c.get("checkable"):
+            results.append({"claim": claim, "verdict": "skipped", "via": "uncheckable"})
+            continue
+        await _yield_to_live_requests()
+
+        # Lane 1: mechanical — probe ground truth.
+        verdict = _probe_verdict(claim, probes)
+        via = "probe"
+        reason = "verification_probe latest run"
+
+        # Lane 2: LLM judge vs newest evidence.
+        if verdict is None:
+            via = "evidence"
+            try:
+                emb = await embed_text(claim)
+                evidence = await queries.search_memories(
+                    embedding=emb, limit=settings.card_factcheck_evidence_k,
+                    threshold=0.25, text_query=claim,
+                )
+            except Exception:
+                evidence = []
+            if not evidence:
+                verdict, reason = "unverifiable", "no evidence retrieved"
+            else:
+                evidence.sort(key=lambda m: str(m.get("updated_at") or ""), reverse=True)
+                notes = "\n\n".join(
+                    f"[{i}] ({str(m.get('updated_at') or '')[:10]}) "
+                    f"{(m.get('summary') or '')[:100]}\n{(m.get('content') or '')[:600]}"
+                    for i, m in enumerate(evidence)
+                )
+                try:
+                    j = await ollama_chat(
+                        system=_VERDICT_SYSTEM,
+                        user=f"Claim: {claim}\n\nEvidence (newest first):\n{notes}",
+                        schema=VERDICT_SCHEMA, temperature=0.1,
+                    )
+                    verdict = (j or {}).get("verdict", "unverifiable")
+                    reason = (j or {}).get("reason", "")[:200]
+                except Exception:
+                    verdict, reason = "unverifiable", "judge LLM failed"
+
+        if verdict == "supported":
+            supported += 1
+        elif verdict == "contradicted":
+            contradicted += 1
+        else:
+            unverifiable += 1
+        results.append({"claim": claim, "verdict": verdict, "via": via, "reason": reason})
+
+    accuracy = _accuracy(supported, contradicted)
+    factcheck = {
+        "supported": supported, "contradicted": contradicted,
+        "unverifiable": unverifiable, "claims": results,
+    }
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE context_cards
+            SET published_accuracy = $2::real, factcheck = $3::jsonb,
+                factchecked_at = now(),
+                -- below the bar → clear the staleness stamp so
+                -- card_builder rebuilds this card on its next run
+                -- (explicit ::real casts: $2 appears in both an assignment
+                -- and a comparison — asyncpg can't deduce one type for it)
+                source_max_updated = CASE
+                    WHEN $2::real IS NOT NULL AND $2::real < $4::real THEN NULL
+                    ELSE source_max_updated END
+            WHERE id = $1
+            """,
+            card["id"], accuracy, _json.dumps(factcheck),
+            settings.card_min_accuracy,
+        )
+    return {"accuracy": accuracy, **factcheck}
+
+
+async def card_factcheck() -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        cards = await conn.fetch(
+            """
+            SELECT id, subject_key, title, body FROM context_cards
+            ORDER BY factchecked_at ASC NULLS FIRST
+            LIMIT $1
+            """,
+            settings.card_factcheck_batch_size,
+        )
+        probe_rows = await conn.fetch(
+            """
+            SELECT p.claim_pattern, l.result AS last_result
+            FROM verification_probes p
+            LEFT JOIN LATERAL (
+                SELECT result FROM verification_log
+                WHERE probe_id = p.id ORDER BY ran_at DESC LIMIT 1
+            ) l ON true
+            WHERE p.enabled
+            """
+        )
+    probes = [dict(r) for r in probe_rows]
+
+    checked = 0
+    accuracies: dict[str, float | None] = {}
+    for card in cards:
+        await _yield_to_live_requests()
+        try:
+            r = await _factcheck_card(pool, card, probes)
+        except Exception:
+            logger.exception("card_factcheck failed for %s", card["subject_key"])
+            continue
+        checked += 1
+        accuracies[card["subject_key"]] = r["accuracy"]
+
+    return {"checked": checked, "accuracies": accuracies,
+            "ran_at": datetime.now().isoformat()}

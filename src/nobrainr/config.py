@@ -40,9 +40,29 @@ class Settings(BaseSettings):
     # list disables the check (plain llama-server has no /api/metrics
     # and is also handled by the try/except). Names must match the
     # canonical llama-swap model keys, not aliases.
+    # Write-time contradiction gate (T4, 2026-07-24). Dedup catches
+    # near-duplicates >= 0.78; contradictions live LOWER (0.55-0.78) and
+    # sailed through as ADD — measured inflow outran supersede 5:1. Gate
+    # judges up to 3 high-trust working-state candidates in ONE batched
+    # LLM call and supersedes immediately via the column.
+    contradiction_gate_enabled: bool = True
+    contradiction_gate_sim_min: float = 0.55
+    contradiction_gate_sim_max: float = 0.78
+    contradiction_gate_min_trust: float = 0.7
+
+    # 2026-07-23 — bimavo-priority tuning. bimavo's user-facing assistant
+    # runs on qwen3-8b (GPU chat slot); its llama-swap TTL was raised to
+    # 1800s so a chat session stays warm. recent_s must track that window:
+    # at 600s a user pausing 10-30 min mid-session would lapse the park and
+    # let nobrainr's 27b evict their still-warm model. recent_s 1500 (just
+    # under the 1800 TTL) keeps the 27b parked for the whole session; the
+    # excel parser now runs on qwen3-8b-cpu so batch work no longer trips
+    # this GPU-slot yield. max_wait 1800 gives an actively-used session a
+    # full priority window before nobrainr's distill grabs a slice (bounded
+    # so the flywheel degrades to slow, never starves).
     gpu_yield_models: list[str] = ["qwen3-8b"]
-    gpu_yield_recent_s: float = 600.0
-    gpu_yield_max_wait_s: float = 900.0
+    gpu_yield_recent_s: float = 1500.0
+    gpu_yield_max_wait_s: float = 1800.0
     gpu_yield_poll_s: float = 15.0
 
     # MCP Server
@@ -56,6 +76,15 @@ class Settings(BaseSettings):
     # Crawl4AI
     crawl4ai_url: str = "http://crawl4ai:11235"
     crawl4ai_api_token: str = ""
+
+    # Brave Search API (web discovery — Brave discovers URLs, crawl4ai extracts)
+    brave_api_key: str = ""
+    brave_search_url: str = "https://api.search.brave.com/res/v1/web/search"
+    # Monthly query budget mirroring the Brave dashboard free-tier cap
+    # ($5 credits ≈ 1000 queries). Past this, web_search returns a clean
+    # "quota exhausted" error instead of Brave's 401/429. 0 = no block
+    # (usage is still counted for visibility).
+    brave_monthly_query_cap: int = 1000
 
     # Speaches (OpenAI-compatible whisper API)
     speaches_url: str = "http://speaches:8000"
@@ -82,6 +111,15 @@ class Settings(BaseSettings):
     # local sentence-transformers (then flashrank) on HTTP failure so
     # the reranker stays available if the sidecar is mid-deploy.
     reranker_backend: str = "http"
+    # When the http sidecar fails, may the process lazy-load the 2GB
+    # in-process sentence-transformers CrossEncoder as a fallback?
+    # Default OFF (2026-07-06): one transient HTTP timeout used to pull
+    # 2GB into WHATEVER process was searching — the standalone eval
+    # runner did exactly that and died when host swap was exhausted.
+    # Degrading to RRF order (tier C) is the designed graceful path;
+    # opt back in per-process via NOBRAINR_RERANKER_INPROCESS_FALLBACK=1.
+    # An explicit reranker_backend="sentence-transformers" still works.
+    reranker_inprocess_fallback: bool = False
     # URL of the TEI sidecar. Resolved in-cluster via Docker DNS on the
     # `mcp` network (alias `reranker`). Override with NOBRAINR_RERANKER_URL
     # if routing differs per deploy.
@@ -111,15 +149,14 @@ class Settings(BaseSettings):
     # gives up and returns pre-rerank order. Keeps interactive search
     # responsive under any batch load.
     reranker_queue_timeout_s: float = 10.0
-    # Max candidates sent to the cross-encoder. BGE-reranker-v2-m3 on CPU
-    # Candle is ~1-2s per real-memory text; 8 fits reliably inside the 20s
-    # search_hard_timeout_s even under GPU/CPU contention from extraction.
-    # Replaces the old "full 150 candidates Anthropic recipe" approach which
-    # worked only with GPU — blocked here by Qwen3.6-35B VRAM reservation.
-    # 4-branch RRF already does strong upstream selection so the quality
-    # delta vs 150 is modest on this hybrid pipeline. Raise to 30+ if TEI
-    # gets a GPU slot (requires reducing Qwen --ctx-size to free VRAM).
-    reranker_max_candidates: int = 8
+    # Max candidates sent to the cross-encoder. 8 was the CPU-era cap
+    # (BGE on CPU Candle = 1-2s/doc). Since llama-swap serves the reranker
+    # GGUF on GPU (measured 2026-07-05: 50 docs in 0.87s via /v1/rerank),
+    # a wide rerank is affordable again — this is the Anthropic recipe's
+    # main quality lever and directly targets the recall@10 regression
+    # (0.70→0.51 as corpus grew 48k→72k). The search_rerank_budget_frac
+    # guard still degrades to RRF order if the GPU is contended.
+    reranker_max_candidates: int = 50
     # RRF candidate pool: how many DB results to retrieve per branch before
     # fusion. 6× gives 300 candidates for limit=50 — ample diversity for RRF
     # without forcing the HNSW index to traverse thousands of nodes.
@@ -308,8 +345,102 @@ class Settings(BaseSettings):
 
     # System pulse (autonomous health transmissions)
     system_pulse_interval_hours: float = 24.0
-    # Community detection (GraphRAP)
-    community_detection_interval_hours: float = 6.0  # balanced
+    # Community detection (GraphRAG). Full Leiden went 6h→weekly on
+    # 2026-07-05: at 72k entities it blew the 90-min timeout on ~half its
+    # runs (4 timeouts / 48h). The cheap community_assign job below keeps
+    # new entities covered between full runs via single-step label
+    # propagation (the Zep/Graphiti dynamic-extension pattern), so weekly
+    # full refreshes only correct the slow drift.
+    community_detection_interval_hours: float = 168.0
+    # Incremental community assignment — pure SQL, assigns NULL-community
+    # entities to the plurality community among their graph neighbors.
+    community_assign_interval_hours: float = 6.0
+    # Procedural memory distillation (2026-07-05, Memp/Foundry pattern) —
+    # reviews recent lesson-like memories and distills repeatable
+    # procedures (when-to-use + ordered steps) into procedural_memories.
+    procedural_distill_interval_hours: float = 24.0
+    procedural_distill_batch_size: int = 25   # source memories reviewed/run
+    procedural_distill_max_new: int = 8       # new procedures cap/run
+    # Memory observability (2026-07-05) — written-never-read stats, empty
+    # search queries, search-trace retention.
+    observability_interval_hours: float = 24.0
+    search_trace_retention_days: int = 90
+    # Live search enhancements (HyDE/expand/decompose) call the 27b on the
+    # LIVE path. Their old 15-30s timeouts assumed an idle GPU; under
+    # distill contention every auto-routed "how/why" query blocked the
+    # full 30s and returned tier C anyway. If the model can't draft in
+    # this many seconds, the enhancement isn't worth it — degrade to
+    # plain hybrid. (2026-07-05, found the day auto_route went default-on.)
+    # 6.0 → 2.5 (2026-07-22): under GPU contention an enhancement that
+    # needs >2.5s costs more latency than its recall gain — degrade to
+    # plain hybrid+rerank instead. Scheduler/eval paths set their own.
+    live_enhancement_timeout_s: float = 2.5
+
+    # L1 trust flywheel (2026-07-09). claim_kind_classifier feeds the
+    # starved per-kind machinery (61% of active memories were NULL);
+    # probe_generator unfreezes the hand-seeded 262-probe pool by
+    # proposing probes for the checkable working set (http/file/
+    # SELECT-sql auto-enabled, shell stored disabled for review);
+    # stability_reinforce closes the verify-through-use loop (top-5
+    # tier-A/B retrievals gain stability — previously decay-only).
+    claim_kind_interval_hours: float = 6.0
+    claim_kind_batch_size: int = 60
+    probe_generator_interval_hours: float = 24.0
+    probe_generator_batch_size: int = 15
+    stability_reinforce_interval_hours: float = 12.0
+    # Reconciliation sweeper (2026-07-09): old unverified stale-prone
+    # memories vs newer same-entity memories → supersede/historicize.
+    # The anti-recurrence for plan-vs-reality drift.
+    # T1 scaling (2026-07-24): supersede throughput measured 389 per
+    # 1,918 new memories over 14d — inflow outran cleanup ~5:1 and 9/21
+    # cards sat below the 0.7 accuracy bar from inherited staleness.
+    # 12h/20 → 6h/40 quadruples sweep capacity; the write-time
+    # contradiction gate (T4) cuts the inflow side of the same ratio.
+    reconciliation_interval_hours: float = 6.0
+    reconciliation_batch_size: int = 40
+    # Learned-context cards (C1, 2026-07-14): per-subject living briefs
+    # served at session start. Only memories >= card_min_trust feed a
+    # card; a subject needs card_min_sources memories to be worth one.
+    card_builder_interval_hours: float = 8.0
+    card_builder_batch_size: int = 25
+    card_min_trust: float = 0.55
+    card_min_sources: int = 4
+    # card_factcheck (M1, 2026-07-14): cards get a published_accuracy
+    # number — checkable claims verified mechanically (probe results)
+    # or by LLM judge against the newest evidence. Below
+    # card_min_accuracy the card is scheduled for rebuild with its
+    # refuted claims injected as "do not restate".
+    card_factcheck_interval_hours: float = 12.0
+    card_factcheck_batch_size: int = 5
+    card_factcheck_max_claims: int = 12
+    card_factcheck_evidence_k: int = 6
+    card_min_accuracy: float = 0.7
+
+    # deep_recall (2026-07-06) — bounded multi-hop recall loop:
+    # search → LLM reads the hits and emits ONE follow-up query naming
+    # the bridging entity/aspect → search again → rerank the union
+    # against the original query. Built after the include_related A/B
+    # came back negative (entity-shared neighbors are too noisy a join
+    # at relation F1 0.03); the loop reads *content* to find the bridge
+    # instead of trusting graph edges. Deliberate tool, not the default
+    # search path — expected latency 10-30s.
+    deep_recall_max_hops: int = 2          # total search rounds (1 = plain search)
+    deep_recall_per_hop_limit: int = 8     # results fetched per hop
+    # Follow-up generation runs on the always-loaded CPU model
+    # (qwen3-8b-cpu via llama-swap), NOT the contended 27b: during the
+    # 2026-07-06 A/B every 27b follow-up call starved (76/76 ReadTimeouts
+    # at 12s under scheduler load) and the loop silently degraded to
+    # plain search. Query reformulation is an easy task; the CPU model
+    # answers in 10-20s regardless of GPU state.
+    deep_recall_followup_model: str = "qwen3-8b-cpu"
+    # evidence_gather (LME-V2 AgentRunbook-C pattern, 2026-07-22): bounded
+    # agentic loop with search + read-by-id + read-only SQL over the
+    # memory substrate. LME-V2: agentic gathering 72.5% vs best RAG 48.5%.
+    evidence_gather_max_steps: int = 5
+    evidence_gather_model: str = "qwen3-8b-cpu"  # 27b starves under load
+    evidence_gather_sql_timeout_ms: int = 3000
+    evidence_gather_sql_row_cap: int = 50
+    deep_recall_followup_timeout_s: float = 25.0
     # Auto-optimize (search quality self-improvement)
     auto_optimize_interval_hours: float = 12.0
     # Co-occurrence relationship inference

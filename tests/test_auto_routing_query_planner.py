@@ -12,8 +12,10 @@ These tests lock in the routing rules so agents can rely on them:
     - why/how/when question (5+ words) → hybrid + hyde
     - default                          → hybrid RRF only
 
-Explicit flags are overridden when ``auto_route=True`` so the agent gets
-a clean, single-source-of-truth routing decision.
+Contract updated 2026-07-05 (auto_route became default-on): the router
+applies ONLY when the caller left all strategy flags (hybrid/expand/
+hyde/decompose) at their defaults. An explicitly-set flag is a
+deliberate choice and always wins over the router.
 """
 
 from __future__ import annotations
@@ -58,11 +60,11 @@ class TestAutoRouteHeuristic:
         assert mcp_server._auto_route_query("docker compose down") == {"hybrid": False, "expand": True}
 
     def test_why_question_picks_hyde(self):
-        """'why ... ' with 5+ words → hybrid + HyDE."""
-        routing = mcp_server._auto_route_query("why did we stop flux tonight")
+        """'why ... ' with 8+ words → hybrid + HyDE (retuned 2026-07-22)."""
+        routing = mcp_server._auto_route_query("why did we stop the flux container on the server tonight")
         assert routing["hybrid"] is True
         assert routing["hyde"] is True
-        # Not decompose — 6 words is below the 12-word threshold
+        # Not decompose — 10 words is below the 24-word threshold
         assert routing.get("decompose", False) is False
 
     def test_how_question_picks_hyde(self):
@@ -73,7 +75,7 @@ class TestAutoRouteHeuristic:
 
     def test_when_did_question_picks_hyde(self):
         """'when did ... ' with 5+ words → hybrid + HyDE."""
-        routing = mcp_server._auto_route_query("when did we ship the temporal filters")
+        routing = mcp_server._auto_route_query("when did we ship the temporal filters for the search path")
         assert routing["hybrid"] is True
         assert routing["hyde"] is True
 
@@ -87,11 +89,12 @@ class TestAutoRouteHeuristic:
     def test_long_query_picks_decompose(self):
         """12+ word queries → hybrid + decompose (break into sub-queries)."""
         long_q = (
-            "how did we handle the nobrainr deploy plus flux-mcp stop and "
-            "also the temporal filter changes"
+            "how did we handle the nobrainr deploy plus the flux-mcp stop and "
+            "also the temporal filter changes and the reranker rollout and the "
+            "trust flywheel updates across all the affected machines this month"
         )
-        # Sanity: at least 12 words
-        assert len(long_q.split()) >= 12
+        # Sanity: at least 24 words (retuned threshold)
+        assert len(long_q.split()) >= 24
         routing = mcp_server._auto_route_query(long_q)
         assert routing["hybrid"] is True
         assert routing["decompose"] is True
@@ -105,8 +108,8 @@ class TestAutoRouteHeuristic:
         assert routing["decompose"] is True
 
     def test_multi_and_picks_decompose(self):
-        """2+ ' and ' → decompose (treat as conjunction of sub-intents)."""
-        routing = mcp_server._auto_route_query("deploy flux and fix queue and test ranker")
+        """3+ ' and ' → decompose (retuned 2026-07-22)."""
+        routing = mcp_server._auto_route_query("deploy flux and fix queue and test ranker and update docs")
         assert routing["hybrid"] is True
         assert routing["decompose"] is True
 
@@ -121,8 +124,10 @@ class TestAutoRouteHeuristic:
         match, otherwise 'why ...' long questions would get HyDE instead
         of decomposition, which is wrong for complex questions."""
         # "why" + 13 words
-        q = "why did we pick this particular concurrency setting for the scheduler and llama-server"
-        assert len(q.split()) >= 12
+        q = ("why did we pick this particular concurrency setting for the scheduler "
+             "and llama-server and the write queue and the reranker and what were "
+             "the alternatives we rejected at the time for each one")
+        assert len(q.split()) >= 24
         routing = mcp_server._auto_route_query(q)
         assert routing.get("decompose") is True
         # Not hyde — decompose takes priority
@@ -144,9 +149,10 @@ class TestMemorySearchAutoRouteIntegration:
     """
 
     @pytest.mark.asyncio
-    async def test_auto_route_short_query_overrides_hybrid_true(self):
-        """Caller passes auto_route=True + hybrid=True (explicit); short query
-        should flip hybrid to False."""
+    async def test_auto_route_short_query_routes_when_flags_default(self):
+        """Contract since 2026-07-05 (auto_route default-on): the router
+        applies only when the caller left every strategy flag at its
+        default. Short query + default flags → vector-only."""
         fn = _unwrap(mcp_server.memory_search)
 
         captured_kwargs = []
@@ -162,12 +168,7 @@ class TestMemorySearchAutoRouteIntegration:
              patch("nobrainr.embeddings.ollama.embed_batch", side_effect=fake_embed_batch), \
              patch.object(mcp_server.queries, "expand_chunk_context", AsyncMock(return_value=[])), \
              patch.object(mcp_server.queries, "record_interest_signal", AsyncMock(return_value=None)):
-            await fn(
-                query="flux",
-                auto_route=True,
-                hybrid=True,    # explicit — should be overridden to False
-                decompose=True,  # explicit — should be overridden to False
-            )
+            await fn(query="flux", auto_route=True)
 
         assert captured_kwargs, "search_memories should have been called"
         kw = captured_kwargs[0]
@@ -175,6 +176,42 @@ class TestMemorySearchAutoRouteIntegration:
         # text_query is None when hybrid is False
         assert kw["text_query"] is None, \
             "short query auto-routed to vector-only should not pass text_query"
+
+    @pytest.mark.asyncio
+    async def test_auto_route_explicit_flags_beat_the_router(self):
+        """Contract since 2026-07-05: an explicitly-set strategy flag is a
+        deliberate caller choice and wins over the router. With auto_route
+        defaulting ON, silently overriding explicit flags would break every
+        caller that passes expand=True/decompose=True (our own MCP prompt
+        templates instruct exactly that)."""
+        fn = _unwrap(mcp_server.memory_search)
+
+        captured_kwargs = []
+
+        async def fake_search(*, embedding, **kwargs):
+            captured_kwargs.append(kwargs)
+            return []
+
+        async def fake_embed_batch(queries):
+            return [[0.1] * 768 for _ in queries]
+
+        async def fake_decompose(query):
+            return []  # no sub-queries — keep the decompose path inert
+
+        with patch("nobrainr.services.search_enhancements.decompose_query", side_effect=fake_decompose), \
+             patch("nobrainr.db.queries.search_memories", side_effect=fake_search), \
+             patch("nobrainr.embeddings.ollama.embed_batch", side_effect=fake_embed_batch), \
+             patch.object(mcp_server.queries, "expand_chunk_context", AsyncMock(return_value=[])), \
+             patch.object(mcp_server.queries, "record_interest_signal", AsyncMock(return_value=None)):
+            # A short query WOULD route to hybrid=False, but explicit
+            # decompose=True marks the caller as having chosen a strategy —
+            # the router stands down and hybrid stays True.
+            await fn(query="flux", auto_route=True, decompose=True)
+
+        assert captured_kwargs, "search_memories should have been called"
+        kw = captured_kwargs[0]
+        assert kw["text_query"] is not None, \
+            "explicit decompose=True must disable the router; hybrid stays on"
 
     @pytest.mark.asyncio
     async def test_auto_route_long_query_triggers_decompose_path(self):
@@ -199,8 +236,9 @@ class TestMemorySearchAutoRouteIntegration:
              patch.object(mcp_server.queries, "expand_chunk_context", AsyncMock(return_value=[])), \
              patch.object(mcp_server.queries, "record_interest_signal", AsyncMock(return_value=None)):
             long_q = (
-                "how did we handle the nobrainr deploy plus flux-mcp stop "
-                "and also the temporal filter changes"
+                "how did we handle the nobrainr deploy plus the flux-mcp stop "
+                "and also the temporal filter changes and the reranker rollout "
+                "and the trust flywheel updates across all machines this month"
             )
             await fn(query=long_q, auto_route=True)
 

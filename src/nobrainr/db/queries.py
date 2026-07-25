@@ -1667,8 +1667,12 @@ async def decay_stability() -> int:
             """
             SELECT id
             FROM memories
-            WHERE (last_accessed_at IS NULL AND created_at < now() - interval '7 days')
-               OR (last_accessed_at < now() - interval '7 days')
+            WHERE ((last_accessed_at IS NULL AND created_at < now() - interval '7 days')
+               OR (last_accessed_at < now() - interval '7 days'))
+              -- L1 lifecycle (2026-07-09): reference/historical knowledge is
+              -- valuable even if touched once — its worth is availability,
+              -- not frequency. Disuse-decay applies to WORKING knowledge only.
+              AND (claim_kind IS NULL OR claim_kind NOT IN ('reference', 'historical', 'creative'))
             """
         )
 
@@ -2523,6 +2527,34 @@ async def find_or_create_entity(
         )
         if row:
             # Bump mention count
+            await conn.execute(
+                "UPDATE entities SET mention_count = mention_count + 1 WHERE id = $1",
+                row["id"],
+            )
+            return str(row["id"])
+
+        # Fuzzy fallback (P2b-lite, 2026-07-08): punctuation/case variants
+        # ("try...catch" vs "try/catch", "SRID 4326" vs "SRID=4326") were
+        # the #1 source of duplicate entities — 1,908 twin groups existed
+        # at ship time. Reuse an entity whose ALNUM-COLLAPSED canonical
+        # name matches exactly (same type). Deliberately NOT a trigram
+        # threshold: live sampling showed ≥0.9 similarity also pairs
+        # version/district-distinct names ("Innenstadt" vs "Innenstadt I",
+        # "QGIS 3" vs "QGIS 4") whose alnum forms differ — exact alnum
+        # equality collapses punctuation twins only. Backed by the
+        # idx_entities_alnum expression index.
+        row = await conn.fetchrow(
+            """
+            SELECT id FROM entities
+            WHERE entity_type = $2
+              AND regexp_replace(canonical_name, '[^a-z0-9]', '', 'g')
+                  = regexp_replace($1, '[^a-z0-9]', '', 'g')
+            ORDER BY mention_count DESC
+            LIMIT 1
+            """,
+            canonical, entity_type,
+        )
+        if row:
             await conn.execute(
                 "UPDATE entities SET mention_count = mention_count + 1 WHERE id = $1",
                 row["id"],
@@ -4965,3 +4997,66 @@ async def get_extraction_pending_count() -> int:
         return await conn.fetchval(
             "SELECT count(*) FROM memories WHERE extraction_status IS NULL OR extraction_status = 'failed'"
         )
+
+
+async def reinforce_stability_from_traces(hours: int = 24) -> int:
+    """Verify-through-use (L1, 2026-07-09): retrieval reinforces stability.
+
+    stability previously only DECAYED (5%/cycle after 7d idle) — nothing
+    ever pushed it back up, so every memory ratcheted toward the 0.1
+    floor. Memories that surfaced in the top-5 of a quality-tier A/B
+    search in the window get +0.05 (capped 1.0): knowledge that keeps
+    proving retrievable-and-relevant earns longer verification intervals
+    and slower decay, per the FSRS/spaced-repetition model.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        n = await conn.fetchval(
+            """
+            WITH used AS (
+                SELECT DISTINCT unnest(top_ids[1:5]) AS mid
+                FROM search_traces
+                WHERE created_at > now() - make_interval(hours => $1)
+                  AND quality_tier IN ('A', 'B')
+                  AND result_count > 0
+            ),
+            upd AS (
+                UPDATE memories m
+                SET stability = LEAST(1.0, COALESCE(m.stability, 0.5) + 0.05)
+                FROM used u
+                WHERE m.id = u.mid
+                RETURNING m.id
+            )
+            SELECT count(*) FROM upd
+            """,
+            hours,
+        )
+    return int(n or 0)
+
+
+async def supersede_memory(old_id: str, new_id: str, *, reason: str | None = None) -> bool:
+    """Mark old_id as superseded by new_id — on the COLUMN, not metadata.
+
+    (2026-07-09) The old supersede backlink wrote metadata jsonb only, and
+    on the queued write path often nothing at all: 387 memories claimed
+    metadata.supersedes while just 4 superseded_by columns were ever set.
+    Search filters (`superseded_by IS NULL`) and the trust formula
+    (contradiction_safety → 0.0) read the COLUMN, so broken chains left
+    stale versions ranking as current truth. updated_at is bumped so the
+    6h recompute_trust_scores pass picks the row up.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE memories
+            SET superseded_by = $2,
+                updated_at = now(),
+                metadata = COALESCE(metadata, '{}'::jsonb)
+                    || jsonb_build_object('superseded_by', $2::text,
+                                          'superseded_reason', COALESCE($3, 'superseded'))
+            WHERE id = $1 AND superseded_by IS NULL AND id <> $2
+            """,
+            UUID(str(old_id)), UUID(str(new_id)), reason,
+        )
+    return result.endswith("1")

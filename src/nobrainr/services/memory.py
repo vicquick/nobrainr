@@ -354,13 +354,23 @@ async def store_memory_with_extraction(
         event_ts=event_ts,
     )
 
-    # For SUPERSEDE, backlink the archived memory
+    # For SUPERSEDE, backlink the archived memory. (2026-07-09) Two bugs
+    # fixed: metadata arrives as a JSON STRING on the queued-write path
+    # (asyncpg jsonb), so .get() never fired; and the backlink wrote
+    # metadata jsonb instead of the superseded_by COLUMN that search
+    # filters and the trust formula actually read. 387 claimed chains vs
+    # 4 real columns at discovery.
+    if isinstance(metadata, str):
+        try:
+            import json as _json
+            metadata = _json.loads(metadata)
+        except Exception:
+            metadata = None
     if metadata and metadata.get("supersedes"):
         old_id = metadata["supersedes"]
         try:
-            await queries.update_memory(
-                old_id,
-                metadata={"superseded_by": result["id"]},
+            await queries.supersede_memory(
+                old_id, result["id"], reason="explicit supersedes at store",
             )
         except Exception:
             logger.warning("Failed to backlink superseded memory %s", old_id)
@@ -371,7 +381,25 @@ async def store_memory_with_extraction(
     if settings.extraction_enabled:
         _schedule_extraction(result["id"], content, tags)
 
-    return {"status": "stored", **result}
+    # T4 (2026-07-24): write-time contradiction gate. Dedup above only
+    # sees near-duplicates (>= 0.78); contradictions live lower and were
+    # sailing through as ADD, leaving stale high-trust facts ranking as
+    # current truth until the 12h sweep. Runs on the queued write path
+    # (not the <50ms memory_store call), yields to live GPU use, and
+    # never raises. skip_dedup writes (session logs, bulk imports) skip
+    # the gate too — same latency rationale.
+    superseded_now: list[dict] = []
+    if settings.extraction_enabled and not skip_dedup:
+        from nobrainr.extraction.contradiction import check_and_supersede
+
+        superseded_now = await check_and_supersede(
+            result["id"], content, embedding,
+        )
+
+    out = {"status": "stored", **result}
+    if superseded_now:
+        out["superseded_by_gate"] = superseded_now
+    return out
 
 
 async def store_document_chunked(

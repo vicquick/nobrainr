@@ -1,6 +1,7 @@
 """nobrainr MCP server — collective agent memory with knowledge graph."""
 
 import logging
+import re as _re
 from uuid import UUID, uuid4
 
 from mcp.server.fastmcp import FastMCP
@@ -194,6 +195,37 @@ async def entity_types_resource() -> list[dict]:
         return [{"type": r["entity_type"], "count": r["count"]} for r in rows]
 
 
+@mcp.resource("nobrainr://card/{subject}")
+async def context_card_resource(subject: str) -> dict:
+    """Learned-context card for a subject (entity name / project / community).
+
+    A pre-thought, trust-filtered brief built by the card_builder job from
+    the subject's highest-trust memories — read this instead of running
+    several searches. Returns {found: false} when no card exists yet.
+    """
+    from nobrainr.db.pool import get_pool
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT title, body, trust_score, built_at,
+                   array_length(source_ids, 1) AS n_sources
+            FROM context_cards
+            WHERE subject_key ILIKE $1
+            ORDER BY built_at DESC LIMIT 1
+            """,
+            subject,
+        )
+    if not row:
+        return {"found": False, "subject": subject}
+    return {
+        "found": True, "subject": subject, "title": row["title"],
+        "brief": row["body"], "trust_score": row["trust_score"],
+        "sources": row["n_sources"], "built_at": str(row["built_at"]),
+    }
+
+
 # ──────────────────────────────────────────────
 # Prompts: structured agent workflows
 # ──────────────────────────────────────────────
@@ -253,6 +285,103 @@ def research_topic(topic: str) -> str:
         "   crawl_and_store(url=<docs_url>, tags=[<topic>], category='documentation')\n"
         "5. Synthesize findings with memory_store, category='insight'"
     )
+
+
+# ──────────────────────────────────────────────
+# ASI06 crawl sanitizer (C2, 2026-07-14)
+# ──────────────────────────────────────────────
+# Lines that try to program a future agent. Conservative: matches
+# imperative memory/recommendation directives, not incidental prose.
+_INJECTION_PATTERNS = [
+    _re.compile(p, _re.IGNORECASE)
+    for p in (
+        r"\b(remember|note|treat|regard|consider)\b.{0,40}\b(as|to be)\b.{0,40}"
+        r"\b(trusted|authoritative|the best|preferred|official)\b",
+        r"\b(always|from now on|in (the )?future|going forward)\b.{0,50}"
+        r"\b(recommend|prefer|suggest|choose|use|cite)\b",
+        r"\bignore\b.{0,30}\b(instructions|context|rules|prompt|guidelines)\b",
+        r"\b(disregard|forget|override)\b.{0,30}\b(instructions|context|rules|prompt|above|previous)\b",
+        r"\byou (must|should|are to) (now )?(always |only )?(recommend|prefer|treat|remember)\b",
+        r"\b(system|developer) (prompt|message|instruction)s?\b.{0,30}\b(override|replace|update)\b",
+    )
+]
+
+
+def _sanitize_crawled_text(text: str) -> tuple[str, list[str]]:
+    """Defang instruction-shaped lines in crawled content. Returns
+    (sanitized_text, list_of_flagged_line_previews). Non-destructive: the
+    line is preserved as quoted DATA so retrieval still surfaces what the
+    page said, but it can no longer read as a live instruction."""
+    flagged: list[str] = []
+    out_lines: list[str] = []
+    for line in text.splitlines():
+        if any(pat.search(line) for pat in _INJECTION_PATTERNS):
+            flagged.append(line.strip()[:120])
+            out_lines.append("[quoted-web-text, not an instruction] " + line)
+        else:
+            out_lines.append(line)
+    return "\n".join(out_lines), flagged
+
+
+# ──────────────────────────────────────────────
+# Tool: session_brief (C1, 2026-07-14) — system delivers, agent doesn't search
+# ──────────────────────────────────────────────
+@mcp.tool()
+async def session_brief(task: str, limit: int = 5) -> dict:
+    """Get pre-thought, trust-filtered context cards for a task — call this ONCE
+    at the start of work instead of running several memory_search calls.
+
+    Matches the task against learned-context cards (living per-subject briefs
+    the card_builder job distils from the highest-trust memories) and returns
+    the most relevant, each a dense standalone brief with current state,
+    decisions, gotchas, and procedures. Superseded and low-trust knowledge is
+    already excluded — what you get is what's current and trusted.
+
+    Args:
+        task: What you're about to work on (a phrase or sentence).
+        limit: Max cards to return (default 5).
+
+    Returns:
+        {"cards": [{title, brief, subject, trust_score, built_at}], "count": N}
+        Fall back to memory_search for anything the cards don't cover.
+    """
+    from nobrainr.db.pool import get_pool
+
+    limit = max(1, min(limit, 12))
+    pool = await get_pool()
+    # Match cards by trigram similarity on title/subject + FTS on body —
+    # cheap, no LLM, no embedding-of-cards needed (cards are few).
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT title, body, subject_type, subject_key, trust_score, built_at,
+                       published_accuracy,
+                       GREATEST(
+                         similarity(lower(subject_key), lower($1)),
+                         similarity(lower(title), lower($1)),
+                         ts_rank(to_tsvector('simple', body),
+                                 plainto_tsquery('simple', $1)) * 4
+                       ) AS score
+                FROM context_cards
+                ORDER BY score DESC
+                LIMIT $2
+                """,
+                task, limit,
+            )
+    except Exception:
+        import logging
+        logging.getLogger("nobrainr").exception("session_brief query failed")
+        return {"cards": [], "count": 0, "error": "brief lookup failed"}
+    cards = [
+        {"title": r["title"], "brief": r["body"], "subject": r["subject_key"],
+         "trust_score": r["trust_score"], "built_at": str(r["built_at"]),
+         # M1: fact-checked accuracy (supported/(supported+contradicted)).
+         # None = not yet checked. Treat < 0.7 as "verify before relying".
+         "published_accuracy": r["published_accuracy"]}
+        for r in rows if (r["score"] or 0) > 0.05
+    ]
+    return {"cards": cards, "count": len(cards)}
 
 
 # ──────────────────────────────────────────────
@@ -441,16 +570,21 @@ def _auto_route_query(query: str) -> dict[str, bool]:
     words = q.split()
     word_count = len(words)
 
-    # Rule 1 — long or multi-clause → decompose into sub-queries
-    if word_count >= 12 or q.count(",") >= 2 or q.count(" and ") >= 2:
+    # Rule 1 — long or multi-clause → decompose into sub-queries.
+    # Thresholds retuned 2026-07-22: at >=12 words, 80% of live traffic
+    # routed LLM-enhanced (agents write sentence-length queries) and live
+    # p95 hit 7.1s vs 2.5s on the no-llm path. Decompose is for genuinely
+    # multi-clause research queries, not every full-sentence search.
+    if word_count >= 24 or q.count(",") >= 3 or q.count(" and ") >= 3:
         return {"hybrid": True, "decompose": True}
 
-    # Rule 2 — why/how/when questions with 5+ words → HyDE
+    # Rule 2 — why/how/when questions, now >= 8 words (same retune: short
+    # conceptual questions do fine on hybrid+rerank without the HyDE tax)
     question_prefixes = (
         "why ", "how ",
         "what if ", "when did ", "when do ", "when was ",
     )
-    if any(q.startswith(p) for p in question_prefixes) and word_count >= 5:
+    if any(q.startswith(p) for p in question_prefixes) and word_count >= 8:
         return {"hybrid": True, "hyde": True}
 
     # Rule 3 — short query → pure vector + expand (fuzzy variants)
@@ -616,8 +750,9 @@ async def memory_search(
     decompose: bool = False,
     date_from: str | None = None,
     date_to: str | None = None,
-    auto_route: bool = False,
+    auto_route: bool = True,
     include_related: bool = False,
+    trust_floor: float | None = None,
 ) -> list[dict]:
     """Semantic search across all memories, ranked by relevance (similarity + recency + importance).
 
@@ -645,13 +780,18 @@ async def memory_search(
             calculate the absolute date client-side and pass it here.
         date_to: ISO 8601 upper bound on created_at (inclusive). Same format as
             date_from. Combine with date_from for a date range.
-        auto_route: When True, analyze the query shape and automatically pick
-            the best retrieval strategy (hybrid / hyde / decompose / expand) —
-            agents don't have to choose. Uses a lightweight heuristic based
-            on query length, comma/and count, and question prefix. Zero
-            added latency. When True, the selected flags OVERRIDE whatever
-            was passed explicitly for hybrid/expand/hyde/decompose (Phase
-            B G2, v6.7).
+        auto_route: When True (default since 2026-07-05), analyze the query
+            shape and automatically pick the best retrieval strategy
+            (hybrid / hyde / decompose / expand) — agents don't have to
+            choose. Uses a lightweight heuristic based on query length,
+            comma/and count, and question prefix. Zero added latency.
+            Routing only applies when the caller left all strategy flags
+            at their defaults — an explicitly-set expand/hyde/decompose
+            (or hybrid=False) always wins over the router.
+        trust_floor: When set (0-1), drop results whose trust_score is below
+            it. Use for high-stakes work that must not act on unverified or
+            low-trust (potentially poisoned) memory — returns fewer results
+            by design. Unscored memories pass (NULL != low).
     """
     import asyncio
     from datetime import datetime
@@ -674,10 +814,13 @@ async def memory_search(
     def _over(frac: float) -> bool:
         return _elapsed() > _budget_s * frac
 
-    # Auto-routing query planner — Phase B G2 (v6.7). When enabled, pick the
-    # best retrieval strategy for this query shape. Overrides any explicit
-    # hybrid/expand/hyde/decompose flags. See _auto_route_query for rules.
-    if auto_route:
+    # Auto-routing query planner — Phase B G2 (v6.7), default-on since
+    # 2026-07-05. Pick the best retrieval strategy for this query shape,
+    # but only when the caller left every strategy flag at its default —
+    # an explicit expand/hyde/decompose or hybrid=False is a deliberate
+    # choice and always wins over the router.
+    _caller_chose_strategy = expand or hyde or decompose or not hybrid
+    if auto_route and not _caller_chose_strategy:
         routing = _auto_route_query(query)
         hybrid = routing.get("hybrid", True)
         expand = routing.get("expand", False)
@@ -913,6 +1056,18 @@ async def memory_search(
             for row in results:
                 row["related_memories"] = []
 
+    # Trust floor (C2 ASI06, 2026-07-14). When the caller sets trust_floor,
+    # drop results below it — a post-filter, so a high-stakes consumer that
+    # asks for trust_floor=0.6 can never be handed a low-trust or unverified
+    # (poisoned-candidate) memory. Applied here rather than in SQL because
+    # trust_score is computed/joined per row and this keeps the 3 search
+    # paths (vec / hybrid / graph) untouched. Returns fewer than limit by
+    # design — "trusted only" is the contract.
+    if trust_floor is not None:
+        results = [r for r in results
+                   if (r.get("trust_score") is None
+                       or r["trust_score"] >= trust_floor)]
+
     # Stamp quality tier + elapsed ms on every row so callers can reason
     # about degradation. Cheap — tiny string + int per result.
     elapsed_ms = int(_elapsed() * 1000)
@@ -928,7 +1083,411 @@ async def memory_search(
     except Exception:
         pass
 
+    # Persist the trace (2026-07-05). Real queries are the golden-set
+    # mining source (memory_outcomes captured query text on only 2 of
+    # 101k rows) and the empty-query observability signal. Fire-and-forget.
+    asyncio.create_task(
+        _persist_search_trace(
+            trace_id=trace_id,
+            query=query,
+            results=results,
+            quality_tier=quality_tier,
+            elapsed_ms=elapsed_ms,
+            strategy={
+                "hybrid": hybrid, "expand": expand, "hyde": hyde,
+                "decompose": decompose, "auto_route": auto_route,
+                "limit": limit,
+            },
+        )
+    )
+
     return results
+
+
+async def _persist_search_trace(
+    *, trace_id: str, query: str, results: list[dict],
+    quality_tier: str, elapsed_ms: int, strategy: dict,
+) -> None:
+    """Best-effort INSERT of one search trace row. Never raises."""
+    try:
+        import json as _json
+        from uuid import UUID as _UUID
+        from nobrainr.db.pool import get_pool
+        pool = await get_pool()
+        top = [r["id"] for r in results[:10]]
+        top_score = float(results[0].get("relevance") or results[0].get("similarity") or 0.0) if results else None
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO search_traces
+                    (trace_id, query, result_count, top_ids, top_score,
+                     quality_tier, elapsed_ms, strategy)
+                VALUES ($1, $2, $3, $4::uuid[], $5, $6, $7, $8::jsonb)
+                ON CONFLICT (trace_id) DO NOTHING
+                """,
+                _UUID(trace_id), query[:1000], len(results),
+                [_UUID(str(t)) for t in top], top_score,
+                quality_tier, elapsed_ms, _json.dumps(strategy),
+            )
+    except Exception:
+        import logging
+        logging.getLogger("nobrainr").debug("search trace persist failed", exc_info=True)
+
+
+# ──────────────────────────────────────────────
+# Tool: deep_recall (2026-07-06)
+# ──────────────────────────────────────────────
+# Bounded multi-hop recall loop: search → LLM reads the hits and emits
+# ONE follow-up query naming the missing bridge → search again → rerank
+# the union against the original question. Built after the
+# include_related A/B came back NEGATIVE (entity-shared graph neighbors
+# are too noisy a join at relation F1 0.03): this loop reads memory
+# CONTENT to find the bridge instead of trusting graph edges — the
+# Letta finding that tool-surface beats retrieval internals, applied.
+# Deliberate tool for multi-hop questions; expected latency 10-30s.
+
+_DEEP_RECALL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "complete": {
+            "type": "boolean",
+            "description": "True if the retrieved notes fully answer the question.",
+        },
+        "followup_query": {
+            "type": "string",
+            "description": (
+                "If not complete: ONE different search query targeting the "
+                "missing piece. Name the concrete entity/system/aspect the "
+                "notes point to but don't cover. Empty string if complete."
+            ),
+        },
+        "reason": {"type": "string"},
+    },
+    "required": ["complete", "followup_query"],
+}
+
+
+@mcp.tool()
+async def deep_recall(
+    query: str,
+    limit: int = 10,
+    max_hops: int | None = None,
+    min_hops: int = 1,
+) -> dict:
+    """Multi-hop memory recall for questions whose answer spans SEVERAL memories.
+
+    Runs a bounded search→read→refine→search loop: after the first search
+    an LLM reads the hits and, if the question isn't fully covered, emits
+    one follow-up query naming the missing bridge (entity, system, aspect);
+    the union of all hops is cross-encoder-reranked against the original
+    question. Use memory_search for direct lookups (fast); use this when
+    the question connects two things ("how does X relate to Y", "what did
+    the fix for X mean for Y") — expected latency 10-30s.
+
+    Args:
+        query: The multi-hop question.
+        limit: Max memories returned after final rerank (default 10).
+        max_hops: Search rounds cap (default from config, 2).
+        min_hops: Force at least this many search rounds — the
+            completeness judge is lenient (fired hop 2 on only 26/80
+            multihop goldens), so pass min_hops=2 when you KNOW the
+            question spans multiple memories.
+
+    Returns:
+        {"memories": [...], "hop_queries": [...], "complete": bool}
+        — memories in reranked order, each row shaped like memory_search
+        output plus "recall_hop" (which round found it).
+    """
+    import asyncio as _aio
+
+    from nobrainr.extraction.llm import ollama_chat
+    from nobrainr.services.reranker import rerank as _rerank
+
+    hops = max_hops or settings.deep_recall_max_hops
+    per_hop = settings.deep_recall_per_hop_limit
+    fn = memory_search.fn if hasattr(memory_search, "fn") else memory_search
+
+    seen: dict[str, dict] = {}
+    hop_queries: list[str] = [query]
+    complete = False
+
+    for hop in range(max(1, hops)):
+        try:
+            # auto_route=False: hop searches must be plain hybrid+rerank —
+            # HyDE/decompose inside the loop would add a contended-GPU LLM
+            # call per hop on top of the follow-up call (145 HyDE timeouts
+            # in the 2026-07-06 A/B run under load).
+            res = await fn(query=hop_queries[-1], limit=per_hop, auto_route=False)
+        except Exception:
+            logging.getLogger("nobrainr").exception("deep_recall hop %d search failed", hop)
+            break
+        for r in res:
+            rid = str(r["id"])
+            if rid not in seen:
+                r["recall_hop"] = hop
+                seen[rid] = r
+
+        if hop >= hops - 1 or not seen:
+            break
+
+        # Read the accumulated notes; decide whether a bridge is missing.
+        notes = "\n".join(
+            f"[{i}] {(r.get('summary') or r.get('content') or '')[:280]}"
+            for i, r in enumerate(list(seen.values())[:12])
+        )
+        _force = hop + 1 < min_hops
+        try:
+            verdict = await ollama_chat(
+                system=(
+                    "You check whether retrieved memory notes fully answer a "
+                    "question. If something is missing, emit ONE follow-up "
+                    "search query for exactly the missing piece: for "
+                    "multi-part questions, the uncovered part (its own "
+                    "keywords, not the whole question); for bridge "
+                    "questions, the entity/system the notes point to but "
+                    "don't explain — use concrete names from the notes. "
+                    "Never repeat the original query."
+                    + (
+                        " The caller requires another search round: treat the "
+                        "notes as incomplete and always emit a follow-up query."
+                        if _force else ""
+                    )
+                ),
+                user=f"Question: {query}\n\nRetrieved notes:\n{notes}",
+                schema=_DEEP_RECALL_SCHEMA,
+                temperature=0.2,
+                model=settings.deep_recall_followup_model,
+                timeout=settings.deep_recall_followup_timeout_s,
+                caller_kind="live",
+                think=False,
+            )
+        except Exception:
+            # GPU contended — return what hop 0 found rather than block.
+            break
+        if verdict.get("complete") and not _force:
+            complete = True
+            break
+        follow = (verdict.get("followup_query") or "").strip()
+        if not follow or follow.lower() == query.lower():
+            break
+        hop_queries.append(follow)
+
+    union = list(seen.values())
+    if len(union) > limit:
+        # Global cross-encoder rerank against the ORIGINAL question.
+        # A/B'd against per-hop slot allocation (2026-07-06): slots
+        # LOST (0.356 vs 0.406) — hop-1 noise displaced good hop-0
+        # hits. The reranker keeps the union honest.
+        try:
+            union = await _aio.wait_for(
+                _rerank(query, union, limit=limit),
+                timeout=settings.search_hard_timeout_s,
+            )
+        except Exception:
+            union = union[:limit]
+
+    return {
+        "memories": union[:limit],
+        "hop_queries": hop_queries,
+        "complete": complete,
+    }
+
+
+# ──────────────────────────────────────────────
+# Tool: evidence_gather (LME-V2 AgentRunbook-C, 2026-07-22)
+# ──────────────────────────────────────────────
+# LongMemEval-V2 finding: agentic evidence-gathering (72.5%) beats the
+# best pure-RAG memory (48.5%) by 24 points. This is our bounded version:
+# a small LLM drives search / read-by-id / READ-ONLY SQL steps over the
+# memory substrate and returns a compact evidence set. Unlike deep_recall
+# (which can only re-query), the gatherer can COUNT, ORDER BY date, join
+# entities, and inspect full memory bodies — the operations multihop
+# questions actually need.
+
+_ALLOWED_SQL = _re.compile(r"^\s*select\b", _re.IGNORECASE)
+_FORBIDDEN_SQL = _re.compile(
+    r"\b(insert|update|delete|drop|alter|create|grant|truncate|copy|vacuum|call|do)\b|;",
+    _re.IGNORECASE,
+)
+
+
+def _guard_sql(sql: str, row_cap: int) -> str | None:
+    """Read-only SQL guard: single SELECT, no DML/DDL keywords, no
+    statement chaining; wrapped with a hard row cap. Defense in depth —
+    the executing transaction is ALSO read-only with a statement timeout."""
+    s = (sql or "").strip()
+    if not s or not _ALLOWED_SQL.match(s) or _FORBIDDEN_SQL.search(s):
+        return None
+    return f"SELECT * FROM ({s}) _eg LIMIT {int(row_cap)}"
+
+
+EVIDENCE_STEP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "enum": ["search", "sql", "read", "done"]},
+        "query": {"type": "string"},
+        "sql": {"type": "string"},
+        "ids": {"type": "array", "items": {"type": "string"}},
+        "notes": {"type": "string"},
+    },
+    "required": ["action"],
+}
+
+_EVIDENCE_SYSTEM = (
+    "You gather evidence from a PostgreSQL memory database to answer a "
+    "question. Each turn pick ONE action:\n"
+    "- search: semantic+keyword search (query = short phrase)\n"
+    "- sql: ONE read-only SELECT. Tables: memories(id, summary, content, "
+    "created_at, updated_at, claim_kind, trust_score, source_type, tags), "
+    "context_cards(subject_key, title, body, published_accuracy), "
+    "entities(id, canonical_name), entity_memories(entity_id, memory_id). "
+    "Use SQL for counting, date ordering, joins — things search can't do.\n"
+    "- read: fetch full content of memory ids you already saw\n"
+    "- done: finish; put the memory ids that ANSWER the question in ids "
+    "and a one-line synthesis in notes.\n"
+    "Be economical: done as soon as the evidence suffices."
+)
+
+
+@mcp.tool()
+async def evidence_gather(
+    question: str,
+    max_steps: int | None = None,
+    limit: int = 10,
+) -> dict:
+    """Agentic evidence gathering for questions plain search can't answer.
+
+    A bounded loop where a small LLM drives search, read-only SQL
+    (counts, date ordering, entity joins), and full-memory reads over the
+    knowledge base, then returns the evidence set. Use for multi-hop or
+    aggregate questions ("how many X since May", "which came first",
+    "what connects X and Y"); use memory_search for direct lookups and
+    deep_recall for pure bridge questions. Expected latency 20-60s.
+
+    Args:
+        question: The question to gather evidence for.
+        max_steps: Loop cap (default from config, 5).
+        limit: Max evidence memories returned (default 10).
+
+    Returns:
+        {"evidence": [...], "steps": [{action, detail}], "notes": str}
+    """
+    from nobrainr.db.pool import get_pool
+    from nobrainr.extraction.llm import ollama_chat
+    from nobrainr.services.reranker import rerank as _rerank
+
+    steps_cap = min(max_steps or settings.evidence_gather_max_steps, 8)
+    fn = memory_search.fn if hasattr(memory_search, "fn") else memory_search
+    pool = await get_pool()
+
+    seen: dict[str, dict] = {}
+    step_log: list[dict] = []
+    observation = "no observations yet"
+    notes = ""
+
+    for _step in range(steps_cap):
+        try:
+            decision = await ollama_chat(
+                system=_EVIDENCE_SYSTEM,
+                user=(
+                    f"Question: {question}\n\nEvidence so far "
+                    f"({len(seen)} memories):\n"
+                    + "\n".join(
+                        f"- {rid[:8]}: {(r.get('summary') or '')[:90]}"
+                        for rid, r in list(seen.items())[:10]
+                    )
+                    + f"\n\nLast result:\n{observation[:700]}"
+                ),
+                schema=EVIDENCE_STEP_SCHEMA,
+                temperature=0.2,
+                model=settings.evidence_gather_model,
+                timeout=45,
+                caller_kind="live",
+                think=False,
+            )
+        except Exception:
+            logger.exception("evidence_gather step LLM failed")
+            break
+
+        action = (decision or {}).get("action", "done")
+        if action == "done":
+            notes = (decision.get("notes") or "")[:400]
+            picked = [str(i) for i in (decision.get("ids") or [])]
+            if picked:
+                # normalize short prefixes back to full ids
+                full = {rid[:8]: rid for rid in seen}
+                ordered = [full.get(p[:8], p) for p in picked]
+                seen = {rid: seen[rid] for rid in ordered if rid in seen} or seen
+            step_log.append({"action": "done", "detail": notes[:120]})
+            break
+
+        if action == "search":
+            q = (decision.get("query") or question)[:200]
+            step_log.append({"action": "search", "detail": q[:120]})
+            try:
+                res = await fn(query=q, limit=8, auto_route=False)
+            except Exception:
+                observation = "search failed"
+                continue
+            for r in res:
+                seen.setdefault(str(r["id"]), r)
+            observation = "search hits:\n" + "\n".join(
+                f"- {str(r['id'])[:8]}: {(r.get('summary') or '')[:90]}" for r in res[:8]
+            )
+
+        elif action == "sql":
+            guarded = _guard_sql(decision.get("sql") or "",
+                                 settings.evidence_gather_sql_row_cap)
+            step_log.append({"action": "sql",
+                             "detail": (decision.get("sql") or "")[:120]})
+            if not guarded:
+                observation = "SQL rejected: only a single read-only SELECT is allowed"
+                continue
+            try:
+                async with pool.acquire() as conn:
+                    async with conn.transaction(readonly=True):
+                        await conn.execute(
+                            f"SET LOCAL statement_timeout = "
+                            f"{settings.evidence_gather_sql_timeout_ms}")
+                        rows = await conn.fetch(guarded)
+                observation = "sql rows:\n" + "\n".join(
+                    str(dict(r))[:200] for r in rows[:15]
+                ) if rows else "sql returned 0 rows"
+            except Exception as e:
+                observation = f"sql error: {str(e)[:150]}"
+
+        elif action == "read":
+            ids = [str(i) for i in (decision.get("ids") or [])][:5]
+            full = {rid[:8]: rid for rid in seen}
+            ids = [full.get(i[:8], i) for i in ids]
+            step_log.append({"action": "read", "detail": ",".join(i[:8] for i in ids)})
+            bodies = []
+            for mid in ids:
+                try:
+                    m = await queries.get_memory(mid)
+                except Exception:
+                    m = None
+                if m:
+                    seen[str(m["id"])] = {**seen.get(str(m["id"]), {}), **dict(m)}
+                    bodies.append(f"[{mid[:8]}] {(m.get('content') or '')[:400]}")
+            observation = "full contents:\n" + "\n".join(bodies) if bodies else "no memories found for ids"
+
+        else:
+            observation = f"unknown action {action!r}"
+
+    evidence = list(seen.values())
+    if len(evidence) > limit:
+        import asyncio as _aio
+
+        try:
+            evidence = await _aio.wait_for(
+                _rerank(question, evidence, limit=limit),
+                timeout=settings.search_hard_timeout_s,
+            )
+        except Exception:
+            evidence = evidence[:limit]
+
+    return {"evidence": evidence[:limit], "steps": step_log, "notes": notes}
 
 
 # ──────────────────────────────────────────────
@@ -1870,6 +2429,8 @@ async def memory_feedback(
     query_trace_id: str | None = None,
     result_rank: int | None = None,
     query_text: str | None = None,
+    agent_id: str | None = None,
+    session_id: str | None = None,
 ) -> dict:
     """Report whether a memory search result was useful. This feedback improves future search ranking.
 
@@ -1891,6 +2452,10 @@ async def memory_feedback(
             search result list. Values < 1 are dropped.
         query_text: The query text that surfaced this memory. Trimmed to 500
             chars server-side. Used for later quality diagnostics.
+        agent_id: Which agent/machine is giving feedback (C5 provenance,
+            2026-07-14) — lets us attribute which memories informed which
+            agent's work, feeding trust and future learned-manager training.
+        session_id: The session this feedback belongs to.
     """
     try:
         _validate_uuid(memory_id)
@@ -1903,6 +2468,8 @@ async def memory_feedback(
         query_trace_id=query_trace_id,
         query_text=query_text,
         result_rank=result_rank,
+        agent_id=agent_id,
+        session_id=session_id,
     )
     return {"status": "recorded", **result}
 
@@ -2231,6 +2798,138 @@ async def _crawl4ai_screenshot(url: str) -> str | None:
 
 
 # ──────────────────────────────────────────────
+# Tool: web_search (Brave Search API)
+# ──────────────────────────────────────────────
+async def _brave_search_request(params: dict) -> dict:
+    """GET the Brave web-search endpoint. Split out for testability."""
+    import httpx
+
+    headers = {
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip",
+        "X-Subscription-Token": settings.brave_api_key,
+    }
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(settings.brave_search_url, params=params, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def _count_web_search_use() -> int:
+    """Increment and return this month's web_search query count."""
+    from nobrainr.db.pool import get_pool
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            """
+            INSERT INTO web_search_usage (month, queries)
+            VALUES (to_char(now(), 'YYYY-MM'), 1)
+            ON CONFLICT (month) DO UPDATE
+                SET queries = web_search_usage.queries + 1
+            RETURNING queries
+            """
+        )
+
+
+@mcp.tool()
+async def web_search(
+    query: str,
+    count: int = 8,
+    freshness: str | None = None,
+    country: str | None = None,
+    offset: int = 0,
+) -> dict:
+    """Search the web via the Brave Search API (independent index, not a Google/Bing proxy).
+
+    Discovery tool — returns a ranked, TRANSIENT list of URLs + snippets.
+    Results are never persisted (Brave storage-rights terms): to keep a
+    source, crawl the page itself with crawl_and_store. The intended
+    pipeline is web_search (discover) -> crawl_page / crawl_and_store
+    (extract + persist).
+
+    Args:
+        query: Search query. Include the current year for time-sensitive topics.
+        count: Number of results (1-20, default 8).
+        freshness: Age filter: 'pd' (24h), 'pw' (week), 'pm' (month), 'py' (year),
+            or a range 'YYYY-MM-DDtoYYYY-MM-DD'.
+        country: 2-letter country code to localize results (e.g. 'DE', 'US').
+        offset: Pagination offset (page number, 0-9).
+    """
+    import httpx
+
+    if not settings.brave_api_key:
+        return {
+            "error": "brave_api_key not configured",
+            "hint": "set NOBRAINR_BRAVE_API_KEY on the nobrainr app",
+        }
+
+    # Monthly usage counter. The Brave dashboard is capped at the free
+    # tier — past the budget the key just stops working, so fail HERE
+    # with a clean, actionable error instead of Brave's 401/429.
+    # Accounting failures never block search: DB hiccup → search anyway.
+    used = None
+    try:
+        used = await _count_web_search_use()
+    except Exception:
+        logger.warning("web_search usage accounting failed", exc_info=True)
+    cap = settings.brave_monthly_query_cap
+    if used is not None and cap > 0:
+        if used > cap:
+            return {
+                "error": "monthly web_search quota exhausted",
+                "quota": {"used": used, "cap": cap},
+                "hint": "fall back to the built-in WebSearch tool until next month",
+            }
+        if used == int(cap * 0.8):
+            logger.warning("web_search at 80%% of monthly quota (%s/%s)", used, cap)
+
+    params: dict = {"q": query, "count": max(1, min(count, 20))}
+    if freshness:
+        params["freshness"] = freshness
+    if country:
+        params["country"] = country
+    if offset:
+        params["offset"] = offset
+
+    try:
+        data = await _brave_search_request(params)
+    except httpx.HTTPStatusError as e:
+        return {
+            "error": f"brave api HTTP {e.response.status_code}",
+            "detail": e.response.text[:300],
+        }
+    except Exception as e:  # noqa: BLE001 — surface transport errors to the caller
+        return {"error": f"brave request failed: {e}"}
+
+    results = []
+    for r in data.get("web", {}).get("results", []):
+        # ASI06: SERP snippets are third-party text entering agent context —
+        # run them through the same injection filter as crawled content.
+        title, _ = _sanitize_crawled_text(r.get("title") or "")
+        snippet, _ = _sanitize_crawled_text(r.get("description") or "")
+        results.append(
+            {
+                "title": title,
+                "url": r.get("url"),
+                "snippet": snippet,
+                "age": r.get("age") or r.get("page_age"),
+                "language": r.get("language"),
+            }
+        )
+
+    out = {
+        "query": query,
+        "count": len(results),
+        "results": results,
+        "note": "transient SERP — persist sources via crawl_and_store, never this list",
+    }
+    if used is not None and cap > 0:
+        out["quota"] = {"used": used, "cap": cap}
+    return out
+
+
+# ──────────────────────────────────────────────
 # Tool: crawl_and_store
 # ──────────────────────────────────────────────
 @mcp.tool()
@@ -2289,7 +2988,20 @@ async def crawl_and_store(
     title = crawl_result.get("title", url)
     content = markdown[:max_content_chars]
 
+    # ASI06 crawl sanitizer (C2, 2026-07-14). Crawled web pages are the one
+    # path where UNTRUSTED external text enters long-term memory — the exact
+    # "Summarize with AI" vector Microsoft documented (50 poisoning attempts
+    # / 31 companies in 60 days). Neutralize instruction-shaped lines that
+    # try to program a future agent ("remember X as authoritative", "always
+    # recommend Y") by prefixing them with a quoted marker so they read as
+    # data, never as instructions, and tag the memory for the observability
+    # sweep. This runs ONLY on the crawl path — agent-authored memories
+    # (which legitimately contain instruction text about system design) are
+    # untouched.
+    content, _flags = _sanitize_crawled_text(content)
     all_tags = list(tags or []) + ["crawled"]
+    if _flags:
+        all_tags.append("sanitized-injection")
     norm_category = normalize_category(category)
 
     if chunked:
