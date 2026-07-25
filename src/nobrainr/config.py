@@ -40,9 +40,29 @@ class Settings(BaseSettings):
     # list disables the check (plain llama-server has no /api/metrics
     # and is also handled by the try/except). Names must match the
     # canonical llama-swap model keys, not aliases.
+    # Write-time contradiction gate (T4, 2026-07-24). Dedup catches
+    # near-duplicates >= 0.78; contradictions live LOWER (0.55-0.78) and
+    # sailed through as ADD — measured inflow outran supersede 5:1. Gate
+    # judges up to 3 high-trust working-state candidates in ONE batched
+    # LLM call and supersedes immediately via the column.
+    contradiction_gate_enabled: bool = True
+    contradiction_gate_sim_min: float = 0.55
+    contradiction_gate_sim_max: float = 0.78
+    contradiction_gate_min_trust: float = 0.7
+
+    # 2026-07-23 — bimavo-priority tuning. bimavo's user-facing assistant
+    # runs on qwen3-8b (GPU chat slot); its llama-swap TTL was raised to
+    # 1800s so a chat session stays warm. recent_s must track that window:
+    # at 600s a user pausing 10-30 min mid-session would lapse the park and
+    # let nobrainr's 27b evict their still-warm model. recent_s 1500 (just
+    # under the 1800 TTL) keeps the 27b parked for the whole session; the
+    # excel parser now runs on qwen3-8b-cpu so batch work no longer trips
+    # this GPU-slot yield. max_wait 1800 gives an actively-used session a
+    # full priority window before nobrainr's distill grabs a slice (bounded
+    # so the flywheel degrades to slow, never starves).
     gpu_yield_models: list[str] = ["qwen3-8b"]
-    gpu_yield_recent_s: float = 600.0
-    gpu_yield_max_wait_s: float = 900.0
+    gpu_yield_recent_s: float = 1500.0
+    gpu_yield_max_wait_s: float = 1800.0
     gpu_yield_poll_s: float = 15.0
 
     # MCP Server
@@ -351,7 +371,10 @@ class Settings(BaseSettings):
     # full 30s and returned tier C anyway. If the model can't draft in
     # this many seconds, the enhancement isn't worth it — degrade to
     # plain hybrid. (2026-07-05, found the day auto_route went default-on.)
-    live_enhancement_timeout_s: float = 6.0
+    # 6.0 → 2.5 (2026-07-22): under GPU contention an enhancement that
+    # needs >2.5s costs more latency than its recall gain — degrade to
+    # plain hybrid+rerank instead. Scheduler/eval paths set their own.
+    live_enhancement_timeout_s: float = 2.5
 
     # L1 trust flywheel (2026-07-09). claim_kind_classifier feeds the
     # starved per-kind machinery (61% of active memories were NULL);
@@ -368,8 +391,13 @@ class Settings(BaseSettings):
     # Reconciliation sweeper (2026-07-09): old unverified stale-prone
     # memories vs newer same-entity memories → supersede/historicize.
     # The anti-recurrence for plan-vs-reality drift.
-    reconciliation_interval_hours: float = 12.0
-    reconciliation_batch_size: int = 20
+    # T1 scaling (2026-07-24): supersede throughput measured 389 per
+    # 1,918 new memories over 14d — inflow outran cleanup ~5:1 and 9/21
+    # cards sat below the 0.7 accuracy bar from inherited staleness.
+    # 12h/20 → 6h/40 quadruples sweep capacity; the write-time
+    # contradiction gate (T4) cuts the inflow side of the same ratio.
+    reconciliation_interval_hours: float = 6.0
+    reconciliation_batch_size: int = 40
     # Learned-context cards (C1, 2026-07-14): per-subject living briefs
     # served at session start. Only memories >= card_min_trust feed a
     # card; a subject needs card_min_sources memories to be worth one.
@@ -405,6 +433,13 @@ class Settings(BaseSettings):
     # plain search. Query reformulation is an easy task; the CPU model
     # answers in 10-20s regardless of GPU state.
     deep_recall_followup_model: str = "qwen3-8b-cpu"
+    # evidence_gather (LME-V2 AgentRunbook-C pattern, 2026-07-22): bounded
+    # agentic loop with search + read-by-id + read-only SQL over the
+    # memory substrate. LME-V2: agentic gathering 72.5% vs best RAG 48.5%.
+    evidence_gather_max_steps: int = 5
+    evidence_gather_model: str = "qwen3-8b-cpu"  # 27b starves under load
+    evidence_gather_sql_timeout_ms: int = 3000
+    evidence_gather_sql_row_cap: int = 50
     deep_recall_followup_timeout_s: float = 25.0
     # Auto-optimize (search quality self-improvement)
     auto_optimize_interval_hours: float = 12.0
