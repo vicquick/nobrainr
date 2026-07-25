@@ -570,16 +570,21 @@ def _auto_route_query(query: str) -> dict[str, bool]:
     words = q.split()
     word_count = len(words)
 
-    # Rule 1 — long or multi-clause → decompose into sub-queries
-    if word_count >= 12 or q.count(",") >= 2 or q.count(" and ") >= 2:
+    # Rule 1 — long or multi-clause → decompose into sub-queries.
+    # Thresholds retuned 2026-07-22: at >=12 words, 80% of live traffic
+    # routed LLM-enhanced (agents write sentence-length queries) and live
+    # p95 hit 7.1s vs 2.5s on the no-llm path. Decompose is for genuinely
+    # multi-clause research queries, not every full-sentence search.
+    if word_count >= 24 or q.count(",") >= 3 or q.count(" and ") >= 3:
         return {"hybrid": True, "decompose": True}
 
-    # Rule 2 — why/how/when questions with 5+ words → HyDE
+    # Rule 2 — why/how/when questions, now >= 8 words (same retune: short
+    # conceptual questions do fine on hybrid+rerank without the HyDE tax)
     question_prefixes = (
         "why ", "how ",
         "what if ", "when did ", "when do ", "when was ",
     )
-    if any(q.startswith(p) for p in question_prefixes) and word_count >= 5:
+    if any(q.startswith(p) for p in question_prefixes) and word_count >= 8:
         return {"hybrid": True, "hyde": True}
 
     # Rule 3 — short query → pure vector + expand (fuzzy variants)
@@ -1286,6 +1291,203 @@ async def deep_recall(
         "hop_queries": hop_queries,
         "complete": complete,
     }
+
+
+# ──────────────────────────────────────────────
+# Tool: evidence_gather (LME-V2 AgentRunbook-C, 2026-07-22)
+# ──────────────────────────────────────────────
+# LongMemEval-V2 finding: agentic evidence-gathering (72.5%) beats the
+# best pure-RAG memory (48.5%) by 24 points. This is our bounded version:
+# a small LLM drives search / read-by-id / READ-ONLY SQL steps over the
+# memory substrate and returns a compact evidence set. Unlike deep_recall
+# (which can only re-query), the gatherer can COUNT, ORDER BY date, join
+# entities, and inspect full memory bodies — the operations multihop
+# questions actually need.
+
+_ALLOWED_SQL = _re.compile(r"^\s*select\b", _re.IGNORECASE)
+_FORBIDDEN_SQL = _re.compile(
+    r"\b(insert|update|delete|drop|alter|create|grant|truncate|copy|vacuum|call|do)\b|;",
+    _re.IGNORECASE,
+)
+
+
+def _guard_sql(sql: str, row_cap: int) -> str | None:
+    """Read-only SQL guard: single SELECT, no DML/DDL keywords, no
+    statement chaining; wrapped with a hard row cap. Defense in depth —
+    the executing transaction is ALSO read-only with a statement timeout."""
+    s = (sql or "").strip()
+    if not s or not _ALLOWED_SQL.match(s) or _FORBIDDEN_SQL.search(s):
+        return None
+    return f"SELECT * FROM ({s}) _eg LIMIT {int(row_cap)}"
+
+
+EVIDENCE_STEP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "enum": ["search", "sql", "read", "done"]},
+        "query": {"type": "string"},
+        "sql": {"type": "string"},
+        "ids": {"type": "array", "items": {"type": "string"}},
+        "notes": {"type": "string"},
+    },
+    "required": ["action"],
+}
+
+_EVIDENCE_SYSTEM = (
+    "You gather evidence from a PostgreSQL memory database to answer a "
+    "question. Each turn pick ONE action:\n"
+    "- search: semantic+keyword search (query = short phrase)\n"
+    "- sql: ONE read-only SELECT. Tables: memories(id, summary, content, "
+    "created_at, updated_at, claim_kind, trust_score, source_type, tags), "
+    "context_cards(subject_key, title, body, published_accuracy), "
+    "entities(id, canonical_name), entity_memories(entity_id, memory_id). "
+    "Use SQL for counting, date ordering, joins — things search can't do.\n"
+    "- read: fetch full content of memory ids you already saw\n"
+    "- done: finish; put the memory ids that ANSWER the question in ids "
+    "and a one-line synthesis in notes.\n"
+    "Be economical: done as soon as the evidence suffices."
+)
+
+
+@mcp.tool()
+async def evidence_gather(
+    question: str,
+    max_steps: int | None = None,
+    limit: int = 10,
+) -> dict:
+    """Agentic evidence gathering for questions plain search can't answer.
+
+    A bounded loop where a small LLM drives search, read-only SQL
+    (counts, date ordering, entity joins), and full-memory reads over the
+    knowledge base, then returns the evidence set. Use for multi-hop or
+    aggregate questions ("how many X since May", "which came first",
+    "what connects X and Y"); use memory_search for direct lookups and
+    deep_recall for pure bridge questions. Expected latency 20-60s.
+
+    Args:
+        question: The question to gather evidence for.
+        max_steps: Loop cap (default from config, 5).
+        limit: Max evidence memories returned (default 10).
+
+    Returns:
+        {"evidence": [...], "steps": [{action, detail}], "notes": str}
+    """
+    from nobrainr.db.pool import get_pool
+    from nobrainr.extraction.llm import ollama_chat
+    from nobrainr.services.reranker import rerank as _rerank
+
+    steps_cap = min(max_steps or settings.evidence_gather_max_steps, 8)
+    fn = memory_search.fn if hasattr(memory_search, "fn") else memory_search
+    pool = await get_pool()
+
+    seen: dict[str, dict] = {}
+    step_log: list[dict] = []
+    observation = "no observations yet"
+    notes = ""
+
+    for _step in range(steps_cap):
+        try:
+            decision = await ollama_chat(
+                system=_EVIDENCE_SYSTEM,
+                user=(
+                    f"Question: {question}\n\nEvidence so far "
+                    f"({len(seen)} memories):\n"
+                    + "\n".join(
+                        f"- {rid[:8]}: {(r.get('summary') or '')[:90]}"
+                        for rid, r in list(seen.items())[:10]
+                    )
+                    + f"\n\nLast result:\n{observation[:700]}"
+                ),
+                schema=EVIDENCE_STEP_SCHEMA,
+                temperature=0.2,
+                model=settings.evidence_gather_model,
+                timeout=45,
+                caller_kind="live",
+                think=False,
+            )
+        except Exception:
+            logger.exception("evidence_gather step LLM failed")
+            break
+
+        action = (decision or {}).get("action", "done")
+        if action == "done":
+            notes = (decision.get("notes") or "")[:400]
+            picked = [str(i) for i in (decision.get("ids") or [])]
+            if picked:
+                # normalize short prefixes back to full ids
+                full = {rid[:8]: rid for rid in seen}
+                ordered = [full.get(p[:8], p) for p in picked]
+                seen = {rid: seen[rid] for rid in ordered if rid in seen} or seen
+            step_log.append({"action": "done", "detail": notes[:120]})
+            break
+
+        if action == "search":
+            q = (decision.get("query") or question)[:200]
+            step_log.append({"action": "search", "detail": q[:120]})
+            try:
+                res = await fn(query=q, limit=8, auto_route=False)
+            except Exception:
+                observation = "search failed"
+                continue
+            for r in res:
+                seen.setdefault(str(r["id"]), r)
+            observation = "search hits:\n" + "\n".join(
+                f"- {str(r['id'])[:8]}: {(r.get('summary') or '')[:90]}" for r in res[:8]
+            )
+
+        elif action == "sql":
+            guarded = _guard_sql(decision.get("sql") or "",
+                                 settings.evidence_gather_sql_row_cap)
+            step_log.append({"action": "sql",
+                             "detail": (decision.get("sql") or "")[:120]})
+            if not guarded:
+                observation = "SQL rejected: only a single read-only SELECT is allowed"
+                continue
+            try:
+                async with pool.acquire() as conn:
+                    async with conn.transaction(readonly=True):
+                        await conn.execute(
+                            f"SET LOCAL statement_timeout = "
+                            f"{settings.evidence_gather_sql_timeout_ms}")
+                        rows = await conn.fetch(guarded)
+                observation = "sql rows:\n" + "\n".join(
+                    str(dict(r))[:200] for r in rows[:15]
+                ) if rows else "sql returned 0 rows"
+            except Exception as e:
+                observation = f"sql error: {str(e)[:150]}"
+
+        elif action == "read":
+            ids = [str(i) for i in (decision.get("ids") or [])][:5]
+            full = {rid[:8]: rid for rid in seen}
+            ids = [full.get(i[:8], i) for i in ids]
+            step_log.append({"action": "read", "detail": ",".join(i[:8] for i in ids)})
+            bodies = []
+            for mid in ids:
+                try:
+                    m = await queries.get_memory(mid)
+                except Exception:
+                    m = None
+                if m:
+                    seen[str(m["id"])] = {**seen.get(str(m["id"]), {}), **dict(m)}
+                    bodies.append(f"[{mid[:8]}] {(m.get('content') or '')[:400]}")
+            observation = "full contents:\n" + "\n".join(bodies) if bodies else "no memories found for ids"
+
+        else:
+            observation = f"unknown action {action!r}"
+
+    evidence = list(seen.values())
+    if len(evidence) > limit:
+        import asyncio as _aio
+
+        try:
+            evidence = await _aio.wait_for(
+                _rerank(question, evidence, limit=limit),
+                timeout=settings.search_hard_timeout_s,
+            )
+        except Exception:
+            evidence = evidence[:limit]
+
+    return {"evidence": evidence[:limit], "steps": step_log, "notes": notes}
 
 
 # ──────────────────────────────────────────────

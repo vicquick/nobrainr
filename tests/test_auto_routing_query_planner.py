@@ -60,11 +60,11 @@ class TestAutoRouteHeuristic:
         assert mcp_server._auto_route_query("docker compose down") == {"hybrid": False, "expand": True}
 
     def test_why_question_picks_hyde(self):
-        """'why ... ' with 5+ words → hybrid + HyDE."""
-        routing = mcp_server._auto_route_query("why did we stop flux tonight")
+        """'why ... ' with 8+ words → hybrid + HyDE (retuned 2026-07-22)."""
+        routing = mcp_server._auto_route_query("why did we stop the flux container on the server tonight")
         assert routing["hybrid"] is True
         assert routing["hyde"] is True
-        # Not decompose — 6 words is below the 12-word threshold
+        # Not decompose — 10 words is below the 24-word threshold
         assert routing.get("decompose", False) is False
 
     def test_how_question_picks_hyde(self):
@@ -75,7 +75,7 @@ class TestAutoRouteHeuristic:
 
     def test_when_did_question_picks_hyde(self):
         """'when did ... ' with 5+ words → hybrid + HyDE."""
-        routing = mcp_server._auto_route_query("when did we ship the temporal filters")
+        routing = mcp_server._auto_route_query("when did we ship the temporal filters for the search path")
         assert routing["hybrid"] is True
         assert routing["hyde"] is True
 
@@ -89,11 +89,12 @@ class TestAutoRouteHeuristic:
     def test_long_query_picks_decompose(self):
         """12+ word queries → hybrid + decompose (break into sub-queries)."""
         long_q = (
-            "how did we handle the nobrainr deploy plus flux-mcp stop and "
-            "also the temporal filter changes"
+            "how did we handle the nobrainr deploy plus the flux-mcp stop and "
+            "also the temporal filter changes and the reranker rollout and the "
+            "trust flywheel updates across all the affected machines this month"
         )
-        # Sanity: at least 12 words
-        assert len(long_q.split()) >= 12
+        # Sanity: at least 24 words (retuned threshold)
+        assert len(long_q.split()) >= 24
         routing = mcp_server._auto_route_query(long_q)
         assert routing["hybrid"] is True
         assert routing["decompose"] is True
@@ -107,8 +108,8 @@ class TestAutoRouteHeuristic:
         assert routing["decompose"] is True
 
     def test_multi_and_picks_decompose(self):
-        """2+ ' and ' → decompose (treat as conjunction of sub-intents)."""
-        routing = mcp_server._auto_route_query("deploy flux and fix queue and test ranker")
+        """3+ ' and ' → decompose (retuned 2026-07-22)."""
+        routing = mcp_server._auto_route_query("deploy flux and fix queue and test ranker and update docs")
         assert routing["hybrid"] is True
         assert routing["decompose"] is True
 
@@ -123,8 +124,10 @@ class TestAutoRouteHeuristic:
         match, otherwise 'why ...' long questions would get HyDE instead
         of decomposition, which is wrong for complex questions."""
         # "why" + 13 words
-        q = "why did we pick this particular concurrency setting for the scheduler and llama-server"
-        assert len(q.split()) >= 12
+        q = ("why did we pick this particular concurrency setting for the scheduler "
+             "and llama-server and the write queue and the reranker and what were "
+             "the alternatives we rejected at the time for each one")
+        assert len(q.split()) >= 24
         routing = mcp_server._auto_route_query(q)
         assert routing.get("decompose") is True
         # Not hyde — decompose takes priority
@@ -233,8 +236,9 @@ class TestMemorySearchAutoRouteIntegration:
              patch.object(mcp_server.queries, "expand_chunk_context", AsyncMock(return_value=[])), \
              patch.object(mcp_server.queries, "record_interest_signal", AsyncMock(return_value=None)):
             long_q = (
-                "how did we handle the nobrainr deploy plus flux-mcp stop "
-                "and also the temporal filter changes"
+                "how did we handle the nobrainr deploy plus the flux-mcp stop "
+                "and also the temporal filter changes and the reranker rollout "
+                "and the trust flywheel updates across all machines this month"
             )
             await fn(query=long_q, auto_route=True)
 
