@@ -2919,7 +2919,7 @@ PROBE_SCHEMA = {
 _PROBE_SYSTEM = (
     "You design verification probes for a knowledge base on host 'bimavo' "
     "(Ubuntu, Docker via Coolify, PostgreSQL 'nobrainr' db, services on "
-    "10.10.10.12). Given memory notes stating CURRENT system facts, emit a "
+    "<vpn-host>). Given memory notes stating CURRENT system facts, emit a "
     "probe that mechanically re-checks the claim:\n"
     "- http: a curl-able GET URL (VPN/localhost only) — probe_command is the URL\n"
     "- file: an absolute HOST filesystem path; the probe CATS the file and "
