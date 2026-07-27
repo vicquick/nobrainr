@@ -77,6 +77,15 @@ class Settings(BaseSettings):
     crawl4ai_url: str = "http://crawl4ai:11235"
     crawl4ai_api_token: str = ""
 
+    # Library (2026-07-27): document layer over chunked memories — the
+    # study-documents + Affine knowledge base. Original files live in
+    # Nextcloud (StorageBox); when original_base_url is set, the library
+    # links each doc to its Nextcloud location (e.g.
+    # "https://cloud.example/apps/files/?dir=/Documents&scrollto=").
+    # Empty = UI shows the copyable filename instead of a link.
+    library_source_types: list[str] = ["docx", "affine_memos", "markdown_notes"]
+    library_original_base_url: str = ""
+
     # Brave Search API (web discovery — Brave discovers URLs, crawl4ai extracts)
     brave_api_key: str = ""
     brave_search_url: str = "https://api.search.brave.com/res/v1/web/search"
