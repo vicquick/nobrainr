@@ -144,6 +144,7 @@ const relationsTicker = useCountUp(computed(() => statsStore.stats?.total_relati
 
 const navLinks = [
   { to: '/commonplace', label: 'Commonplace', icon: 'mdi-book-open-page-variant' },
+  { to: '/library', label: 'Library', icon: 'mdi-bookshelf' },
   { to: '/insights', label: 'Insights', icon: 'mdi-lightbulb-on-outline' },
   { to: '/memories', label: 'Memories', icon: 'mdi-brain' },
   { to: '/galaxy', label: 'Galaxy', icon: 'mdi-creation' },
