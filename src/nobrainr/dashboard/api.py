@@ -968,6 +968,143 @@ async def api_brief(request: Request) -> JSONResponse:
     return JSONResponse({"cards": cards, "memories": memories})
 
 
+async def api_library(request: Request) -> JSONResponse:
+    """Document registry (library layer, 2026-07-27).
+
+    Groups chunked memories into DOCUMENTS — the answer to "chunk soup":
+    each row is one source file (study doc, Affine memo, markdown note)
+    with its chunk count, size, and ordered chunk ids. Filter with ?q=
+    (substring on the filename) and ?type= (source_type).
+    """
+    q = request.query_params.get("q", "").strip()
+    stype = request.query_params.get("type", "").strip()
+    types = [stype] if stype else list(settings.library_source_types)
+
+    from nobrainr.db.pool import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT COALESCE(metadata->>'file_path', source_ref, 'untitled') AS ref,
+                   source_type,
+                   count(*) AS chunks,
+                   sum(length(content)) AS chars,
+                   min(created_at) AS imported_at,
+                   (array_agg(summary ORDER BY created_at, id))[1] AS first_summary
+            FROM memories
+            WHERE source_type = ANY($1::text[])
+              AND superseded_by IS NULL
+              AND ($2 = '' OR COALESCE(metadata->>'file_path', source_ref, '') ILIKE '%' || $2 || '%')
+            GROUP BY 1, 2
+            ORDER BY 1
+            """,
+            types, q,
+        )
+    base = settings.library_original_base_url
+    docs = [
+        {
+            "ref": r["ref"], "source_type": r["source_type"],
+            "chunks": r["chunks"], "chars": r["chars"],
+            "imported_at": str(r["imported_at"]),
+            "first_summary": r["first_summary"],
+            "original_url": (base + r["ref"]) if base else None,
+        }
+        for r in rows
+    ]
+    return JSONResponse({"documents": docs, "count": len(docs)})
+
+
+async def api_library_doc(request: Request) -> JSONResponse:
+    """One document, whole: ordered chunks stitched for the reader view.
+
+    Chunk order falls back to (created_at, id) — the 2026-03 docx import
+    predates per-chunk index metadata, and insertion order tracked the
+    original document order.
+    """
+    ref = request.query_params.get("ref", "").strip()
+    if not ref:
+        return JSONResponse({"error": "ref required"}, status_code=400)
+    from nobrainr.db.pool import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, content, summary, created_at, trust_score
+            FROM memories
+            WHERE source_type = ANY($1::text[])
+              AND superseded_by IS NULL
+              AND COALESCE(metadata->>'file_path', source_ref, '') = $2
+            ORDER BY created_at, id
+            """,
+            list(settings.library_source_types), ref,
+        )
+    if not rows:
+        return JSONResponse({"error": "document not found"}, status_code=404)
+    base = settings.library_original_base_url
+    return JSONResponse({
+        "ref": ref,
+        "original_url": (base + ref) if base else None,
+        "chunks": [
+            {"id": str(r["id"]), "content": r["content"],
+             "summary": r["summary"], "trust_score": r["trust_score"]}
+            for r in rows
+        ],
+    })
+
+
+def _library_scope_filter(hits: list[dict], ref: str) -> list[dict]:
+    """Restrict hybrid hits to library source types (and one doc if ref).
+
+    metadata arrives as dict OR JSON string depending on the path —
+    normalize before reading file_path (the 2026-07-09 lesson).
+    """
+    import json as _json
+
+    def _fp(h: dict):
+        m = h.get("metadata")
+        if isinstance(m, str):
+            try:
+                m = _json.loads(m)
+            except Exception:
+                m = {}
+        return (m or {}).get("file_path") or h.get("source_ref")
+
+    out = [h for h in hits if h.get("source_type") in settings.library_source_types]
+    if ref:
+        out = [h for h in out if _fp(h) == ref]
+    return out
+
+
+async def api_library_search(request: Request) -> JSONResponse:
+    """Doc-scoped hybrid search — 'find it in MY documents, fast'.
+
+    Same embed+hybrid as smart-recall but restricted to library source
+    types, optionally to ONE document (?ref=), and reranked by the
+    cross-encoder (the M2 lesson: hybrid rank alone is noisy — the
+    pinned GPU reranker is what makes the top hits precise).
+    """
+    q = request.query_params.get("q", "").strip()
+    if not q:
+        return JSONResponse({"hits": []})
+    ref = request.query_params.get("ref", "").strip()
+    limit = min(int(request.query_params.get("limit", "8")), 20)
+
+    try:
+        embedding = await embed_text(q)
+    except Exception:
+        return JSONResponse({"hits": [], "error": "embedding unavailable"}, status_code=503)
+    hits = await queries.search_memories(
+        embedding=embedding, limit=limit * 4, threshold=0.2, text_query=q,
+    )
+    scoped = _library_scope_filter(hits, ref)
+    try:
+        from nobrainr.services.reranker import rerank
+        scoped = await rerank(q, scoped, limit=limit)
+    except Exception:
+        scoped = scoped[:limit]
+    return JSONResponse({"hits": scoped[:limit], "count": len(scoped[:limit])})
+
+
 async def api_memory_source(request: Request) -> JSONResponse:
     """Resolve a memory's raw source — the "view origin" link.
 
@@ -2661,6 +2798,9 @@ api_routes = [
     Route("/api/recall", api_recall),
     Route("/api/smart-recall", api_smart_recall),
     Route("/api/brief", api_brief),
+    Route("/api/library", api_library),
+    Route("/api/library/doc", api_library_doc),
+    Route("/api/library/search", api_library_search),
     Route("/api/entities", api_entities),
     Route("/api/categories", api_categories),
     Route("/api/tags", api_tags),
