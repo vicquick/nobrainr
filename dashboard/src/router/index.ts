@@ -78,6 +78,11 @@ const router = createRouter({
       component: () => import('@/views/PulseView.vue'),
     },
     {
+      path: '/library',
+      name: 'library',
+      component: () => import('@/views/LibraryView.vue'),
+    },
+    {
       path: '/commonplace',
       name: 'commonplace',
       component: () => import('@/views/CommonplaceView.vue'),
