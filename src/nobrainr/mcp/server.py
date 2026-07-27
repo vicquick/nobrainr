@@ -1294,6 +1294,108 @@ async def deep_recall(
 
 
 # ──────────────────────────────────────────────
+# Tool: library_search (document layer, 2026-07-27)
+# ──────────────────────────────────────────────
+LIBRARY_ANSWER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "answer": {"type": "string"},
+        "citations": {"type": "array", "items": {"type": "integer"}},
+    },
+    "required": ["answer", "citations"],
+}
+
+_LIBRARY_ANSWER_SYSTEM = (
+    "Answer the question ONLY from the numbered document excerpts. Cite "
+    "every claim with the excerpt numbers you used (citations array). If "
+    "the excerpts don't contain the answer, say so plainly — never fill "
+    "gaps from general knowledge; these are the user's own documents and "
+    "fidelity beats fluency."
+)
+
+
+@mcp.tool()
+async def library_search(
+    query: str,
+    document: str | None = None,
+    limit: int = 8,
+    synthesize: bool = False,
+) -> dict:
+    """Search the personal document library (study documents, Affine notes,
+    markdown) — chunked, hybrid-searched, cross-encoder reranked.
+
+    Use for questions about the user's OWN documents ("what do my geodesy
+    notes say about...", "find the section on X in <file>"). Pass
+    document=<file ref from results> to scope to ONE document.
+    synthesize=True adds a cited answer composed strictly from the
+    excerpts (one LLM call, ~5-15s; leave False for fast raw hits).
+
+    Returns: {"hits": [...], "documents": [refs], "answer"?, "citations"?}
+    """
+    import json as _json
+
+    from nobrainr.extraction.llm import ollama_chat
+    from nobrainr.services.reranker import rerank as _rerank
+
+    limit = max(1, min(limit, 20))
+    emb = await embed_text(query)
+    hits = await queries.search_memories(
+        embedding=emb, limit=limit * 4, threshold=0.2, text_query=query,
+    )
+
+    def _fp(h: dict):
+        m = h.get("metadata")
+        if isinstance(m, str):
+            try:
+                m = _json.loads(m)
+            except Exception:
+                m = {}
+        return (m or {}).get("file_path") or h.get("source_ref")
+
+    scoped = [h for h in hits
+              if h.get("source_type") in settings.library_source_types
+              and (not document or _fp(h) == document)]
+    try:
+        scoped = await _rerank(query, scoped, limit=limit)
+    except Exception:
+        pass
+    scoped = scoped[:limit]
+
+    out: dict = {
+        "hits": [
+            {"id": str(h["id"]), "document": _fp(h),
+             "content": (h.get("content") or "")[:1200],
+             "summary": h.get("summary")}
+            for h in scoped
+        ],
+        "documents": sorted({_fp(h) for h in scoped if _fp(h)}),
+    }
+
+    if synthesize and scoped:
+        excerpts = "\n\n".join(
+            f"[{i}] ({_fp(h)}):\n{(h.get('content') or '')[:900]}"
+            for i, h in enumerate(scoped)
+        )
+        try:
+            resp = await ollama_chat(
+                system=_LIBRARY_ANSWER_SYSTEM,
+                user=f"Question: {query}\n\nExcerpts:\n{excerpts}",
+                schema=LIBRARY_ANSWER_SCHEMA,
+                temperature=0.2,
+                caller_kind="live",
+                think=False,
+            )
+            out["answer"] = (resp or {}).get("answer", "")
+            out["citations"] = [
+                i for i in (resp or {}).get("citations", [])
+                if isinstance(i, int) and 0 <= i < len(scoped)
+            ]
+        except Exception:
+            out["answer_error"] = "synthesis unavailable (GPU busy) — use hits"
+    return out
+
+
+# ──────────────────────────────────────────────
 # Tool: evidence_gather (LME-V2 AgentRunbook-C, 2026-07-22)
 # ──────────────────────────────────────────────
 # LongMemEval-V2 finding: agentic evidence-gathering (72.5%) beats the
