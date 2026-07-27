@@ -29,7 +29,7 @@ import os
 import re
 import urllib.request
 
-LLM_URL = os.environ.get("NOBRAINR_JUDGE_URL", "http://<vpn-host>:8080/v1/chat/completions")
+LLM_URL = os.environ.get("NOBRAINR_JUDGE_URL", "http://localhost:8080/v1/chat/completions")
 LLM_MODEL = os.environ.get("NOBRAINR_JUDGE_MODEL", "qwen3-8b-cpu")
 
 _JUDGE_SYSTEM = (
