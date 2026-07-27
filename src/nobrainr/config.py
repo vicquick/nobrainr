@@ -79,7 +79,7 @@ class Settings(BaseSettings):
 
     # Library (2026-07-27): document layer over chunked memories — the
     # study-documents + Affine knowledge base. Original files live in
-    # Nextcloud (StorageBox); when original_base_url is set, the library
+    # the file store; when original_base_url is set, the library
     # links each doc to its Nextcloud location (e.g.
     # "https://cloud.example/apps/files/?dir=/Documents&scrollto=").
     # Empty = UI shows the copyable filename instead of a link.
