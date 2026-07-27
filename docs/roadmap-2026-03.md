@@ -30,7 +30,7 @@ Add to the distill pipeline:
 ### 1.3 Temporal Anchoring in Extraction — COMPLETED (60a257f)
 **Priority:** MEDIUM | **Effort:** ~15 lines | **Impact:** Better temporal awareness in search
 
-Add timestamps to extraction prompts so extracted entities and relations carry temporal context. "Victor used QGIS in March 2026" vs just "Victor uses QGIS".
+Add timestamps to extraction prompts so extracted entities and relations carry temporal context. "The user used QGIS in March 2026" vs just "the user uses QGIS".
 
 **Files:** `extraction/extractor.py` (system prompt)
 **Inspiration:** Mem0 — "temporal anchoring, outcome-over-intent extraction"
