@@ -102,27 +102,54 @@ async def check_and_supersede(
         return await _run_gate(new_id, content, embedding)
     except Exception:
         logger.exception("contradiction gate failed (write %s unaffected)", new_id)
+        # Surface the failure where the daily digest can see it (2026-07-27:
+        # the gate silently failed on every write for 2 days — never-raises
+        # must not mean never-counted; the chew table is what gets read).
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO llm_chew_metrics
+                        (pipeline, items_processed, api_errors, elapsed_ms, notes)
+                    VALUES ('contradiction-gate', 1, 1, 0, 'gate exception — see container log')
+                    """
+                )
+        except Exception:
+            pass
         return []
 
 
 async def _run_gate(new_id: str, content: str, embedding: list[float]) -> list[dict]:
+    import numpy as np
+
+    from nobrainr.config import settings as _cfg
+
     pool = await get_pool()
-    emb_str = "[" + ",".join(f"{x:.6f}" for x in embedding) + "]"
+    # Pass the RAW vector (np.float32) — the pool's pgvector codec encodes
+    # it. A pre-formatted "[...]" string crashes the halfvec codec
+    # (ValueError: could not convert string to float) — found 2026-07-27
+    # after the gate silently failed on EVERY write for 2 days behind the
+    # never-raises guard. Mocked tests cannot see codecs; the canonical
+    # pattern is queries.py's np.array + ::halfvec(N) cast.
+    vec = np.array(embedding, dtype=np.float32)
+    hv = f"halfvec({_cfg.embedding_dimensions})"
     async with pool.acquire() as conn:
         candidates = await conn.fetch(
-            """
+            f"""
             SELECT id, summary, content, claim_kind, trust_score,
-                   1 - (embedding <=> $1::halfvec) AS similarity
+                   1 - (embedding::{hv} <=> $1::{hv}) AS similarity
             FROM memories
             WHERE superseded_by IS NULL
               AND id <> $4::uuid
               AND claim_kind = ANY($5::text[])
               AND COALESCE(trust_score, 0) >= $6
-              AND 1 - (embedding <=> $1::halfvec) BETWEEN $2 AND $3
-            ORDER BY embedding <=> $1::halfvec
+              AND embedding IS NOT NULL
+              AND 1 - (embedding::{hv} <=> $1::{hv}) BETWEEN $2 AND $3
+            ORDER BY embedding::{hv} <=> $1::{hv}
             LIMIT 3
             """,
-            emb_str,
+            vec,
             settings.contradiction_gate_sim_min,
             settings.contradiction_gate_sim_max,
             new_id,
