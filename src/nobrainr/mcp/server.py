@@ -1341,6 +1341,7 @@ async def library_search(
     emb = await embed_text(query)
     hits = await queries.search_memories(
         embedding=emb, limit=limit * 4, threshold=0.2, text_query=query,
+        source_type=list(settings.library_source_types),
     )
 
     def _fp(h: dict):

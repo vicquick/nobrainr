@@ -177,7 +177,7 @@ async def search_memories(
     threshold: float = 0.3,
     tags: list[str] | None = None,
     category: str | None = None,
-    source_type: str | None = None,
+    source_type: str | list[str] | None = None,
     source_machine: str | None = None,
     text_query: str | None = None,
     include_cold: bool = False,
@@ -228,8 +228,15 @@ async def search_memories(
         params.append(category)
         idx += 1
     if source_type:
-        conditions.append(f"source_type = ${idx}")
-        params.append(source_type)
+        # list-aware (library layer 2026-07-27): scoping a 823-chunk
+        # document corpus AFTER a global top-K loses to 74k competitors —
+        # the filter must reach the SQL. str keeps equality; list -> ANY.
+        if isinstance(source_type, (list, tuple)):
+            conditions.append(f"source_type = ANY(${idx}::text[])")
+            params.append(list(source_type))
+        else:
+            conditions.append(f"source_type = ${idx}")
+            params.append(source_type)
         idx += 1
     if source_machine:
         conditions.append(f"source_machine = ${idx}")
@@ -332,8 +339,15 @@ def _build_filter_clause(
         params.append(category)
         idx += 1
     if source_type:
-        conditions.append(f"source_type = ${idx}")
-        params.append(source_type)
+        # list-aware (library layer 2026-07-27): scoping a 823-chunk
+        # document corpus AFTER a global top-K loses to 74k competitors —
+        # the filter must reach the SQL. str keeps equality; list -> ANY.
+        if isinstance(source_type, (list, tuple)):
+            conditions.append(f"source_type = ANY(${idx}::text[])")
+            params.append(list(source_type))
+        else:
+            conditions.append(f"source_type = ${idx}")
+            params.append(source_type)
         idx += 1
     if source_machine:
         conditions.append(f"source_machine = ${idx}")
@@ -1433,8 +1447,15 @@ async def query_memories(
         idx += 1
 
     if source_type:
-        conditions.append(f"source_type = ${idx}")
-        params.append(source_type)
+        # list-aware (library layer 2026-07-27): scoping a 823-chunk
+        # document corpus AFTER a global top-K loses to 74k competitors —
+        # the filter must reach the SQL. str keeps equality; list -> ANY.
+        if isinstance(source_type, (list, tuple)):
+            conditions.append(f"source_type = ANY(${idx}::text[])")
+            params.append(list(source_type))
+        else:
+            conditions.append(f"source_type = ${idx}")
+            params.append(source_type)
         idx += 1
 
     if source_machine:
