@@ -1095,8 +1095,9 @@ async def api_library_search(request: Request) -> JSONResponse:
         return JSONResponse({"hits": [], "error": "embedding unavailable"}, status_code=503)
     hits = await queries.search_memories(
         embedding=embedding, limit=limit * 4, threshold=0.2, text_query=q,
+        source_type=list(settings.library_source_types),
     )
-    scoped = _library_scope_filter(hits, ref)
+    scoped = _library_scope_filter(hits, ref)  # ref-scope + safety net
     try:
         from nobrainr.services.reranker import rerank
         scoped = await rerank(q, scoped, limit=limit)
