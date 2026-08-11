@@ -396,6 +396,14 @@ class Settings(BaseSettings):
     claim_kind_batch_size: int = 60
     probe_generator_interval_hours: float = 24.0
     probe_generator_batch_size: int = 15
+    # external_verify (E1, 2026-08-11): third verification lane — checks
+    # claim_kind='fact' memories against the live web (Brave discover →
+    # Crawl4AI fetch → LLM judge). The ceiling reserves the rest of the
+    # Brave free-tier monthly cap (brave_monthly_query_cap) for
+    # interactive /gpt-researcher use; the job refuses to run past it.
+    external_verify_interval_hours: float = 24.0
+    external_verify_batch_size: int = 12
+    external_verify_quota_ceiling: int = 700
     stability_reinforce_interval_hours: float = 12.0
     # Reconciliation sweeper (2026-07-09): old unverified stale-prone
     # memories vs newer same-entity memories → supersede/historicize.

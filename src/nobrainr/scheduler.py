@@ -145,6 +145,8 @@ LLM_JOB_DELAYS = {
     "claim_kind_classifier": 9 * 60,
     "probe_generator": 42 * 60,
     "reconciliation_sweep": 44 * 60,
+    # External web verification (E1) — quota-gated, run late in the cycle.
+    "external_verify": 50 * 60,
     "card_builder": 46 * 60,
     "card_factcheck": 48 * 60,
     # Fact-augmented key expansion (LongMemEval pattern)
@@ -273,6 +275,7 @@ class Scheduler:
             {"name": "reconciliation_sweep", "interval_hours": settings.reconciliation_interval_hours, "type": "llm"},
             {"name": "card_builder", "interval_hours": settings.card_builder_interval_hours, "type": "llm"},
             {"name": "card_factcheck", "interval_hours": settings.card_factcheck_interval_hours, "type": "llm"},
+            {"name": "external_verify", "interval_hours": settings.external_verify_interval_hours, "type": "llm"},
         ]
         # github_sync is classified as "external" — it's network IO + embeddings only
         # (commit import uses skip_dedup=True, and extraction is fire-and-forget async).
@@ -493,6 +496,8 @@ class Scheduler:
              settings.card_builder_interval_hours * 3600),
             ("card_factcheck", scheduler_jobs.card_factcheck,
              settings.card_factcheck_interval_hours * 3600),
+            ("external_verify", scheduler_jobs.external_verify,
+             settings.external_verify_interval_hours * 3600),
         ]
 
         for name, job_func, interval in llm_jobs:
