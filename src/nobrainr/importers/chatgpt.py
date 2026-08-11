@@ -8,7 +8,7 @@ Phase 2: distill_conversations() — LLM extracts learnings from raw conversatio
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from nobrainr.db import queries
@@ -666,6 +666,9 @@ async def _mark_distilled(
             """,
             json.dumps({
                 "distilled": True,
+                # UTC completion stamp — the redistill progress endpoint
+                # derives throughput and ETA from it.
+                "distilled_at": datetime.now(UTC).isoformat(),
                 "learning_count": learning_count,
                 "distill_windows": windows,
                 "distill_version": 3,

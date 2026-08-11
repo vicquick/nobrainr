@@ -338,6 +338,25 @@ import type { Stats } from '@/types'
 import Dotty from '@/components/Dotty.vue'
 
 const stats = ref<Stats | null>(null)
+
+interface RedistillProgress {
+  total: number; done: number; pending: number; in_flight: number
+  pct: number; learnings: number; rate_per_hour: number
+  eta_hours: number | null; elapsed_hours: number | null
+}
+const redistill = ref<RedistillProgress | null>(null)
+
+async function fetchRedistill() {
+  try {
+    const { data } = await api.get<RedistillProgress>('/api/redistill-progress')
+    redistill.value = data
+  } catch { /* endpoint optional — widget hides itself */ }
+}
+
+function formatHours(h: number): string {
+  if (h < 48) return `${Math.round(h)}h`
+  return `${(h / 24).toFixed(1)} days`
+}
 const pulsing = ref(false)
 const countdown = ref(10)
 
@@ -534,7 +553,8 @@ const topMachines = computed(() => {
 onMounted(() => {
   fetchStats()
   fetchHealth()
-  pollTimer = setInterval(() => { fetchStats(); fetchHealth() }, POLL_INTERVAL)
+  fetchRedistill()
+  pollTimer = setInterval(() => { fetchStats(); fetchHealth(); fetchRedistill() }, POLL_INTERVAL)
   tickTimer = setInterval(() => { now.value = Date.now() / 1000 }, 1000)
   countdownTimer = setInterval(() => {
     countdown.value = countdown.value <= 1 ? 10 : countdown.value - 1
