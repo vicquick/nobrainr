@@ -411,7 +411,13 @@ class Settings(BaseSettings):
     # served at session start. Only memories >= card_min_trust feed a
     # card; a subject needs card_min_sources memories to be worth one.
     card_builder_interval_hours: float = 8.0
-    card_builder_batch_size: int = 25
+    # batch_size is also the candidate WINDOW: card_builder always takes the
+    # top-N entities by linked-memory count, so entities ranked below N can
+    # never earn a card no matter how long the system runs. At 25 the card
+    # set plateaued at 23 while 229 entities had >=25 qualifying memories
+    # (2026-08-11). Skips are free (no LLM call when sources unchanged), so
+    # a wide window costs only the first build of each new card.
+    card_builder_batch_size: int = 100
     card_min_trust: float = 0.55
     card_min_sources: int = 4
     # card_factcheck (M1, 2026-07-14): cards get a published_accuracy
