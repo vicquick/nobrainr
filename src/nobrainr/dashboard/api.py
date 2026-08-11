@@ -6,7 +6,7 @@ import json
 import logging
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from uuid import UUID, uuid4
 
 import httpx
@@ -2772,6 +2772,57 @@ async def api_eval_golden(request: Request) -> JSONResponse:
     })
 
 
+async def api_redistill_progress(request: Request) -> JSONResponse:
+    """Progress of the qwen3.6-27b full re-distill campaign (2026-08-11):
+    counts, learnings, throughput from distilled_at stamps, and an ETA.
+    Rate window is the last 6h of completions so pauses (GPU yielded to
+    live traffic) age out of the estimate instead of skewing it forever."""
+    from nobrainr.db.pool import get_pool
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT
+              count(*) AS total,
+              count(*) FILTER (WHERE (metadata->>'redistill')::bool) AS pending,
+              count(*) FILTER (WHERE metadata->>'distilled' = 'true'
+                               AND metadata->>'redistill' IS NULL) AS done,
+              count(*) FILTER (WHERE metadata ? 'distill_progress') AS in_flight,
+              COALESCE(sum((metadata->>'learning_count')::int)
+                       FILTER (WHERE metadata->>'distilled' = 'true'), 0) AS learnings,
+              min((metadata->>'distilled_at')::timestamptz) AS first_done_at,
+              max((metadata->>'distilled_at')::timestamptz) AS last_done_at,
+              count(*) FILTER (
+                  WHERE (metadata->>'distilled_at')::timestamptz
+                        > now() - interval '6 hours') AS done_6h
+            FROM conversations_raw
+            """,
+        )
+
+    total, pending, done = row["total"], row["pending"], row["done"]
+    rate_per_hour = round(row["done_6h"] / 6.0, 2)
+    eta_hours = round(pending / rate_per_hour, 1) if rate_per_hour > 0 else None
+    elapsed_hours = None
+    if row["first_done_at"]:
+        elapsed_hours = round(
+            (datetime.now(UTC) - row["first_done_at"]).total_seconds() / 3600, 1
+        )
+    return JSONResponse({
+        "total": total,
+        "done": done,
+        "pending": pending,
+        "in_flight": row["in_flight"],
+        "pct": round(100.0 * done / total, 1) if total else 0.0,
+        "learnings": row["learnings"],
+        "rate_per_hour": rate_per_hour,
+        "eta_hours": eta_hours,
+        "elapsed_hours": elapsed_hours,
+        "first_done_at": row["first_done_at"].isoformat() if row["first_done_at"] else None,
+        "last_done_at": row["last_done_at"].isoformat() if row["last_done_at"] else None,
+    })
+
+
 api_routes = [
     Route("/api/transcribe", api_transcribe, methods=["POST"]),
     Route("/api/tts", api_tts, methods=["POST"]),
@@ -2804,6 +2855,7 @@ api_routes = [
     Route("/api/node/{entity_id}", api_node_detail),
     Route("/api/stats", api_stats),
     Route("/api/scheduler", api_scheduler),
+    Route("/api/redistill-progress", api_redistill_progress),
     Route("/api/scheduler/pause", api_scheduler_pause, methods=["POST"]),
     Route("/api/scheduler/resume", api_scheduler_resume, methods=["POST"]),
     Route("/api/scheduler/task/{task_name}", api_scheduler_task_runs, methods=["GET"]),
