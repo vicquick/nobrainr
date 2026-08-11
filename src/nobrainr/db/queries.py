@@ -4800,6 +4800,13 @@ async def auto_tier_memories() -> dict:
     - Tier 2 (standard): everything else
 
     Never demotes manually-pinned tier 0 memories (those set via set_memory_tier).
+
+    category='_archived' is excluded from every promotion path and force-held
+    at tier 3: the archive jobs set the label without touching tier, and
+    search filters on tier — so promoted-archived rows stayed searchable,
+    re-accrued access_count from result inclusion, and the promotion became
+    self-reinforcing (6.5K rows drifted this way by 2026-08-11). Un-archiving
+    is a deliberate act (restore a real category), never an access side effect.
     """
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -4810,6 +4817,7 @@ async def auto_tier_memories() -> dict:
             WHERE tier > 0
               AND importance >= 0.9
               AND access_count >= 10
+              AND category IS DISTINCT FROM '_archived'
             """,
         )
 
@@ -4822,6 +4830,7 @@ async def auto_tier_memories() -> dict:
                   last_accessed_at > now() - interval '7 days'
                   OR quality_score >= 0.8
               )
+              AND category IS DISTINCT FROM '_archived'
             """,
         )
 
@@ -4855,6 +4864,16 @@ async def auto_tier_memories() -> dict:
             UPDATE memories SET tier = 2
             WHERE tier = 3
               AND last_accessed_at > now() - interval '7 days'
+              AND category IS DISTINCT FROM '_archived'
+            """,
+        )
+
+        # Alignment sweep: archived label always implies cold tier
+        r_align = await conn.execute(
+            """
+            UPDATE memories SET tier = 3
+            WHERE category = '_archived'
+              AND tier < 3
             """,
         )
 
@@ -4863,6 +4882,7 @@ async def auto_tier_memories() -> dict:
             "promoted_to_1": _affected(r1),
             "demoted_to_3": _affected(r3),
             "recovered_from_cold": _affected(r_recover),
+            "archived_aligned": _affected(r_align),
         }
         return counts
 
