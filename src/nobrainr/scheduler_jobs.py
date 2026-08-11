@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 import socket
 from datetime import datetime
 from uuid import UUID
@@ -3606,6 +3607,21 @@ async def card_factcheck() -> dict:
 # external_verify_quota_ceiling, reserving the remainder for humans.
 # ──────────────────────────────────────────────
 
+# Live-fire lesson (2026-08-11, first run): a memory describing OUR
+# workserver's hook config slipped triage ("Claude Code hooks" pattern-
+# matched software docs) and the judge REFUTED it with a generic doc
+# quote — halving trust on a true memory. Claims scoped to the user's
+# own machines/infra are unverifiable by construction: the public web
+# cannot confirm or deny private state. Cheap regex catches them before
+# any LLM or quota is spent; the judge prompt is the backstop.
+_EXT_INTERNAL_RE = re.compile(
+    r"\b(workserver|worklaptop|gis-admin|bimavo|budinic|nobrainr|paperclip"
+    r"|hetzner-vps|rpiubuntu|ubuntupi|privateubuntu|coolify-db|llama-swap"
+    r"|metamcp|crawl4ai)\b"
+    r"|\b10\.(?:10|0)\.\d{1,3}\.\d{1,3}\b",
+    re.IGNORECASE,
+)
+
 _EXT_TRIAGE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -3630,8 +3646,10 @@ _EXT_TRIAGE_SYSTEM = (
     "decide if its core claim is checkable against the public web: stable "
     "external-world facts (software capabilities, release states, specs, "
     "standards, published prices, documented APIs) are checkable; personal "
-    "notes, private-project trivia, opinions, and claims about the user's "
-    "own machines are NOT. For checkable claims write ONE precise search "
+    "notes, private-project trivia, opinions, and ANY claim about the "
+    "user's own machines, servers, self-hosted services, or project "
+    "configuration are NOT (the public web cannot know private state). "
+    "For checkable claims write ONE precise search "
     "query (include a year only for time-sensitive claims). For "
     "non-checkable claims set query to an empty string."
 )
@@ -3652,7 +3670,11 @@ _EXT_JUDGE_SYSTEM = (
     "assertion; 'refuted' only when an excerpt clearly contradicts it; "
     "otherwise 'inconclusive'. Nuance: a claim that was true for an old "
     "software version but is no longer true for current versions is "
-    "'refuted' (the knowledge base serves CURRENT reality). evidence_quote "
+    "'refuted' (the knowledge base serves CURRENT reality). An excerpt "
+    "that merely DISCUSSES the claim's topic without contradicting its "
+    "specific assertion is NOT a refutation — verdict inconclusive. If "
+    "the claim describes the user's own environment or configuration, "
+    "the web cannot refute it — verdict inconclusive. evidence_quote "
     "is a verbatim excerpt (<=400 chars) from the pages that grounds your "
     "verdict; empty string when inconclusive."
 )
@@ -3725,7 +3747,8 @@ async def external_verify() -> dict:
         cl = by_idx.get(i)
         if cl is None:
             continue
-        if not cl.get("checkable") or not (cl.get("query") or "").strip():
+        internal_scope = bool(_EXT_INTERNAL_RE.search(row["text"]))
+        if internal_scope or not cl.get("checkable") or not (cl.get("query") or "").strip():
             # Never re-picked, never costs quota.
             async with pool.acquire() as conn:
                 await conn.execute(
