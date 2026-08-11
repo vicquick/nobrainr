@@ -62,3 +62,33 @@ async def test_candidate_sql_invariants_and_unverifiable_stamp():
     assert "external_verdict = 'unverifiable'" in stamp
     brave.assert_not_called()
     counter.assert_not_called()
+
+
+async def test_internal_scope_never_reaches_the_web():
+    """The 2026-08-11 false-refutation case: a memory about OUR machines
+    must be stamped unverifiable even when the LLM triage says checkable."""
+    rows = [{"id": "m1", "text": "Workserver hooks: session-start, enhance-prompt run on 10.10.10.10"}]
+    pool, conn = _mock_pool(rows)
+    triage = {"claims": [{"i": 0, "checkable": True, "query": "claude code hooks"}]}
+    brave = AsyncMock()
+    with (
+        patch.object(scheduler_jobs, "_ext_month_usage", AsyncMock(return_value=0)),
+        patch.object(scheduler_jobs, "get_pool", AsyncMock(return_value=pool)),
+        patch.object(scheduler_jobs, "_yield_to_live_requests", AsyncMock()),
+        patch.object(scheduler_jobs, "ollama_chat", AsyncMock(return_value=triage)),
+        patch("nobrainr.mcp.server._brave_search_request", brave),
+        patch("nobrainr.mcp.server._count_web_search_use", AsyncMock()) as counter,
+    ):
+        out = await scheduler_jobs.external_verify()
+
+    assert out["unverifiable"] == 1
+    assert out["searched"] == 0
+    brave.assert_not_called()
+    counter.assert_not_called()
+
+    # Regex sanity on the exact production markers
+    assert scheduler_jobs._EXT_INTERNAL_RE.search("bimavo wizard uses qwen3-8b")
+    assert scheduler_jobs._EXT_INTERNAL_RE.search("endpoint at 10.10.10.12:8080")
+    assert not scheduler_jobs._EXT_INTERNAL_RE.search(
+        "Qwen3.6-27B scores 77.2 on SWE-bench Verified"
+    )
