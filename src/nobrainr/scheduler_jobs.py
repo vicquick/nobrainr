@@ -3588,3 +3588,268 @@ async def card_factcheck() -> dict:
 
     return {"checked": checked, "accuracies": accuracies,
             "ran_at": datetime.now().isoformat()}
+
+
+# ──────────────────────────────────────────────
+# external_verify (E1, 2026-08-11) — third verification lane.
+# probe lane checks live HOST state, evidence lane checks claims against
+# OTHER MEMORIES — neither can catch an external-world claim that was
+# wrong at ingestion (the ChatGPT-era layer) or has since been overtaken
+# by reality. This lane checks claim_kind='fact' memories against the
+# live web: Brave discovers sources, Crawl4AI fetches them (evidence
+# quotes come from OUR crawl — Brave storage-rights forbid persisting
+# SERP snippets), an LLM judge issues supported/refuted/inconclusive.
+#
+# Quota discipline: Brave free tier is a hard monthly cap shared with
+# interactive /gpt-researcher use. The job reads the month's counter
+# WITHOUT incrementing and refuses to run past
+# external_verify_quota_ceiling, reserving the remainder for humans.
+# ──────────────────────────────────────────────
+
+_EXT_TRIAGE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "claims": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "i": {"type": "integer"},
+                    "checkable": {"type": "boolean"},
+                    "query": {"type": "string"},
+                },
+                "required": ["i", "checkable", "query"],
+            },
+        }
+    },
+    "required": ["claims"],
+}
+
+_EXT_TRIAGE_SYSTEM = (
+    "You triage knowledge-base notes for WEB fact-checking. For each note "
+    "decide if its core claim is checkable against the public web: stable "
+    "external-world facts (software capabilities, release states, specs, "
+    "standards, published prices, documented APIs) are checkable; personal "
+    "notes, private-project trivia, opinions, and claims about the user's "
+    "own machines are NOT. For checkable claims write ONE precise search "
+    "query (include a year only for time-sensitive claims). For "
+    "non-checkable claims set query to an empty string."
+)
+
+_EXT_JUDGE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "enum": ["supported", "refuted", "inconclusive"]},
+        "evidence_quote": {"type": "string"},
+        "reason": {"type": "string"},
+    },
+    "required": ["verdict", "evidence_quote", "reason"],
+}
+
+_EXT_JUDGE_SYSTEM = (
+    "You fact-check ONE claim against crawled web-page excerpts. "
+    "'supported' only when an excerpt clearly confirms the claim's core "
+    "assertion; 'refuted' only when an excerpt clearly contradicts it; "
+    "otherwise 'inconclusive'. Nuance: a claim that was true for an old "
+    "software version but is no longer true for current versions is "
+    "'refuted' (the knowledge base serves CURRENT reality). evidence_quote "
+    "is a verbatim excerpt (<=400 chars) from the pages that grounds your "
+    "verdict; empty string when inconclusive."
+)
+
+
+async def _ext_month_usage() -> int:
+    """This month's Brave query count — read-only, no increment."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT COALESCE((SELECT queries FROM web_search_usage "
+            "WHERE month = to_char(now(), 'YYYY-MM')), 0)"
+        ) or 0
+
+
+async def external_verify() -> dict:
+    from nobrainr.crawler.client import crawl4ai_request
+    from nobrainr.mcp.server import (
+        _brave_search_request,
+        _count_web_search_use,
+        _sanitize_crawled_text,
+    )
+
+    out = {"triaged": 0, "searched": 0, "supported": 0, "refuted": 0,
+           "inconclusive": 0, "unverifiable": 0, "skipped_quota": 0,
+           "ran_at": datetime.now().isoformat()}
+
+    used = await _ext_month_usage()
+    if used >= settings.external_verify_quota_ceiling:
+        out["skipped_quota"] = 1
+        return out
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, left(COALESCE(summary,'') || ' | ' || content, 500) AS text
+            FROM memories
+            WHERE claim_kind = 'fact'
+              AND tier <= 2
+              AND superseded_by IS NULL
+              AND external_verified_at IS NULL
+              AND COALESCE((metadata->>'ext_verify_attempts')::int, 0) < 2
+            ORDER BY access_count DESC, created_at DESC
+            LIMIT $1
+            """,
+            settings.external_verify_batch_size,
+        )
+    if not rows:
+        return out
+
+    # Triage the whole batch in one LLM call — checkability must be decided
+    # BEFORE any Brave quota is spent.
+    notes = "\n\n".join(f"[{i}] {r['text']}" for i, r in enumerate(rows))
+    await _yield_to_live_requests()
+    try:
+        triage = await ollama_chat(
+            system=_EXT_TRIAGE_SYSTEM,
+            user=f"Notes:\n{notes}",
+            schema=_EXT_TRIAGE_SCHEMA,
+            temperature=0.2,
+        )
+    except Exception:
+        logger.exception("external_verify triage failed")
+        return out
+    by_idx = {c.get("i"): c for c in triage.get("claims", [])}
+    out["triaged"] = len(by_idx)
+
+    for i, row in enumerate(rows):
+        cl = by_idx.get(i)
+        if cl is None:
+            continue
+        if not cl.get("checkable") or not (cl.get("query") or "").strip():
+            # Never re-picked, never costs quota.
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE memories
+                    SET external_verdict = 'unverifiable', external_verified_at = now()
+                    WHERE id = $1
+                    """,
+                    row["id"],
+                )
+            out["unverifiable"] += 1
+            continue
+
+        # Re-check the ceiling inside the loop — interactive use shares the pool.
+        if await _ext_month_usage() >= settings.external_verify_quota_ceiling:
+            out["skipped_quota"] = 1
+            break
+
+        try:
+            await _count_web_search_use()
+            data = await _brave_search_request(
+                {"q": cl["query"], "count": 5},
+            )
+        except Exception:
+            logger.warning("external_verify search failed for %s", row["id"])
+            continue
+        out["searched"] += 1
+        urls = [r.get("url") for r in data.get("web", {}).get("results", [])
+                if r.get("url")][:3]
+
+        # Evidence from OUR crawl, never from the SERP.
+        excerpts: list[tuple[str, str]] = []
+        for url in urls:
+            if len(excerpts) >= 2:
+                break
+            try:
+                res = await crawl4ai_request(url, timeout=60.0)
+            except Exception:
+                continue
+            if res.get("error") or not res.get("results"):
+                continue
+            md = (res["results"][0].get("markdown") or {})
+            text = md.get("fit_markdown") or md.get("raw_markdown") or ""
+            text, _ = _sanitize_crawled_text(text[:3000])
+            if len(text) > 200:
+                excerpts.append((url, text))
+
+        if not excerpts:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE memories
+                    SET metadata = COALESCE(metadata,'{}'::jsonb) ||
+                        jsonb_build_object('ext_verify_attempts',
+                            COALESCE((metadata->>'ext_verify_attempts')::int, 0) + 1)
+                    WHERE id = $1
+                    """,
+                    row["id"],
+                )
+            out["inconclusive"] += 1
+            continue
+
+        evidence_block = "\n\n".join(
+            f"[source {n+1}: {u}]\n{t}" for n, (u, t) in enumerate(excerpts)
+        )
+        await _yield_to_live_requests()
+        try:
+            verdict = await ollama_chat(
+                system=_EXT_JUDGE_SYSTEM,
+                user=f"Claim:\n{row['text']}\n\nWeb excerpts:\n{evidence_block}",
+                schema=_EXT_JUDGE_SCHEMA,
+                temperature=0.2,
+            )
+        except Exception:
+            logger.exception("external_verify judge failed for %s", row["id"])
+            continue
+
+        v = verdict.get("verdict")
+        quote = (verdict.get("evidence_quote") or "")[:400]
+        if v == "supported":
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE memories
+                    SET external_verdict = 'supported',
+                        external_verified_at = now(),
+                        external_truth_url = $2,
+                        external_evidence = $3,
+                        trust_score = LEAST(1.0, COALESCE(trust_score, 0.5) + 0.15)
+                    WHERE id = $1
+                    """,
+                    row["id"], excerpts[0][0], quote,
+                )
+            out["supported"] += 1
+        elif v == "refuted":
+            # Hard trust cut: refuted-by-live-web is the strongest negative
+            # signal a memory can receive. Serving trust floors (0.5/0.6)
+            # then hide it; reconciliation/digest surface it for supersede.
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE memories
+                    SET external_verdict = 'refuted',
+                        external_verified_at = now(),
+                        external_truth_url = $2,
+                        external_evidence = $3,
+                        trust_score = GREATEST(0.05, COALESCE(trust_score, 0.5) * 0.5)
+                    WHERE id = $1
+                    """,
+                    row["id"], excerpts[0][0], quote,
+                )
+            out["refuted"] += 1
+        else:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE memories
+                    SET metadata = COALESCE(metadata,'{}'::jsonb) ||
+                        jsonb_build_object('ext_verify_attempts',
+                            COALESCE((metadata->>'ext_verify_attempts')::int, 0) + 1)
+                    WHERE id = $1
+                    """,
+                    row["id"],
+                )
+            out["inconclusive"] += 1
+
+    return out
