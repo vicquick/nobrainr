@@ -958,10 +958,21 @@ async def api_brief(request: Request) -> JSONResponse:
         hits = await queries.search_memories(
             embedding=embedding, limit=n_mem * 3, threshold=0.25, text_query=q,
         )
-        memories = [
+        pool = [
             h for h in hits
             if (h.get("trust_score") is None or h["trust_score"] >= trust_floor)
-        ][:n_mem]
+        ]
+        # M2 fix (2026-08-11): this path served RAW hybrid rank — injection
+        # precision measured 0.20 (v2 era) and 0.225 (v3, trust floor alone:
+        # trust ≠ relevance). The cross-encoder is what makes top-K precise;
+        # ~0.3-0.9s for ≤15 docs on the pinned GPU reranker stays inside the
+        # hook's 3s curl budget. Rerank failure degrades to hybrid order.
+        try:
+            from nobrainr.services.reranker import rerank as _rerank
+            pool = await _rerank(q, pool, limit=n_mem)
+        except Exception:
+            pass
+        memories = pool[:n_mem]
     except Exception:
         pass  # cards alone still brief the agent
 
