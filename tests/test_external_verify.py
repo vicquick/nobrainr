@@ -22,8 +22,11 @@ def _mock_pool(rows):
     return pool, conn
 
 
-async def test_quota_ceiling_skips_run_entirely():
+async def test_quota_ceiling_skips_run_when_no_searxng():
+    """Without SearXNG the Brave ceiling gates the whole run; with SearXNG
+    configured discovery is quota-free and the gate must NOT fire."""
     with (
+        patch.object(settings, "searxng_url", ""),
         patch.object(scheduler_jobs, "_ext_month_usage",
                      AsyncMock(return_value=settings.external_verify_quota_ceiling)),
         patch.object(scheduler_jobs, "get_pool") as gp,
@@ -34,6 +37,35 @@ async def test_quota_ceiling_skips_run_entirely():
     assert out["searched"] == 0
     gp.assert_not_called()
     chat.assert_not_called()
+
+
+async def test_searxng_primary_never_touches_brave_quota():
+    """Checkable claim + healthy SearXNG: discovery succeeds with zero Brave
+    calls and zero quota increments, even when quota is at the ceiling."""
+    rows = [{"id": "m1", "text": "The Python requests library is deprecated"}]
+    pool, conn = _mock_pool(rows)
+    triage = {"claims": [{"i": 0, "checkable": True, "query": "python requests deprecated"}]}
+    judge = {"verdict": "refuted", "evidence_quote": "not deprecated at all", "reason": "docs"}
+    brave = AsyncMock()
+    searx = AsyncMock(return_value=[{"url": "https://example.org/faq", "title": "t", "content": "c"}])
+    crawl = AsyncMock(return_value={"results": [{"markdown": {"fit_markdown": "The requests library " + "is actively maintained and not deprecated. " * 20}}]})
+    with (
+        patch.object(scheduler_jobs, "_ext_month_usage",
+                     AsyncMock(return_value=settings.external_verify_quota_ceiling)),
+        patch.object(scheduler_jobs, "get_pool", AsyncMock(return_value=pool)),
+        patch.object(scheduler_jobs, "_yield_to_live_requests", AsyncMock()),
+        patch.object(scheduler_jobs, "ollama_chat",
+                     AsyncMock(side_effect=[triage, judge])),
+        patch("nobrainr.mcp.server._searxng_search_request", searx),
+        patch("nobrainr.mcp.server._brave_search_request", brave),
+        patch("nobrainr.mcp.server._count_web_search_use", AsyncMock()) as counter,
+        patch("nobrainr.crawler.client.crawl4ai_request", crawl),
+    ):
+        out = await scheduler_jobs.external_verify()
+    assert out["searched"] == 1
+    assert out["refuted"] == 1
+    brave.assert_not_called()
+    counter.assert_not_called()
 
 
 async def test_candidate_sql_invariants_and_unverifiable_stamp():
