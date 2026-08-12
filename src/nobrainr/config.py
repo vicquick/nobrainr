@@ -86,13 +86,22 @@ class Settings(BaseSettings):
     library_source_types: list[str] = ["docx", "affine_memos", "markdown_notes"]
     library_original_base_url: str = ""
 
-    # Brave Search API (web discovery — Brave discovers URLs, crawl4ai extracts)
+    # SearXNG (2026-08-12): PRIMARY web-discovery backend. Self-hosted
+    # meta-search on the mcp network (Coolify service, JSON API enabled) —
+    # no quota, no API key, queries never leave our infra except as
+    # anonymous engine requests from the server IP. Coolify convention:
+    # uuid-hostname, not a human alias. Empty string disables and makes
+    # Brave primary again.
+    searxng_url: str = "http://searxng-vd9auo3n7y2e8dcp9tlxcjju:8080"
+
+    # Brave Search API (web discovery FALLBACK when SearXNG errors/empty)
     brave_api_key: str = ""
     brave_search_url: str = "https://api.search.brave.com/res/v1/web/search"
     # Monthly query budget mirroring the Brave dashboard free-tier cap
     # ($5 credits ≈ 1000 queries). Past this, web_search returns a clean
     # "quota exhausted" error instead of Brave's 401/429. 0 = no block
-    # (usage is still counted for visibility).
+    # (usage is still counted for visibility). Only Brave calls count —
+    # SearXNG queries are free and uncounted.
     brave_monthly_query_cap: int = 1000
 
     # Speaches (OpenAI-compatible whisper API)
