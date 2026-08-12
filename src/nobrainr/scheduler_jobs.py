@@ -3705,16 +3705,20 @@ async def external_verify() -> dict:
         _brave_search_request,
         _count_web_search_use,
         _sanitize_crawled_text,
+        _searxng_search_request,
     )
 
     out = {"triaged": 0, "searched": 0, "supported": 0, "refuted": 0,
            "inconclusive": 0, "unverifiable": 0, "skipped_quota": 0,
            "ran_at": datetime.now().isoformat()}
 
-    used = await _ext_month_usage()
-    if used >= settings.external_verify_quota_ceiling:
-        out["skipped_quota"] = 1
-        return out
+    # With SearXNG configured, discovery is quota-free and the run always
+    # proceeds; the Brave ceiling only gates the per-claim FALLBACK path.
+    if not settings.searxng_url:
+        used = await _ext_month_usage()
+        if used >= settings.external_verify_quota_ceiling:
+            out["skipped_quota"] = 1
+            return out
 
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -3771,22 +3775,29 @@ async def external_verify() -> dict:
             out["unverifiable"] += 1
             continue
 
-        # Re-check the ceiling inside the loop — interactive use shares the pool.
-        if await _ext_month_usage() >= settings.external_verify_quota_ceiling:
-            out["skipped_quota"] = 1
-            break
-
-        try:
-            await _count_web_search_use()
-            data = await _brave_search_request(
-                {"q": cl["query"], "count": 5},
-            )
-        except Exception:
-            logger.warning("external_verify search failed for %s", row["id"])
-            continue
-        out["searched"] += 1
-        urls = [r.get("url") for r in data.get("web", {}).get("results", [])
-                if r.get("url")][:3]
+        urls: list[str] = []
+        if settings.searxng_url:
+            try:
+                raw = await _searxng_search_request({"q": cl["query"]})
+                urls = [r.get("url") for r in raw if r.get("url")][:3]
+                out["searched"] += 1
+            except Exception:
+                logger.warning("external_verify: searxng failed, trying Brave")
+        if not urls:
+            # Brave fallback — the only path that spends quota. Ceiling
+            # re-checked per claim: interactive use shares the pool.
+            if await _ext_month_usage() >= settings.external_verify_quota_ceiling:
+                out["skipped_quota"] = 1
+                continue
+            try:
+                await _count_web_search_use()
+                data = await _brave_search_request({"q": cl["query"], "count": 5})
+            except Exception:
+                logger.warning("external_verify search failed for %s", row["id"])
+                continue
+            out["searched"] += 1
+            urls = [r.get("url") for r in data.get("web", {}).get("results", [])
+                    if r.get("url")][:3]
 
         # Evidence from OUR crawl, never from the SERP.
         excerpts: list[tuple[str, str]] = []
