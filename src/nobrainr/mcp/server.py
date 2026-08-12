@@ -2903,6 +2903,31 @@ async def _crawl4ai_screenshot(url: str) -> str | None:
 # ──────────────────────────────────────────────
 # Tool: web_search (Brave Search API)
 # ──────────────────────────────────────────────
+async def _searxng_search_request(params: dict) -> list[dict]:
+    """Query the self-hosted SearXNG JSON API. Returns raw result dicts.
+
+    Raises on transport/HTTP errors so callers can fall back to Brave.
+    freshness pd/pw/pm/py maps to SearXNG time_range; ranges are not
+    supported and are ignored (SearXNG has no date-range filter)."""
+    import httpx
+
+    q: dict = {"q": params["q"], "format": "json", "categories": "general"}
+    fr = {"pd": "day", "pw": "week", "pm": "month", "py": "year"}.get(
+        params.get("freshness") or "")
+    if fr:
+        q["time_range"] = fr
+    if params.get("country"):
+        # SearXNG localizes via language tags, e.g. de-DE
+        cc = params["country"].lower()
+        q["language"] = f"{cc}-{params['country'].upper()}"
+    if params.get("offset"):
+        q["pageno"] = int(params["offset"]) + 1
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.get(f"{settings.searxng_url}/search", params=q)
+        resp.raise_for_status()
+        return resp.json().get("results", [])
+
+
 async def _brave_search_request(params: dict) -> dict:
     """GET the Brave web-search endpoint. Split out for testability."""
     import httpx
@@ -2961,10 +2986,40 @@ async def web_search(
     """
     import httpx
 
+    # SearXNG primary (2026-08-12): self-hosted, quota-free, anonymous.
+    # Any failure or empty result falls through to Brave below.
+    if settings.searxng_url:
+        try:
+            raw = await _searxng_search_request(
+                {"q": query, "freshness": freshness, "country": country,
+                 "offset": offset},
+            )
+            if raw:
+                results = []
+                for r in raw[: max(1, min(count, 20))]:
+                    title, _ = _sanitize_crawled_text(r.get("title") or "")
+                    snippet, _ = _sanitize_crawled_text(r.get("content") or "")
+                    results.append({
+                        "title": title,
+                        "url": r.get("url"),
+                        "snippet": snippet,
+                        "age": r.get("publishedDate"),
+                        "language": None,
+                    })
+                return {
+                    "query": query,
+                    "count": len(results),
+                    "results": results,
+                    "source": "searxng",
+                    "note": "transient SERP — persist sources via crawl_and_store, never this list",
+                }
+        except Exception:
+            logger.warning("searxng unavailable — falling back to Brave", exc_info=True)
+
     if not settings.brave_api_key:
         return {
-            "error": "brave_api_key not configured",
-            "hint": "set NOBRAINR_BRAVE_API_KEY on the nobrainr app",
+            "error": "searxng unavailable and brave_api_key not configured",
+            "hint": "check the searxng service or set NOBRAINR_BRAVE_API_KEY",
         }
 
     # Monthly usage counter. The Brave dashboard is capped at the free
@@ -3025,6 +3080,7 @@ async def web_search(
         "query": query,
         "count": len(results),
         "results": results,
+        "source": "brave",
         "note": "transient SERP — persist sources via crawl_and_store, never this list",
     }
     if used is not None and cap > 0:
