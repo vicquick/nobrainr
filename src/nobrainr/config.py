@@ -426,6 +426,12 @@ class Settings(BaseSettings):
     # (2026-08-11). Skips are free (no LLM call when sources unchanged), so
     # a wide window costs only the first build of each new card.
     card_builder_batch_size: int = 100
+    # Hard cap on actual LLM builds per run — a wide window with a big
+    # first-time backlog must not blow the 30-min LLM job timeout (it did,
+    # twice, on 2026-08-12 under re-distill GPU contention, banking zero
+    # cards). Skips don't count. ~8 builds fits the timeout with margin
+    # even on a contended GPU.
+    card_builder_max_builds_per_run: int = 8
     card_min_trust: float = 0.55
     card_min_sources: int = 4
     # card_factcheck (M1, 2026-07-14): cards get a published_accuracy
