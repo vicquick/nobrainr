@@ -3352,6 +3352,15 @@ async def card_builder() -> dict:
         LIMIT 20
     """
     for e in entities:
+        # Per-run build cap (2026-08-12): the window widening (25→100)
+        # queued ~75 first-time builds at once; under GPU contention from
+        # the re-distill campaign the job blew its 30-min timeout twice
+        # and banked ZERO cards (the timeout killed the run mid-build).
+        # Skips are free and don't count — only actual LLM builds do.
+        # Coverage still grows monotonically: each run banks up to N new
+        # cards, and sources-unchanged subjects skip instantly next run.
+        if built >= settings.card_builder_max_builds_per_run:
+            break
         await _yield_to_live_requests()
         r = await _build_card(pool, "entity", e["canonical_name"], e["name"],
                               ent_sql, e["canonical_name"], settings.card_min_trust)
