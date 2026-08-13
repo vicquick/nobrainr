@@ -98,6 +98,48 @@
           </div>
         </section>
 
+        <!-- I bis — THE GREAT RE-DISTILLATION (renders only while a campaign runs) -->
+        <section v-if="redistill && redistill.pending > 0" v-reveal class="quire">
+          <div class="quire-head">
+            <span class="quire-numeral">I<span class="pct-glyph">bis</span>.</span>
+            <span class="quire-title">Of the great re-distillation</span>
+            <span class="quire-flag" :class="{ active: redistill.rate_per_hour > 0 }">
+              <span v-if="redistill.rate_per_hour > 0">{{ redistill.rate_per_hour }} per hour</span>
+              <span v-else>resting</span>
+            </span>
+          </div>
+
+          <div class="ledger-figures">
+            <article class="ledger-line">
+              <span class="ledger-key">Conversations re-read</span>
+              <span class="ledger-fig">{{ redistill.done.toLocaleString() }} / {{ redistill.total.toLocaleString() }}</span>
+            </article>
+            <article class="ledger-line">
+              <span class="ledger-key">Learnings scribed anew</span>
+              <span class="ledger-fig">{{ redistill.learnings.toLocaleString() }}</span>
+            </article>
+            <article class="ledger-line accent">
+              <span class="ledger-key">Of the whole</span>
+              <span class="ledger-fig">{{ redistill.pct }}<span class="pct-glyph">%</span></span>
+            </article>
+          </div>
+
+          <div class="folio-progress">
+            <div class="folio-progress-bar" :style="{ width: redistill.pct + '%' }" />
+          </div>
+          <div class="progress-meta">
+            <span><em>{{ redistill.pending.toLocaleString() }}</em> awaiting</span>
+            <span v-if="redistill.elapsed_hours" class="progress-sep">·</span>
+            <span v-if="redistill.elapsed_hours">
+              <em>{{ formatHours(redistill.elapsed_hours) }}</em> elapsed
+            </span>
+            <span v-if="redistill.eta_hours" class="progress-sep">·</span>
+            <span v-if="redistill.eta_hours">
+              estimated finish in <em>{{ formatHours(redistill.eta_hours) }}</em>
+            </span>
+          </div>
+        </section>
+
         <!-- II — BREAKDOWN: SOURCES, CATEGORIES, INSTRUMENTS -->
         <section v-reveal class="quire-trio">
           <article class="trio-col">
