@@ -3337,6 +3337,19 @@ async def card_builder() -> dict:
             settings.card_min_trust, settings.card_min_sources,
             settings.card_builder_batch_size,
         )
+        # Coverage-first ordering (2026-08-13): while the re-distill
+        # campaign churns memory timestamps, every EXISTING card looks
+        # "changed" each cycle and rebuilds ate the entire per-run build
+        # cap — coverage sat frozen at 23 while ranks 24+ never got a
+        # turn. Subjects WITHOUT a card build first; rebuild freshness
+        # for existing cards resumes once new coverage is banked.
+        carded = {
+            r["subject_key"]
+            for r in await conn.fetch(
+                "SELECT subject_key FROM context_cards WHERE subject_type = 'entity'",
+            )
+        }
+    entities = sorted(entities, key=lambda e: e["canonical_name"] in carded)
     ent_sql = """
         SELECT m.id, m.content, m.summary, m.created_at, m.updated_at AS mupd, m.trust_score
         FROM memories m
