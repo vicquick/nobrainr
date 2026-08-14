@@ -58,6 +58,11 @@ const router = createRouter({
       component: () => import('@/views/GraphView.vue'),
     },
     {
+      path: '/constellarium',
+      name: 'constellarium',
+      component: () => import('@/views/ConstellationView.vue'),
+    },
+    {
       path: '/memories',
       name: 'memories',
       component: () => import('@/views/MemoriesView.vue'),
