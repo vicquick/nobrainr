@@ -410,6 +410,12 @@ class Settings(BaseSettings):
     # Crawl4AI fetch → LLM judge). The ceiling reserves the rest of the
     # Brave free-tier monthly cap (brave_monthly_query_cap) for
     # interactive /gpt-researcher use; the job refuses to run past it.
+    # edge_invalidation (P2 completion, 2026-08-14): Graphiti-style
+    # temporal conflict resolution — multi-target contending-predicate
+    # edge groups get an LLM currency review; outdated edges keep their
+    # row but lose valid.
+    edge_invalidation_interval_hours: float = 12.0
+    edge_invalidation_batch_size: int = 15
     external_verify_interval_hours: float = 24.0
     external_verify_batch_size: int = 12
     external_verify_quota_ceiling: int = 700

@@ -3932,3 +3932,136 @@ async def external_verify() -> dict:
             out["inconclusive"] += 1
 
     return out
+
+
+# ──────────────────────────────────────────────
+# edge_invalidation (P2 completion, 2026-08-14) — Graphiti-style temporal
+# conflict resolution for graph edges. The closed predicate vocabulary
+# (commit 3bf6003) and pair-constrained dedup already hold; what was
+# missing is the third leg: when reality moves (nobrainr RUNS_ON docker →
+# migrated hosts), BOTH edges stay valid forever and the graph serves
+# stale truth. This job finds (source, contending-predicate) groups with
+# multiple valid targets whose source memories are far apart in time and
+# asks the LLM which edges reflect CURRENT reality. Losers get
+# valid=false + verdict — never deleted, the graph keeps its history.
+# ──────────────────────────────────────────────
+
+# Predicates where multiple simultaneous targets are SUSPICIOUS (not
+# impossible — the judge decides): a thing usually runs/deploys on one
+# platform per epoch, and "replaces" chains go stale as successors land.
+_CONTENDING_PREDICATES = ("runs_on", "deployed_on", "replaces", "configured_with")
+
+_EDGE_VERDICT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdicts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "i": {"type": "integer"},
+                    "status": {"type": "string",
+                               "enum": ["current", "outdated", "both_valid"]},
+                },
+                "required": ["i", "status"],
+            },
+        }
+    },
+    "required": ["verdicts"],
+}
+
+_EDGE_VERDICT_SYSTEM = (
+    "You review knowledge-graph edges that share a source entity and "
+    "predicate but point at different targets. Using each edge's evidence "
+    "snippet and date, decide per edge: 'current' (still true), 'outdated' "
+    "(was true, a newer edge supersedes it), or 'both_valid' (genuinely "
+    "coexist, e.g. layered platforms). Be conservative: 'outdated' only "
+    "when a newer edge clearly supersedes — dates alone do not prove "
+    "supersession."
+)
+
+
+async def edge_invalidation() -> dict:
+    pool = await get_pool()
+    out = {"groups": 0, "reviewed": 0, "invalidated": 0,
+           "ran_at": datetime.now().isoformat()}
+
+    async with pool.acquire() as conn:
+        groups = await conn.fetch(
+            """
+            SELECT er.source_entity_id, er.relationship_type,
+                   count(*) AS n_targets
+            FROM entity_relations er
+            JOIN memories m ON m.id = er.source_memory
+            WHERE er.valid
+              AND er.llm_reviewed_at IS NULL
+              AND er.relationship_type = ANY($1::text[])
+            GROUP BY er.source_entity_id, er.relationship_type
+            HAVING count(DISTINCT er.target_entity_id) >= 2
+               AND max(m.created_at) - min(m.created_at) > interval '30 days'
+            ORDER BY count(*) DESC
+            LIMIT $2
+            """,
+            list(_CONTENDING_PREDICATES),
+            settings.edge_invalidation_batch_size,
+        )
+
+    for g in groups:
+        async with pool.acquire() as conn:
+            edges = await conn.fetch(
+                """
+                SELECT er.id, er.relationship_type,
+                       es.name AS source_name, et.name AS target_name,
+                       m.created_at::date AS evidence_date,
+                       left(COALESCE(m.summary, m.content, ''), 200) AS evidence
+                FROM entity_relations er
+                JOIN entities es ON es.id = er.source_entity_id
+                JOIN entities et ON et.id = er.target_entity_id
+                LEFT JOIN memories m ON m.id = er.source_memory
+                WHERE er.source_entity_id = $1
+                  AND er.relationship_type = $2
+                  AND er.valid
+                ORDER BY m.created_at ASC NULLS FIRST
+                """,
+                g["source_entity_id"], g["relationship_type"],
+            )
+        if len(edges) < 2:
+            continue
+        listing = "\n".join(
+            f"[{i}] {e['source_name']} {e['relationship_type'].upper()} "
+            f"{e['target_name']} (evidence {e['evidence_date']}): {e['evidence']}"
+            for i, e in enumerate(edges)
+        )
+        await _yield_to_live_requests()
+        try:
+            resp = await ollama_chat(
+                system=_EDGE_VERDICT_SYSTEM,
+                user=f"Edges:\n{listing}",
+                schema=_EDGE_VERDICT_SCHEMA,
+                temperature=0.2,
+            )
+        except Exception:
+            logger.exception("edge_invalidation LLM failed for group %s",
+                             g["source_entity_id"])
+            continue
+        out["groups"] += 1
+        by_idx = {v.get("i"): v.get("status") for v in resp.get("verdicts", [])}
+        async with pool.acquire() as conn:
+            for i, e in enumerate(edges):
+                status = by_idx.get(i)
+                if status not in ("current", "outdated", "both_valid"):
+                    continue
+                out["reviewed"] += 1
+                if status == "outdated":
+                    out["invalidated"] += 1
+                await conn.execute(
+                    """
+                    UPDATE entity_relations
+                    SET valid = ($2 != 'outdated'),
+                        llm_verdict = $2,
+                        llm_reviewed_at = now()
+                    WHERE id = $1
+                    """,
+                    e["id"], status,
+                )
+    return out
