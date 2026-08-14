@@ -953,12 +953,13 @@ async def api_brief(request: Request) -> JSONResponse:
     ]
 
     memories: list = []
+    embedding: list[float] | None = None
     try:
         embedding = await embed_text(q)
         hits = await queries.search_memories(
             embedding=embedding, limit=n_mem * 3, threshold=0.25, text_query=q,
         )
-        pool = [
+        hit_pool = [
             h for h in hits
             if (h.get("trust_score") is None or h["trust_score"] >= trust_floor)
         ]
@@ -969,14 +970,70 @@ async def api_brief(request: Request) -> JSONResponse:
         # hook's 3s curl budget. Rerank failure degrades to hybrid order.
         try:
             from nobrainr.services.reranker import rerank as _rerank
-            pool = await _rerank(q, pool, limit=n_mem)
+            hit_pool = await _rerank(q, hit_pool, limit=n_mem)
         except Exception:
             pass
-        memories = pool[:n_mem]
+        memories = hit_pool[:n_mem]
     except Exception:
         pass  # cards alone still brief the agent
 
-    return JSONResponse({"cards": cards, "memories": memories})
+    # Failed-fix lane (2026-08-14): error-pattern memories matching the
+    # task, so an agent is warned BEFORE repeating a fix that already
+    # failed (the error_store data existed; nothing delivered it at task
+    # start). Cold tier included — errors are always worth finding. High
+    # similarity bar: a wrong warning is worse than none.
+    errors: list = []
+    if embedding is not None:
+        try:
+            err_hits = await queries.search_memories(
+                embedding=embedding, limit=6, threshold=0.45, text_query=q,
+                tags=["error-pattern"], include_cold=True,
+            )
+            errors = [
+                {"summary": h.get("summary"),
+                 "signature": (h.get("metadata") or {}).get("error_signature"),
+                 "content": (h.get("content") or "")[:600],
+                 "id": h.get("id")}
+                for h in err_hits[:2]
+                if (h.get("similarity") or 0) >= 0.6
+            ]
+        except Exception:
+            pass
+
+    # Procedural lane (2026-08-14): when-to-use/what-to-do procedures
+    # matched to the task — the injection half of the Memp pattern (the
+    # distill half runs as procedural_distill + the host session distiller).
+    # procedural_memories has no embeddings: FTS + trigram over the title,
+    # active + unexpired only, priority breaks ties.
+    procedures: list = []
+    try:
+        async with pool.acquire() as conn:
+            proc_rows = await conn.fetch(
+                """
+                SELECT title, content, scope, priority,
+                       GREATEST(
+                         similarity(lower(title), lower($1)),
+                         ts_rank(to_tsvector('simple', title || ' ' || content),
+                                 plainto_tsquery('simple', $1)) * 4
+                       ) AS score
+                FROM procedural_memories
+                WHERE active
+                  AND (expires_at IS NULL OR expires_at > now())
+                ORDER BY score DESC, priority DESC
+                LIMIT 2
+                """,
+                q,
+            )
+        procedures = [
+            {"title": r["title"], "procedure": r["content"][:800],
+             "scope": r["scope"]}
+            for r in proc_rows if (r["score"] or 0) > 0.08
+        ]
+    except Exception:
+        pass
+
+    return JSONResponse({"cards": cards, "memories": memories,
+                         "errors": errors, "procedures": procedures})
 
 
 async def api_library(request: Request) -> JSONResponse:
