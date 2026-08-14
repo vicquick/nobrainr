@@ -2570,6 +2570,28 @@ async def memory_observability() -> dict:
             """,
             settings.search_trace_retention_days,
         )
+        # Retrieval concentration (2026-08-14): the memory-reward-trap
+        # metric (RoMeRL, arxiv 2608.02508) as plain SQL — share of all
+        # served results held by the 20 most-served memories over 7 days.
+        # A rising share means a few "rewarding" memories crowd out corpus
+        # coverage (our trust flywheel is exactly the loop this traps).
+        concentration = await conn.fetchrow("""
+            WITH served AS (
+                SELECT unnest(top_ids) AS mid
+                FROM search_traces
+                WHERE created_at > now() - interval '7 days'
+                  AND top_ids IS NOT NULL
+            ), counts AS (
+                SELECT mid, count(*) AS n FROM served GROUP BY mid
+            )
+            SELECT
+              (SELECT count(*) FROM served) AS served_total,
+              (SELECT count(*) FROM counts) AS distinct_memories,
+              round(COALESCE(
+                (SELECT sum(n) FROM (SELECT n FROM counts ORDER BY n DESC LIMIT 20) t)::numeric
+                / NULLIF((SELECT count(*) FROM served), 0), 0)::numeric, 4)
+                AS top20_share_7d
+        """)
         # ASI06 posture (C2, 2026-07-14): memory-poisoning early warning.
         # sanitized_injections = crawled pages caught trying to program a
         # future agent; low_trust_served = fraction of recent retrievals
@@ -2623,6 +2645,7 @@ async def memory_observability() -> dict:
         "empty_queries_7d": [dict(r) for r in empty_queries],
         "search_7d": dict(thin) if thin else {},
         "traces_pruned": int(pruned or 0),
+        "concentration": dict(concentration) if concentration else {},
         "asi06": dict(asi06) if asi06 else {},
         "heart_metrics": dict(heart) if heart else {},
         "ran_at": datetime.now().isoformat(),
