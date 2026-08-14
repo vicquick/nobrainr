@@ -3352,6 +3352,10 @@ async def card_builder() -> dict:
             JOIN memories m ON m.id = em.memory_id
             WHERE m.tier < 3 AND m.superseded_by IS NULL
               AND COALESCE(m.trust_score, 0.5) >= $1
+              -- Alert streams are ephemeral state, not knowledge: the
+              -- 2026-08-14 "auto-correction pending" garbage card was an
+              -- alert-spam entity that told agents the scheduler was DEAD.
+              AND m.category NOT IN ('monitoring', 'session-log')
             GROUP BY e.id, e.canonical_name, e.name
             HAVING count(*) >= $2
             ORDER BY count(*) DESC
@@ -3381,6 +3385,7 @@ async def card_builder() -> dict:
         WHERE e.canonical_name = $1
           AND m.tier < 3 AND m.superseded_by IS NULL
           AND COALESCE(m.trust_score, 0.5) >= $2
+          AND m.category NOT IN ('monitoring', 'session-log')
         -- Recency-forward for state cards: a newer memory outranks an
         -- older higher-trust one so the card reflects CURRENT reality, not
         -- the best-trusted stale fact. Trust still gates entry (WHERE).
