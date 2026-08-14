@@ -150,6 +150,10 @@ async def run_retrieval_eval(
 
     per_query: list[QueryEval] = []
     abstention_pass = abstention_total = 0
+    # Token-cost accounting (2026-08-14): accuracy without a token budget
+    # is a half-finished score (mem0/BEAM pair every accuracy number with
+    # tokens-per-retrieval). chars/4 estimate over returned content+summary.
+    result_tokens_total = 0
     for g in goldens:
         expected = set(g["expected_ids"])
         is_abstention = "abstention" in (g.get("tags") or [])
@@ -184,6 +188,10 @@ async def run_retrieval_eval(
                 abstention_pass += 1
             continue
         returned_ids = [r["id"] for r in results]
+        result_tokens_total += sum(
+            (len(r.get("content") or "") + len(r.get("summary") or "")) // 4
+            for r in results
+        )
         per_query.append(
             QueryEval(
                 query_id=g["id"],
@@ -214,6 +222,8 @@ async def run_retrieval_eval(
             round(abstention_pass / abstention_total, 4)
             if abstention_total else None
         ),
+        # Mean tokens returned per non-abstention query (chars/4 estimate).
+        "avg_result_tokens": round(result_tokens_total / n) if n else 0,
     }
 
     pool = await get_pool()
