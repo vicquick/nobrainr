@@ -42,3 +42,14 @@ def test_observability_reports_concentration():
     assert "top20_share_7d" in src
     assert "unnest(top_ids)" in src
     assert '"concentration"' in src
+
+
+def test_card_builder_excludes_alert_streams():
+    """2026-08-14 garbage-card incident: alert-spam entities must neither
+    qualify for nor source cards."""
+    import inspect
+
+    from nobrainr import scheduler_jobs
+
+    src = inspect.getsource(scheduler_jobs.card_builder)
+    assert src.count("category NOT IN ('monitoring', 'session-log')") == 2
