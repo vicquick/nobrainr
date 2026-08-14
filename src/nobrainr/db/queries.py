@@ -4210,7 +4210,11 @@ def _row_to_dict(row) -> dict:
 
 
 def _jsonb(data: dict | None) -> str:
-    return json.dumps(data or {})
+    # default=str: job results carry Decimal (round(...)::numeric via
+    # asyncpg), datetimes, and UUIDs — a Decimal in memory_observability's
+    # concentration metric crashed the whole event-log path on 2026-08-14.
+    # Event logging must never be the thing that fails a job.
+    return json.dumps(data or {}, default=str)
 
 
 # ──────────────────────────────────────────────
