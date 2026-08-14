@@ -297,6 +297,25 @@ class Scheduler:
         # scheduler_jobs imports from this module's siblings at load time.
         from nobrainr import scheduler_jobs
 
+        # Close orphaned 'running' rows from the previous process: a deploy
+        # SIGKILLs in-flight jobs, their tracker rows never get an end
+        # update, and the dashboard shows phantom running jobs forever
+        # (7 orphans found in the 2026-08-14 bug hunt after a 6-deploy day).
+        async def _close_orphan_runs():
+            try:
+                pool = await queries.get_pool()
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        """
+                        UPDATE scheduler_runs
+                        SET status = 'killed', finished_at = now()
+                        WHERE status = 'running'
+                        """,
+                    )
+            except Exception:
+                logger.exception("orphan scheduler_runs cleanup failed")
+        self._tasks_pre = [asyncio.create_task(_close_orphan_runs())]
+
         # Non-LLM jobs (existing)
         self._tasks = [
             asyncio.create_task(
