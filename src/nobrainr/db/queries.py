@@ -5105,3 +5105,49 @@ async def supersede_memory(old_id: str, new_id: str, *, reason: str | None = Non
             UUID(str(old_id)), UUID(str(new_id)), reason,
         )
     return result.endswith("1")
+
+
+# ──────────────────────────────────────────────
+# Agent presence (agent-comms layer, 2026-08-15)
+# ──────────────────────────────────────────────
+
+async def upsert_agent_presence(
+    agent: str,
+    machine: str,
+    *,
+    status: str = "active",
+    task: str | None = None,
+    session_ref: str | None = None,
+) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO agent_presence (agent, machine, status, task, session_ref, last_seen)
+            VALUES ($1, $2, $3, $4, $5, now())
+            ON CONFLICT (agent, machine) DO UPDATE
+                SET status = EXCLUDED.status,
+                    task = COALESCE(EXCLUDED.task, agent_presence.task),
+                    session_ref = COALESCE(EXCLUDED.session_ref, agent_presence.session_ref),
+                    last_seen = now()
+            """,
+            agent[:80], machine[:80], status[:40],
+            (task or None) and task[:300], session_ref,
+        )
+
+
+async def list_agent_presence(active_within_s: int = 300) -> list[dict]:
+    """Roster of agents seen within the window, freshest first."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT agent, machine, status, task, session_ref, last_seen,
+                   extract(epoch FROM (now() - last_seen))::int AS age_s
+            FROM agent_presence
+            WHERE last_seen > now() - make_interval(secs => $1)
+            ORDER BY last_seen DESC
+            """,
+            active_within_s,
+        )
+        return [dict(r) for r in rows]

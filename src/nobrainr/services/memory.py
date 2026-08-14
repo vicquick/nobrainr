@@ -207,6 +207,7 @@ async def store_memory_with_extraction(
     skip_dedup: bool = False,
     contextual_prefix: str | None = None,
     event_ts: "datetime | None" = None,
+    defer_extraction: bool = False,
 ) -> dict:
     """Store a memory with embedding, write-path decision, and async entity extraction.
 
@@ -377,8 +378,10 @@ async def store_memory_with_extraction(
         _schedule_extraction(result["id"], content, tags)
         return {"status": "superseded", "new_id": result["id"], "archived_id": old_id}
 
-    # Fire-and-forget entity extraction
-    if settings.extraction_enabled:
+    # Fire-and-forget entity extraction. Fast-lane callers (agent-comm,
+    # 2026-08-15) defer it: the row is visible+searchable in <1s and the
+    # extraction backfill enriches it later (extraction_status='pending').
+    if settings.extraction_enabled and not defer_extraction:
         _schedule_extraction(result["id"], content, tags)
 
     # T4 (2026-07-24): write-time contradiction gate. Dedup above only
