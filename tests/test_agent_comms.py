@@ -36,7 +36,9 @@ def test_msg_wait_filters_recipient_and_isolates_connection():
     assert "asyncpg.connect" in src
     assert "get_pool" not in src
     # Hard timeout ceiling
-    assert "min(timeout_s, 120)" in src
+    # 50s ceiling: MCP clients/proxy kill calls ~60s — a 120s wait died
+    # as a raw client timeout (live-tested 2026-08-15). Loop to wait longer.
+    assert "min(timeout_s, 50)" in src
 
 
 def test_presence_upsert_refreshes_last_seen():
