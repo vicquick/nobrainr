@@ -4409,3 +4409,151 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ──────────────────────────────────────────────
+# Agent comms layer (2026-08-15): presence + instant messaging.
+# Postgres is the bus: fast-lane stores land in <1s (extraction deferred
+# to the backfill), pg_notify pushes, msg_wait long-polls a LISTEN
+# connection. Messages remain ordinary memories — searchable, trust-
+# scored, digest-visible; this layer is delivery, not a second store.
+# ──────────────────────────────────────────────
+
+_AGENT_MSG_CHANNEL = "agent_msg"
+
+
+@mcp.tool()
+async def agent_presence(
+    agent: str,
+    machine: str,
+    status: str = "active",
+    task: str | None = None,
+) -> dict:
+    """Register/refresh this agent's presence and get the active roster.
+
+    Call at session start and on long-task transitions. status: active |
+    busy | idle | done. Returns every agent seen in the last 5 minutes so
+    one call both announces you and tells you who else is around.
+
+    Args:
+        agent: Agent name (e.g. 'dev', 'infra', 'gis-field', or a session name).
+        machine: Host the agent runs on (e.g. 'workserver', 'bimavo').
+        status: active | busy | idle | done.
+        task: Optional one-line description of what you're working on.
+    """
+    from nobrainr.db.queries import list_agent_presence, upsert_agent_presence
+
+    await upsert_agent_presence(agent, machine, status=status, task=task)
+    roster = await list_agent_presence()
+    for r in roster:
+        r["last_seen"] = r["last_seen"].isoformat()
+    return {"registered": f"{agent}@{machine}", "active_agents": roster}
+
+
+@mcp.tool()
+async def agents_active(window_s: int = 300) -> list[dict]:
+    """List agents active across the fleet (seen within window_s seconds).
+
+    Args:
+        window_s: Freshness window in seconds (default 300).
+    """
+    from nobrainr.db.queries import list_agent_presence
+
+    roster = await list_agent_presence(active_within_s=min(window_s, 86400))
+    for r in roster:
+        r["last_seen"] = r["last_seen"].isoformat()
+    return roster
+
+
+@mcp.tool()
+async def msg_send(
+    to: str,
+    subject: str,
+    body: str,
+    from_agent: str,
+    machine: str | None = None,
+) -> dict:
+    """Send a near-instant message to another agent (or 'all').
+
+    The message is stored as a durable agent-comm memory on the FAST LANE
+    (visible in <1s; entity extraction deferred) and pushed via
+    pg_notify — an agent blocked in msg_wait receives it immediately.
+
+    Args:
+        to: Target agent name, or 'all' for a fleet broadcast.
+        subject: One-line subject.
+        body: Message body (markdown fine).
+        from_agent: Sender agent name.
+        machine: Sender machine (defaults to unspecified).
+    """
+    import json as _json
+
+    from nobrainr.db.pool import get_pool
+    from nobrainr.services.memory import store_memory_with_extraction
+
+    result = await store_memory_with_extraction(
+        content=f"**To:** {to}\n**From:** {from_agent}\n**Subject:** {subject}\n\n{body}",
+        summary=f"[{from_agent}→{to}] {subject}"[:200],
+        tags=["agent-msg", f"to:{to}", f"from:{from_agent}"],
+        category="agent-comm",
+        source_type="agent",
+        source_machine=machine or from_agent,
+        confidence=1.0,
+        skip_dedup=True,
+        defer_extraction=True,
+    )
+    memory_id = result.get("memory_id") or result.get("id")
+    payload = _json.dumps({
+        "to": to, "from": from_agent, "subject": subject[:200],
+        "body": body[:2000], "memory_id": str(memory_id),
+    })
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("SELECT pg_notify($1, $2)", _AGENT_MSG_CHANNEL, payload)
+    return {"sent": True, "to": to, "memory_id": str(memory_id)}
+
+
+@mcp.tool()
+async def msg_wait(agent: str, timeout_s: int = 90) -> dict:
+    """Block until a message addressed to this agent (or 'all') arrives.
+
+    Long-poll over a dedicated Postgres LISTEN connection — returns the
+    message the moment msg_send fires, or {"timed_out": true} after
+    timeout_s. Loop on this tool to act as a live inbox.
+
+    Args:
+        agent: This agent's name (matches msg_send's `to`, plus 'all').
+        timeout_s: Max seconds to wait (1-120, default 90).
+    """
+    import asyncio
+    import json as _json
+
+    import asyncpg
+
+    timeout_s = max(1, min(timeout_s, 120))
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def _on_notify(_conn, _pid, _channel, payload: str) -> None:
+        try:
+            msg = _json.loads(payload)
+        except Exception:
+            return
+        if msg.get("to") in (agent, "all"):
+            queue.put_nowait(msg)
+
+    # Dedicated connection (NOT from the pool): LISTEN holds it for the
+    # whole wait and must never starve the app pool.
+    conn = await asyncpg.connect(settings.database_url)
+    try:
+        await conn.add_listener(_AGENT_MSG_CHANNEL, _on_notify)
+        try:
+            msg = await asyncio.wait_for(queue.get(), timeout=timeout_s)
+            return {"message": msg, "timed_out": False}
+        except asyncio.TimeoutError:
+            return {"timed_out": True, "waited_s": timeout_s}
+    finally:
+        try:
+            await conn.remove_listener(_AGENT_MSG_CHANNEL, _on_notify)
+        except Exception:
+            pass
+        await conn.close()
