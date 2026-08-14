@@ -53,3 +53,17 @@ def test_card_builder_excludes_alert_streams():
 
     src = inspect.getsource(scheduler_jobs.card_builder)
     assert src.count("category NOT IN ('monitoring', 'session-log')") == 2
+
+
+def test_brief_colleagues_lane_invariants():
+    """Colleagues lane (2026-08-15): related active-agent tasks in the
+    brief — fresh presence only, scored, fail-open."""
+    import inspect
+
+    from nobrainr.dashboard import api
+
+    src = inspect.getsource(api.api_brief)
+    assert "agent_presence" in src
+    assert "interval '30 minutes'" in src
+    assert '"colleagues": colleagues' in src
+    assert src.count("except Exception") >= 5
