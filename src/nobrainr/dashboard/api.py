@@ -1095,8 +1095,40 @@ async def api_brief(request: Request) -> JSONResponse:
     except Exception:
         pass
 
+    # Colleagues lane (2026-08-15): active agents whose presence task is
+    # related to THIS prompt — continuous awareness without polling.
+    # Trigram+FTS on short task strings; own agent excluded client-side.
+    colleagues: list = []
+    try:
+        async with pool.acquire() as conn:
+            col_rows = await conn.fetch(
+                """
+                SELECT agent, machine, status, task,
+                       extract(epoch FROM (now() - last_seen))::int AS age_s,
+                       GREATEST(
+                         similarity(lower(COALESCE(task,'')), lower($1)),
+                         ts_rank(to_tsvector('simple', COALESCE(task,'')),
+                                 plainto_tsquery('simple', $1)) * 4
+                       ) AS score
+                FROM agent_presence
+                WHERE last_seen > now() - interval '30 minutes'
+                  AND task IS NOT NULL
+                ORDER BY score DESC
+                LIMIT 3
+                """,
+                q,
+            )
+        colleagues = [
+            {"agent": r["agent"], "machine": r["machine"],
+             "status": r["status"], "task": r["task"], "age_s": r["age_s"]}
+            for r in col_rows if (r["score"] or 0) > 0.12
+        ]
+    except Exception:
+        pass
+
     return JSONResponse({"cards": cards, "memories": memories,
-                         "errors": errors, "procedures": procedures})
+                         "errors": errors, "procedures": procedures,
+                         "colleagues": colleagues})
 
 
 async def api_library(request: Request) -> JSONResponse:
