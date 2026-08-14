@@ -10,9 +10,17 @@
         <em>{{ nodeCount.toLocaleString() }}</em> stars ·
         <em>{{ linkCount.toLocaleString() }}</em> threads
         <span class="sep">·</span>
-        <button class="plate-act" @click="togglePause">{{ paused ? 'let it breathe' : 'hold still' }}</button>
+        <button class="plate-act" @click="stir">stir the sky</button>
         <span class="sep">·</span>
         <button class="plate-act" @click="refit">re-center</button>
+        <span class="sep">·</span>
+        <span class="tier-picker">
+          <button
+            v-for="(t, i) in TIERS" :key="t.label"
+            class="plate-act tier-opt" :class="{ active: i === tier }"
+            @click="setTier(i)"
+          >{{ t.label }}</button>
+        </span>
       </p>
       <p class="plate-stats" v-else>charting the heavens…</p>
     </header>
@@ -56,7 +64,6 @@ interface LiveGraph {
 
 const canvasHost = ref<HTMLDivElement | null>(null)
 const ready = ref(false)
-const paused = ref(false)
 const nodeCount = ref(0)
 const linkCount = ref(0)
 const seekQuery = ref('')
@@ -79,8 +86,19 @@ function communityColor(c: number, alpha = 0.92): [number, number, number, numbe
   return [r, g, b, alpha * 255] as unknown as [number, number, number, number]
 }
 
+// Scale tiers: light laptops get a calm sky, big GPUs can ask for more.
+// FPS watchdog downshifts automatically if the first seconds stutter.
+const TIERS = [
+  { label: 'faint', nodes: 1500, degree: 4 },
+  { label: 'clear', nodes: 4000, degree: 3 },
+  { label: 'deep', nodes: 12000, degree: 2 },
+] as const
+const tier = ref(1)
+
 async function boot() {
-  const { data: g } = await api.get<LiveGraph>('/api/graph/live?max_nodes=12000&min_degree=2')
+  const t = TIERS[tier.value]
+  const { data: g } = await api.get<LiveGraph>(
+    `/api/graph/live?max_nodes=${t.nodes}&min_degree=${t.degree}`)
   data = g
   nodeCount.value = g.node_count
   linkCount.value = g.link_count
@@ -108,7 +126,13 @@ async function boot() {
     simulationRepulsion: 1.1,
     simulationLinkSpring: 0.9,
     simulationFriction: 0.88,
-    simulationDecay: 10000000, // never fully settles — the sky breathes
+    // Finite decay (2026-08-14, laptop-lag fix): the sim runs lively for
+    // a few seconds and then RESTS — rendering stays interactive and any
+    // drag/seek re-heats it. A never-settling sim is a space heater on
+    // integrated GPUs; Obsidian's graph rests too.
+    simulationDecay: 4000,
+    // 4K laptops otherwise render 4x the pixels for no visible gain.
+    pixelRatio: Math.min(window.devicePixelRatio || 1, 1.5),
     fitViewOnInit: true,
     fitViewDelay: 1200,
     renderHoveredPointRing: true,
@@ -136,12 +160,45 @@ async function boot() {
     positions[i * 2] = Math.cos(jitterA) * jitterR + 4096
     positions[i * 2 + 1] = Math.sin(jitterA) * jitterR + 4096
   }
+  startFpsWatchdog()
   cosmos.setPointPositions(positions)
   cosmos.setPointColors(colors)
   cosmos.setPointSizes(sizes)
   cosmos.setLinks(new Float32Array(g.links))
   cosmos.render()
   ready.value = true
+}
+
+let fpsRaf = 0
+function startFpsWatchdog() {
+  let frames = 0
+  const started = performance.now()
+  const tick = () => {
+    frames++
+    const elapsed = performance.now() - started
+    if (elapsed < 4000) { fpsRaf = requestAnimationFrame(tick); return }
+    const fps = (frames / elapsed) * 1000
+    if (fps < 28 && tier.value > 0) {
+      tier.value--
+      reboot()
+    }
+  }
+  fpsRaf = requestAnimationFrame(tick)
+}
+
+async function reboot() {
+  cancelAnimationFrame(fpsRaf)
+  cosmos?.destroy()
+  cosmos = null
+  ready.value = false
+  focused.value = null
+  await boot()
+}
+
+function setTier(i: number) {
+  if (i === tier.value) return
+  tier.value = i
+  reboot()
 }
 
 function setFocus(index: number) {
@@ -153,11 +210,10 @@ function setFocus(index: number) {
   }
 }
 
-function togglePause() {
-  if (!cosmos) return
-  if (paused.value) cosmos.start()
-  else cosmos.pause()
-  paused.value = !paused.value
+function stir() {
+  // Wake the resting simulation with a gentle alpha — the constellations
+  // shuffle and drift back to rest on the finite decay.
+  cosmos?.start(0.35)
 }
 
 function refit() {
@@ -177,6 +233,7 @@ function seek() {
 
 onMounted(boot)
 onUnmounted(() => {
+  cancelAnimationFrame(fpsRaf)
   cosmos?.destroy()
   cosmos = null
 })
@@ -242,6 +299,9 @@ onUnmounted(() => {
   border-bottom: 1px dotted var(--cp-gold-soft);
 }
 .plate-act:hover { border-bottom-style: solid; }
+.tier-picker { display: inline-flex; gap: 8px; }
+.tier-opt { opacity: 0.55; border-bottom: none; }
+.tier-opt.active { opacity: 1; border-bottom: 1px solid var(--cp-gold); }
 
 .seek {
   position: absolute;
