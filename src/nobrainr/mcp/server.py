@@ -4514,23 +4514,27 @@ async def msg_send(
 
 
 @mcp.tool()
-async def msg_wait(agent: str, timeout_s: int = 90) -> dict:
+async def msg_wait(agent: str, timeout_s: int = 45) -> dict:
     """Block until a message addressed to this agent (or 'all') arrives.
 
     Long-poll over a dedicated Postgres LISTEN connection — returns the
     message the moment msg_send fires, or {"timed_out": true} after
-    timeout_s. Loop on this tool to act as a live inbox.
+    timeout_s. LOOP this tool to wait longer: the ceiling is 50s because
+    MCP clients and the MetaMCP proxy kill calls around 60s — a 120s wait
+    died as a raw client timeout instead of returning cleanly
+    (live-tested 2026-08-15). Fifty-second turns, called in a loop, wait
+    forever without ever tripping a proxy.
 
     Args:
         agent: This agent's name (matches msg_send's `to`, plus 'all').
-        timeout_s: Max seconds to wait (1-120, default 90).
+        timeout_s: Max seconds to wait (1-50, default 45).
     """
     import asyncio
     import json as _json
 
     import asyncpg
 
-    timeout_s = max(1, min(timeout_s, 120))
+    timeout_s = max(1, min(timeout_s, 50))
     queue: asyncio.Queue = asyncio.Queue()
 
     def _on_notify(_conn, _pid, _channel, payload: str) -> None:
