@@ -375,7 +375,52 @@ function startOrganicSettle() {
     },
   })
   fa2.start()
-  fa2Timer = setTimeout(stopOrganicSettle, SETTLE_DURATION_MS)
+  // Obsidian-feel (2026-08-14): after the settle burst, the layout no
+  // longer STOPS — it drops to a heavy slowDown and keeps breathing.
+  // The worker runs off-thread; pause when the tab hides to spare CPU.
+  fa2Timer = setTimeout(simmer, SETTLE_DURATION_MS)
+}
+
+const SIMMER_SLOWDOWN_MULT = 25
+
+function simmer() {
+  if (!graph || !fa2) return
+  try { fa2.kill() } catch { /* gone */ }
+  const settings = inferSettings(graph)
+  fa2 = new FA2Layout(graph, {
+    settings: {
+      ...settings,
+      slowDown: (settings.slowDown ?? 1) * SIMMER_SLOWDOWN_MULT,
+      gravity: 0.4,
+    },
+  })
+  fa2.start()
+  fa2Timer = null
+}
+
+function reheat() {
+  // Drag re-heat: a burst of livelier physics, then back to the simmer.
+  if (!graph || graph.order === 0 || graph.order > SETTLE_MAX_NODES) return
+  if (fa2Timer) clearTimeout(fa2Timer)
+  try { fa2?.kill() } catch { /* gone */ }
+  const settings = inferSettings(graph)
+  fa2 = new FA2Layout(graph, {
+    settings: {
+      ...settings,
+      slowDown: (settings.slowDown ?? 1) * 6,
+      gravity: 0.45,
+    },
+  })
+  fa2.start()
+  fa2Timer = setTimeout(simmer, 1600)
+}
+
+function onVisibility() {
+  if (document.hidden) {
+    if (fa2) { try { fa2.stop() } catch { /* gone */ } }
+  } else if (fa2) {
+    try { fa2.start() } catch { /* gone */ }
+  }
 }
 
 // Custom label renderer with dark background plate — uses Georgia for consistency
@@ -838,7 +883,39 @@ function initSigma() {
     }
   })
 
+  // Obsidian-feel node dragging (2026-08-14): grab a star, the web pulls
+  // with it. downNode pins the node to the pointer and re-heats physics;
+  // release drops back to the ambient simmer. Click still focuses —
+  // sigma fires clickNode only when no meaningful move happened.
+  let draggedNode: string | null = null
+  let dragMoved = false
+  renderer.on('downNode', ({ node }) => {
+    if (!graph || graph.order > SETTLE_MAX_NODES) return
+    draggedNode = node
+    dragMoved = false
+    graph.setNodeAttribute(node, 'fixed', true)
+    reheat()
+  })
+  renderer.getMouseCaptor().on('mousemovebody', (e) => {
+    if (!draggedNode || !graph || !renderer) return
+    dragMoved = true
+    const pos = renderer.viewportToGraph(e)
+    graph.setNodeAttribute(draggedNode, 'x', pos.x)
+    graph.setNodeAttribute(draggedNode, 'y', pos.y)
+    e.preventSigmaDefault()
+    e.original.preventDefault()
+  })
+  const endDrag = () => {
+    if (draggedNode && graph?.hasNode(draggedNode)) {
+      graph.removeNodeAttribute(draggedNode, 'fixed')
+    }
+    draggedNode = null
+  }
+  renderer.getMouseCaptor().on('mouseup', endDrag)
+  renderer.getMouseCaptor().on('mouseleave', endDrag)
+
   renderer.on('clickNode', async ({ node }) => {
+    if (dragMoved) { dragMoved = false; return }
     focusNode(node)
     await fetchNodeDetail(node)
   })
@@ -1239,6 +1316,7 @@ onMounted(async () => {
   computeDrawerMetrics()
   window.addEventListener('resize', computeDrawerMetrics)
   document.addEventListener('pointerdown', onDocPointer)
+  document.addEventListener('visibilitychange', onVisibility)
 
   await maybeApplyFocusFromQuery()
 })
@@ -1262,6 +1340,7 @@ onUnmounted(() => {
   resizeObserver?.disconnect()
   window.removeEventListener('resize', computeDrawerMetrics)
   document.removeEventListener('pointerdown', onDocPointer)
+  document.removeEventListener('visibilitychange', onVisibility)
 })
 </script>
 

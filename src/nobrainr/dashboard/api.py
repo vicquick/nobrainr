@@ -248,6 +248,69 @@ async def api_graph(request: Request) -> JSONResponse:
 _COMMUNITY_CACHE_PATH = "/app/graph_cache/communities.json"
 
 
+async def api_graph_live(request: Request) -> JSONResponse:
+    """Raw graph arrays for the client-side GPU force engine (cosmos.gl).
+
+    No server layout — the Constellarium simulates positions live on the
+    user's GPU, so this endpoint only ships compact parallel arrays:
+    names/communities/degrees plus links as index pairs. valid edges only
+    (edge_invalidation losers stay out). min_mentions trims leaf noise;
+    the default cap keeps payloads phone-friendly.
+    """
+    from nobrainr.db.pool import get_pool
+
+    try:
+        max_nodes = min(int(request.query_params.get("max_nodes", "12000")), 40000)
+    except ValueError:
+        max_nodes = 12000
+    try:
+        min_degree = max(1, int(request.query_params.get("min_degree", "2")))
+    except ValueError:
+        min_degree = 2
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        nodes = await conn.fetch(
+            """
+            SELECT e.id, e.name, COALESCE(e.community_id::int, -1) AS community,
+                   count(er.id) AS degree
+            FROM entities e
+            JOIN entity_relations er
+              ON er.valid AND (er.source_entity_id = e.id OR er.target_entity_id = e.id)
+            GROUP BY e.id, e.name, e.community_id
+            HAVING count(er.id) >= $1
+            ORDER BY count(er.id) DESC
+            LIMIT $2
+            """,
+            min_degree, max_nodes,
+        )
+        idx = {r["id"]: i for i, r in enumerate(nodes)}
+        edges = await conn.fetch(
+            """
+            SELECT source_entity_id AS s, target_entity_id AS t
+            FROM entity_relations
+            WHERE valid AND source_entity_id = ANY($1::uuid[])
+              AND target_entity_id = ANY($1::uuid[])
+            """,
+            list(idx.keys()),
+        )
+    links: list[int] = []
+    for e in edges:
+        si, ti = idx.get(e["s"]), idx.get(e["t"])
+        if si is not None and ti is not None and si != ti:
+            links.append(si)
+            links.append(ti)
+    return JSONResponse({
+        "names": [r["name"] for r in nodes],
+        "ids": [str(r["id"]) for r in nodes],
+        "communities": [r["community"] for r in nodes],
+        "degrees": [r["degree"] for r in nodes],
+        "links": links,
+        "node_count": len(nodes),
+        "link_count": len(links) // 2,
+    })
+
+
 async def api_graph_communities(request: Request) -> JSONResponse:
     """Community-level meta-graph — each node is a community bubble.
     Returns positions computed from entity centroids, inter-community edges,
@@ -2886,6 +2949,7 @@ api_routes = [
     Route("/api/chat", api_chat, methods=["POST"]),
     Route("/api/galaxy", api_galaxy),
     Route("/api/graph", api_graph),
+    Route("/api/graph/live", api_graph_live),
     Route("/api/graph/communities", api_graph_communities),
     Route("/api/graph/search", api_graph_search),
     Route("/api/memories", api_memories),
