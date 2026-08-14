@@ -941,6 +941,16 @@ CREATE INDEX IF NOT EXISTS idx_memory_tombstones_created
 -- error_msg is truncated to 500 chars at insert time; the full traceback
 -- still lives in the application log. We just want enough context for
 -- "what went wrong last Tuesday at 03:14".
+CREATE TABLE IF NOT EXISTS agent_presence (
+    agent       text NOT NULL,
+    machine     text NOT NULL,
+    status      text NOT NULL DEFAULT 'active',
+    task        text,
+    session_ref text,
+    last_seen   timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (agent, machine)
+);
+
 CREATE TABLE IF NOT EXISTS scheduler_runs (
     id            bigserial PRIMARY KEY,
     task_name     text        NOT NULL,

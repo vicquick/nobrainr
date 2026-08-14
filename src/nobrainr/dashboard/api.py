@@ -2943,6 +2943,42 @@ async def api_redistill_progress(request: Request) -> JSONResponse:
     })
 
 
+async def api_presence(request: Request) -> JSONResponse:
+    """Fleet presence roster (agent-comms layer, 2026-08-15). GET lists
+    active agents; POST /api/presence/beat lets session-start hooks
+    announce without an MCP round-trip."""
+    from nobrainr.db.queries import list_agent_presence
+
+    try:
+        window = min(int(request.query_params.get("window_s", "300")), 86400)
+    except ValueError:
+        window = 300
+    roster = await list_agent_presence(active_within_s=window)
+    for r in roster:
+        r["last_seen"] = r["last_seen"].isoformat()
+    return JSONResponse({"active": roster, "count": len(roster)})
+
+
+async def api_presence_beat(request: Request) -> JSONResponse:
+    from nobrainr.db.queries import upsert_agent_presence
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "json body required"}, status_code=400)
+    agent = (body.get("agent") or "").strip()
+    machine = (body.get("machine") or "").strip()
+    if not agent or not machine:
+        return JSONResponse({"error": "agent and machine required"}, status_code=400)
+    await upsert_agent_presence(
+        agent, machine,
+        status=(body.get("status") or "active")[:40],
+        task=body.get("task"),
+        session_ref=body.get("session_ref"),
+    )
+    return JSONResponse({"ok": True})
+
+
 api_routes = [
     Route("/api/transcribe", api_transcribe, methods=["POST"]),
     Route("/api/tts", api_tts, methods=["POST"]),
@@ -2977,6 +3013,8 @@ api_routes = [
     Route("/api/stats", api_stats),
     Route("/api/scheduler", api_scheduler),
     Route("/api/redistill-progress", api_redistill_progress),
+    Route("/api/presence", api_presence),
+    Route("/api/presence/beat", api_presence_beat, methods=["POST"]),
     Route("/api/scheduler/pause", api_scheduler_pause, methods=["POST"]),
     Route("/api/scheduler/resume", api_scheduler_resume, methods=["POST"]),
     Route("/api/scheduler/task/{task_name}", api_scheduler_task_runs, methods=["GET"]),
