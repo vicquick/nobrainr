@@ -121,6 +121,32 @@ async def enqueue_memory_write(
     via ``signal_pending`` so the write starts processing immediately
     instead of waiting for the next poll tick.
     """
+    # Auto-chunk oversized content (2026-08-15). Rows whose content exceeds
+    # chunk_threshold routinely blow the worker's 600s row budget (dedup-LLM
+    # + extraction scale with length, and worse under GPU contention) and die
+    # permanently after 3 attempts — 56 rows were lost this way on
+    # 2026-08-14. enqueue_document_chunks() already solves this (chunks,
+    # skips hot-path LLM, prefixes backfilled async), so route long content
+    # there instead of letting it fail later. Returns the first chunk's
+    # queue_id for caller compatibility; all ids ride in ``queue_ids``.
+    from nobrainr.config import settings as _settings
+    if not skip_dedup and len(content or "") > _settings.chunk_threshold:
+        res = await enqueue_document_chunks(
+            content,
+            summary=summary, tags=tags, category=category,
+            source_type=source_type, source_machine=source_machine,
+            source_ref=source_ref, confidence=confidence, metadata=metadata,
+        )
+        if isinstance(res, dict) and res.get("queue_ids"):
+            import datetime as _dt
+            return {
+                "queue_id": res["queue_ids"][0],
+                "queue_ids": res["queue_ids"],
+                "enqueued_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+                "auto_chunked": True,
+                "chunks": res.get("chunks"),
+            }
+
     import hashlib
 
     content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
@@ -460,6 +486,7 @@ async def mark_failed(
     *,
     error: str,
     retry: bool = True,
+    transient: bool = False,
 ) -> str:
     """Mark a claimed row as failed.
 
@@ -482,7 +509,14 @@ async def mark_failed(
         if row is None:
             return "missing"
 
-        should_retry = retry and row["attempts"] < row["max_attempts"]
+        # Transient infrastructure faults (DNS blip on the embedding endpoint,
+        # connection refused during a dependency restart) must not consume the
+        # row's permanent attempts the way real processing failures do: on
+        # 2026-08-14 a short embedding-DNS outage permanently killed 27 rows.
+        # ``transient=True`` retries against a higher ceiling instead.
+        TRANSIENT_MAX_ATTEMPTS = 10
+        ceiling = TRANSIENT_MAX_ATTEMPTS if transient else row["max_attempts"]
+        should_retry = retry and row["attempts"] < ceiling
 
         if should_retry:
             # Exponential backoff: attempt 1 → 30s, 2 → 120s, 3 → 480s

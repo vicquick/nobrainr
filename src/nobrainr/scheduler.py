@@ -684,6 +684,22 @@ class Scheduler:
                 # live-vs-scheduler cooldown in extraction/llm.py.
                 if True:
                     try:
+                        # Park for the GPU chat slot BEFORE starting the row
+                        # budget (2026-08-15). ollama_chat's scheduler-kind
+                        # calls park up to gpu_yield_max_wait_s (1800s) inside
+                        # the call — inside the 600s row timeout below. Under
+                        # sustained live GPU use the park ALONE exceeded the
+                        # budget and rows died as "worker row timeout" without
+                        # any work having failed (56 rows, 2026-08-14). Waiting
+                        # here first means the in-call park clears instantly
+                        # and the 600s covers actual work only.
+                        try:
+                            from nobrainr.extraction.llm import _wait_for_live_quiet
+                            await _wait_for_live_quiet("scheduler")
+                        except Exception:
+                            # Best-effort: a broken metrics endpoint must never
+                            # block the queue; the in-call park remains as backup.
+                            pass
                         result = await asyncio.wait_for(
                             store_memory_with_extraction(
                                 content=row["content"],
@@ -740,8 +756,19 @@ class Scheduler:
                         logger.exception(
                             "memory_write_worker: processing %s failed", queue_id,
                         )
+                        # DNS/connect faults are infrastructure blips, not row
+                        # failures — see mark_failed(transient=...).
+                        _msg = str(e)
+                        _transient = isinstance(e, (ConnectionError, OSError)) or any(
+                            t in _msg for t in (
+                                "Name or service not known",
+                                "Temporary failure in name resolution",
+                                "Connection refused",
+                                "Connect call failed",
+                            )
+                        )
                         final_status = await write_queue.mark_failed(
-                            queue_id, error=str(e), retry=True,
+                            queue_id, error=_msg, retry=True, transient=_transient,
                         )
                         logger.info(
                             "memory_write_worker: %s → %s after failure",
