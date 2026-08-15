@@ -186,6 +186,16 @@ async def _live_model_active() -> bool:
             for entry in resp.json():
                 if entry.get("model") not in yield_set:
                     continue
+                # Probe filter (2026-08-15): bimavo's backend heartbeats
+                # qwen3-8b with 1-token requests every few seconds — each
+                # probe re-armed the 25-min park and held the re-distill
+                # at 2.3 conv/h indefinitely (found via tcpdump → container
+                # 10.0.4.13 = bimavo backend). A request this small proves
+                # the server is alive, not that a human is mid-conversation.
+                # Only real usage parks the campaign.
+                if (entry.get("output_tokens") or 0) <= 2 and (
+                        entry.get("input_tokens") or 0) <= 8:
+                    continue
                 ts = _parse_metrics_ts(entry.get("timestamp", ""))
                 if ts is not None and ts >= cutoff:
                     busy = True
