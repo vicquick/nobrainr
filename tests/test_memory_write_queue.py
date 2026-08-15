@@ -330,6 +330,39 @@ async def test_mark_failed_gives_up_at_max_attempts():
     assert "status = 'failed'" in sql
 
 
+async def test_mark_failed_transient_retries_past_max_attempts():
+    """Transient infra faults (DNS blip, connection refused) retry against
+    the higher TRANSIENT_MAX_ATTEMPTS ceiling instead of dying at
+    max_attempts — 27 rows were permanently lost to a short embedding-DNS
+    outage on 2026-08-14."""
+    pool = _FakePool()
+    # attempt 3 of 3 — a NON-transient failure would give up here
+    pool.conn.fetchrow.return_value = {"attempts": 3, "max_attempts": 3}
+
+    with patch.object(write_queue, "get_pool", AsyncMock(return_value=pool)):
+        status = await write_queue.mark_failed(
+            str(uuid4()), error="[Errno -2] Name or service not known",
+            retry=True, transient=True,
+        )
+
+    assert status == "pending"
+    sql = pool.conn.execute.await_args.args[0]
+    assert "status = 'pending'" in sql
+
+
+async def test_mark_failed_transient_still_bounded():
+    """The transient ceiling is a ceiling, not an infinite loop."""
+    pool = _FakePool()
+    pool.conn.fetchrow.return_value = {"attempts": 10, "max_attempts": 3}
+
+    with patch.object(write_queue, "get_pool", AsyncMock(return_value=pool)):
+        status = await write_queue.mark_failed(
+            str(uuid4()), error="still down", retry=True, transient=True,
+        )
+
+    assert status == "failed"
+
+
 async def test_mark_failed_respects_retry_false():
     pool = _FakePool()
     pool.conn.fetchrow.return_value = {"attempts": 1, "max_attempts": 3}
