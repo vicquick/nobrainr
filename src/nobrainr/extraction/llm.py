@@ -157,6 +157,42 @@ def _parse_metrics_ts(raw: str) -> _dt.datetime | None:
         return None
 
 
+_gpu_yield_warned: bool = False
+
+
+def _warn_gpu_yield_unavailable(exc: Exception) -> None:
+    """Say once, loudly, that the GPU-yield probe has no data source.
+
+    The probe deliberately swallows errors so a missing endpoint can never
+    fail a real LLM call. The cost of that is silence: for weeks the yield
+    could be a no-op and look identical to "nothing is using the GPU".
+
+    This bit us on 2026-08-20. llama-swap v250 dropped the JSON
+    ``/api/metrics`` array this reads; ``/metrics`` is now Prometheus text
+    carrying host and GPU telemetry only, with no per-model request data,
+    and ``/running`` reports residency, which this function's docstring
+    already explains is the wrong signal. So on v250+ the yield is off and
+    there is no drop-in replacement.
+
+    That is tolerable in the current layout — every local consumer
+    (OpenWebUI, the bimavo wizard, nobrainr live) shares ONE llama-swap
+    model, so there is no eviction left to prevent, which was the whole
+    point of the yield. It stops being tolerable the moment two different
+    local models are in play again. Log it so that day is noticed.
+    """
+    global _gpu_yield_warned
+    if _gpu_yield_warned:
+        return
+    _gpu_yield_warned = True
+    logger.warning(
+        "GPU-yield probe unavailable (%s: %.120s) — %s/api/metrics did not "
+        "return usable data. Scheduler work will NOT park for live GPU use. "
+        "Harmless while all local callers share one model; revisit if that "
+        "changes. llama-swap v250+ removed this endpoint.",
+        type(exc).__name__, str(exc), settings.llm_server_url,
+    )
+
+
 async def _live_model_active() -> bool:
     """True when a gpu_yield model served a request recently.
 
@@ -200,8 +236,9 @@ async def _live_model_active() -> bool:
                 if ts is not None and ts >= cutoff:
                     busy = True
                     break
-    except Exception:
+    except Exception as exc:
         busy = False
+        _warn_gpu_yield_unavailable(exc)
     _gpu_yield_cache = (time.monotonic(), busy)
     return busy
 
