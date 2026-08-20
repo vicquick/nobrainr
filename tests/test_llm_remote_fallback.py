@@ -323,6 +323,40 @@ def test_night_window_never_pushes_live_work_remote(monkeypatch, remote_on):
         assert llm_mod._split_prefers_remote("live") is False
 
 
+def test_gpu_yield_probe_failure_warns_once_and_never_raises(monkeypatch, caplog):
+    """A dead probe must be visible, but must never fail the caller.
+
+    llama-swap v250 removed the JSON /api/metrics this reads. Before this,
+    the failure was swallowed silently and a disabled yield looked exactly
+    like an idle GPU.
+    """
+    import logging
+
+    monkeypatch.setattr(settings, "gpu_yield_models", ["qwen3.8-27b"])
+    monkeypatch.setattr(llm_mod, "_gpu_yield_warned", False)
+    monkeypatch.setattr(llm_mod, "_gpu_yield_cache", (0.0, False))
+
+    class Boom:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, *a, **k):
+            raise RuntimeError("404 Not Found")
+
+    monkeypatch.setattr(llm_mod.httpx, "AsyncClient", lambda **k: Boom())
+
+    with caplog.at_level(logging.WARNING, logger="nobrainr"):
+        assert asyncio.run(llm_mod._live_model_active()) is False
+        monkeypatch.setattr(llm_mod, "_gpu_yield_cache", (0.0, False))
+        assert asyncio.run(llm_mod._live_model_active()) is False
+
+    warnings = [r for r in caplog.records if "GPU-yield probe unavailable" in r.message]
+    assert len(warnings) == 1, "must warn exactly once, not on every call"
+
+
 def test_remote_ignored_when_incompletely_configured(monkeypatch, remote_on):
     """Mode alone is not enough — a missing model must not enable the remote."""
     monkeypatch.setattr(settings, "llm_remote_mode", "fallback")
