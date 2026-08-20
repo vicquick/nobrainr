@@ -12,6 +12,33 @@ class Settings(BaseSettings):
     # LLM inference (llama-server for GPU, Ollama for embeddings)
     llm_server_url: str = "http://llama-server:8080"
     ollama_url: str = "http://localhost:11434"
+
+    # Remote LLM (2026-08-20). A second OpenAI-compatible endpoint used when
+    # the local GPU slot is the bottleneck. Built for Hetzner's Experiments
+    # Inference API (https://inference.hetzner.com/api, free while in
+    # experimental status, vLLM-backed, Qwen3.8-27B at 256k ctx) but any
+    # OpenAI-compatible host works.
+    #
+    # Verified 2026-08-20 to honour the exact payload ollama_chat sends:
+    # response_format json_schema with strict:true, enum constraints, and
+    # chat_template_kwargs.enable_thinking=false (no reasoning trace).
+    #
+    # llm_remote_mode:
+    #   "off"      — never used (default; zero behaviour change)
+    #   "fallback" — try local first, use remote only when local fails or
+    #                times out. Cheapest safety net for GPU contention.
+    #   "parallel" — race both, first usable answer wins, loser cancelled.
+    #                Lowest latency, but doubles request volume.
+    #
+    # NOTE: in "parallel" and "fallback" modes prompt content leaves this
+    # machine. Hetzner state they do not store request/response bodies, but
+    # this is still an external egress of memory content — keep "off" for
+    # anything that must stay local.
+    llm_remote_url: str = ""
+    llm_remote_api_key: str = ""
+    llm_remote_model: str = ""
+    llm_remote_mode: str = "off"  # off | fallback | parallel
+    llm_remote_timeout: float = 300.0
     embedding_model: str = "qwen3-embedding-cpu"
     # Additional labels that refer to bit-identical vectors. The search
     # safeguard matches ANY of these so runtime-only tag drift (cpu vs gpu,
