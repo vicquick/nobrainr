@@ -170,6 +170,107 @@ def test_parallel_raises_when_both_legs_fail(monkeypatch, remote_on):
         asyncio.run(llm_mod.ollama_chat("s", "u", {}))
 
 
+def test_split_sends_batch_work_remote(monkeypatch, remote_on):
+    """Scheduler work must leave the GPU alone in split mode."""
+    monkeypatch.setattr(settings, "llm_remote_mode", "split")
+
+    async def local():  # pragma: no cover - must never run
+        raise AssertionError("local called for batch work in split mode")
+
+    async def remote():
+        return {"from": "remote"}
+
+    calls = _stub(monkeypatch, local=local, remote=remote)
+    result = asyncio.run(llm_mod.ollama_chat("s", "u", {}, caller_kind="scheduler"))
+
+    assert result == {"from": "remote"}
+    assert calls == {"local": 0, "remote": 1}
+
+
+def test_split_keeps_live_work_local(monkeypatch, remote_on):
+    """Interactive calls stay on the box — no network hop, no egress."""
+    monkeypatch.setattr(settings, "llm_remote_mode", "split")
+
+    async def local():
+        return {"from": "local"}
+
+    async def remote():  # pragma: no cover - must never run
+        raise AssertionError("remote called for live work in split mode")
+
+    calls = _stub(monkeypatch, local=local, remote=remote)
+    result = asyncio.run(llm_mod.ollama_chat("s", "u", {}, caller_kind="live"))
+
+    assert result == {"from": "local"}
+    assert calls == {"local": 1, "remote": 0}
+
+
+def test_split_batch_degrades_to_local_when_remote_fails(monkeypatch, remote_on):
+    """A 429 or outage must not stall batch work — it lands back on the GPU."""
+    monkeypatch.setattr(settings, "llm_remote_mode", "split")
+
+    async def local():
+        return {"from": "local"}
+
+    async def remote():
+        raise RuntimeError("429 rate limited")
+
+    calls = _stub(monkeypatch, local=local, remote=remote)
+    result = asyncio.run(llm_mod.ollama_chat("s", "u", {}, caller_kind="scheduler"))
+
+    assert result == {"from": "local"}
+    assert calls == {"local": 1, "remote": 1}
+
+
+def test_split_live_still_falls_back_to_remote(monkeypatch, remote_on):
+    """Live keeps the fallback safety net underneath the routing rule."""
+    monkeypatch.setattr(settings, "llm_remote_mode", "split")
+
+    async def local():
+        raise llm_mod.LiveLLMSkipped("GPU busy")
+
+    async def remote():
+        return {"from": "remote"}
+
+    _stub(monkeypatch, local=local, remote=remote)
+    result = asyncio.run(llm_mod.ollama_chat("s", "u", {}, caller_kind="live"))
+
+    assert result == {"from": "remote"}
+
+
+def test_remote_concurrency_is_bounded(monkeypatch, remote_on):
+    """The remote is shared and rate-limited — never open unbounded sockets."""
+    monkeypatch.setattr(settings, "llm_remote_max_concurrency", 2)
+    monkeypatch.setattr(llm_mod, "_remote_semaphore", None)
+    monkeypatch.setattr(llm_mod, "_remote_semaphore_limit", None)
+
+    peak = {"now": 0, "max": 0}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": '{"ok": true}'}}]}
+
+    class FakeClient:
+        async def post(self, *args, **kwargs):
+            peak["now"] += 1
+            peak["max"] = max(peak["max"], peak["now"])
+            await asyncio.sleep(0.02)
+            peak["now"] -= 1
+            return FakeResponse()
+
+    monkeypatch.setattr(llm_mod, "_get_remote_client", lambda: FakeClient())
+
+    async def drive():
+        await asyncio.gather(*[
+            llm_mod._remote_chat("s", "u", {}) for _ in range(8)
+        ])
+
+    asyncio.run(drive())
+    assert peak["max"] <= 2, f"opened {peak['max']} concurrent remote calls"
+
+
 def test_remote_ignored_when_incompletely_configured(monkeypatch, remote_on):
     """Mode alone is not enough — a missing model must not enable the remote."""
     monkeypatch.setattr(settings, "llm_remote_mode", "fallback")
