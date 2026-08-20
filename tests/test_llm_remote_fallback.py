@@ -271,6 +271,58 @@ def test_remote_concurrency_is_bounded(monkeypatch, remote_on):
     assert peak["max"] <= 2, f"opened {peak['max']} concurrent remote calls"
 
 
+@pytest.mark.parametrize(
+    "window,hour,expect_local",
+    [
+        ("23-07", 23, True),    # window start, inclusive
+        ("23-07", 2, True),     # across midnight
+        ("23-07", 6, True),     # last hour inside
+        ("23-07", 7, False),    # window end, exclusive
+        ("23-07", 12, False),   # daytime
+        ("09-17", 12, True),    # non-wrapping window
+        ("09-17", 8, False),
+        ("", 3, False),         # disabled
+        ("garbage", 3, False),  # malformed → disabled, never raises
+        ("07-07", 7, False),    # zero-width → disabled
+        ("5-99", 7, False),     # out of range → disabled
+    ],
+)
+def test_local_batch_window_boundaries(monkeypatch, window, hour, expect_local):
+    import datetime as dt
+
+    monkeypatch.setattr(settings, "llm_local_batch_hours", window)
+    when = dt.datetime(2026, 8, 20, hour, 30)
+    assert llm_mod._in_local_batch_window(when) is expect_local
+
+
+def test_split_keeps_batch_local_during_night_window(monkeypatch, remote_on):
+    """At night the GPU is idle — batch should use it instead of the remote."""
+    monkeypatch.setattr(settings, "llm_remote_mode", "split")
+    monkeypatch.setattr(llm_mod, "_in_local_batch_window", lambda now=None: True)
+
+    async def local():
+        return {"from": "local"}
+
+    async def remote():  # pragma: no cover - must never run
+        raise AssertionError("remote used during the local night window")
+
+    calls = _stub(monkeypatch, local=local, remote=remote)
+    result = asyncio.run(llm_mod.ollama_chat("s", "u", {}, caller_kind="scheduler"))
+
+    assert result == {"from": "local"}
+    assert calls == {"local": 1, "remote": 0}
+
+
+def test_night_window_never_pushes_live_work_remote(monkeypatch, remote_on):
+    """The window moves batch only; live stays local in both directions."""
+    monkeypatch.setattr(settings, "llm_remote_mode", "split")
+    for in_window in (True, False):
+        monkeypatch.setattr(
+            llm_mod, "_in_local_batch_window", lambda now=None, v=in_window: v
+        )
+        assert llm_mod._split_prefers_remote("live") is False
+
+
 def test_remote_ignored_when_incompletely_configured(monkeypatch, remote_on):
     """Mode alone is not enough — a missing model must not enable the remote."""
     monkeypatch.setattr(settings, "llm_remote_mode", "fallback")
