@@ -312,10 +312,43 @@ def _get_remote_client() -> httpx.AsyncClient:
 def _remote_enabled() -> bool:
     """True when a usable remote LLM is configured and switched on."""
     return (
-        settings.llm_remote_mode in ("fallback", "parallel")
+        settings.llm_remote_mode in ("fallback", "parallel", "split")
         and bool(settings.llm_remote_url)
         and bool(settings.llm_remote_model)
     )
+
+
+_remote_semaphore: asyncio.Semaphore | None = None
+_remote_semaphore_limit: int | None = None
+
+
+def _get_remote_semaphore() -> asyncio.Semaphore:
+    """Bound concurrent remote calls (see config.llm_remote_max_concurrency).
+
+    Rebuilt when the configured limit changes so tests can tune it without
+    a process restart.
+    """
+    global _remote_semaphore, _remote_semaphore_limit
+    limit = max(1, settings.llm_remote_max_concurrency)
+    if _remote_semaphore is None or _remote_semaphore_limit != limit:
+        _remote_semaphore = asyncio.Semaphore(limit)
+        _remote_semaphore_limit = limit
+    return _remote_semaphore
+
+
+def _split_prefers_remote(caller_kind: str) -> bool:
+    """In split mode, does this caller's work belong on the remote leg?
+
+    Batch work goes remote; live work stays local. ``caller_kind != "live"``
+    is already the codebase's batch/interactive boundary (it is what
+    ``track_scheduler`` and the GPU-yield cooldown both key off), so reuse
+    it rather than inventing a second, drifting definition.
+
+    Sending batch work remote has a second-order benefit worth naming: it
+    never increments ``_scheduler_in_flight``, so live callers stop being
+    bounced with LiveLLMSkipped while a distill campaign runs.
+    """
+    return caller_kind != "live"
 
 
 def _get_ollama_client() -> httpx.AsyncClient:
@@ -574,7 +607,8 @@ async def _remote_chat(
         payload["chat_template_kwargs"] = {"enable_thinking": False}
 
     client = _get_remote_client()
-    resp = await client.post("/v1/chat/completions", json=payload)
+    async with _get_remote_semaphore():
+        resp = await client.post("/v1/chat/completions", json=payload)
     resp.raise_for_status()
     data = resp.json()
     content = (
@@ -631,16 +665,34 @@ async def ollama_chat(
         keep_alive=keep_alive, think=think, caller_kind=caller_kind,
     )
 
-    if settings.llm_remote_mode == "parallel":
-        return await _race_local_remote(
-            local_call,
-            lambda: _remote_chat(
-                system, user, schema,
-                temperature=temperature, think=think,
-            ),
+    def remote_call():
+        return _remote_chat(
+            system, user, schema, temperature=temperature, think=think,
         )
 
-    # fallback mode
+    if settings.llm_remote_mode == "parallel":
+        return await _race_local_remote(local_call, remote_call)
+
+    if settings.llm_remote_mode == "split" and _split_prefers_remote(caller_kind):
+        # Batch work: remote first so the GPU stays free for interactive.
+        # local_call is a live coroutine we may not end up awaiting, so
+        # close it explicitly on the happy path rather than leaking a
+        # "coroutine was never awaited" warning.
+        try:
+            result = await remote_call()
+        except asyncio.CancelledError:
+            local_call.close()
+            raise
+        except Exception as exc:
+            logger.warning(
+                "remote LLM unavailable (%s: %.120s) — falling back to local",
+                type(exc).__name__, str(exc),
+            )
+            return await local_call
+        local_call.close()
+        return result
+
+    # fallback mode, and split mode's live callers
     try:
         return await local_call
     except asyncio.CancelledError:
@@ -651,9 +703,7 @@ async def ollama_chat(
             type(exc).__name__, str(exc),
             settings.llm_remote_url, settings.llm_remote_model,
         )
-        return await _remote_chat(
-            system, user, schema, temperature=temperature, think=think,
-        )
+        return await remote_call()
 
 
 async def _race_local_remote(local_coro, remote_factory) -> dict:
