@@ -271,6 +271,7 @@ def _next_jitter_sleep(prev: float) -> float:
 
 _llm_client: httpx.AsyncClient | None = None
 _ollama_client: httpx.AsyncClient | None = None
+_remote_client: httpx.AsyncClient | None = None
 
 
 def _get_llm_client() -> httpx.AsyncClient:
@@ -286,6 +287,35 @@ def _get_llm_client() -> httpx.AsyncClient:
             base_url=settings.llm_server_url, timeout=DEFAULT_LLM_TIMEOUT
         )
     return _llm_client
+
+
+def _get_remote_client() -> httpx.AsyncClient:
+    """Client for the remote OpenAI-compatible LLM (see config.llm_remote_*).
+
+    Separate pool from ``_get_llm_client`` on purpose: the remote host has
+    its own latency profile and rate limits, and a stalled local pool must
+    never starve the escape hatch that exists precisely for that case.
+    """
+    global _remote_client
+    if _remote_client is None or _remote_client.is_closed:
+        headers = {}
+        if settings.llm_remote_api_key:
+            headers["Authorization"] = f"Bearer {settings.llm_remote_api_key}"
+        _remote_client = httpx.AsyncClient(
+            base_url=settings.llm_remote_url,
+            timeout=settings.llm_remote_timeout,
+            headers=headers,
+        )
+    return _remote_client
+
+
+def _remote_enabled() -> bool:
+    """True when a usable remote LLM is configured and switched on."""
+    return (
+        settings.llm_remote_mode in ("fallback", "parallel")
+        and bool(settings.llm_remote_url)
+        and bool(settings.llm_remote_model)
+    )
 
 
 def _get_ollama_client() -> httpx.AsyncClient:
@@ -497,7 +527,175 @@ def _wrap_schema_strict(schema: dict) -> dict:
     return out
 
 
+async def _remote_chat(
+    system: str,
+    user: str,
+    schema: dict,
+    *,
+    temperature: float = 0.7,
+    think: bool = False,
+) -> dict:
+    """Single-shot schema-constrained call against the remote LLM.
+
+    Deliberately thin: no retry ladder, no GPU-yield bookkeeping, no
+    scheduler accounting. The remote endpoint exists to answer when the
+    local slot cannot, so a failure here must surface fast rather than
+    spend another minute backing off.
+
+    Payload is byte-for-byte the shape ``_ollama_chat_local`` sends, minus
+    the model name. Verified 2026-08-20 against Hetzner's vLLM: strict
+    json_schema and enum constraints are honoured, and
+    ``enable_thinking: false`` suppresses the reasoning trace that
+    Qwen3.8 otherwise emits by default.
+    """
+    payload: dict = {
+        "model": settings.llm_remote_model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "max_tokens": 4096,
+        "temperature": temperature,
+        "top_p": 0.8,
+        "top_k": 20,
+        "min_p": 0.0,
+        "stream": False,
+    }
+    if schema:
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "structured_output",
+                "strict": True,
+                "schema": _wrap_schema_strict(schema),
+            },
+        }
+    if not think:
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
+
+    client = _get_remote_client()
+    resp = await client.post("/v1/chat/completions", json=payload)
+    resp.raise_for_status()
+    data = resp.json()
+    content = (
+        data.get("choices", [{}])[0].get("message", {}).get("content", "")
+    )
+    if not content or not content.strip():
+        raise ValueError("Empty remote LLM content")
+    return _extract_json(content, schema)
+
+
 async def ollama_chat(
+    system: str,
+    user: str,
+    schema: dict,
+    *,
+    model: str | None = None,
+    temperature: float = 0.7,
+    num_ctx: int = 8192,
+    timeout: float = DEFAULT_LLM_TIMEOUT,
+    max_retries: int = DEFAULT_LLM_MAX_RETRIES,
+    keep_alive: str = "24h",
+    think: bool = False,
+    caller_kind: str = "scheduler",
+) -> dict:
+    """Schema-constrained chat, optionally backed by a remote LLM.
+
+    Dispatches on ``settings.llm_remote_mode``:
+
+    - ``off`` (default): calls ``_ollama_chat_local`` and nothing else, so
+      behaviour is identical to before this wrapper existed.
+    - ``fallback``: local first; the remote is tried only once local has
+      genuinely failed. That explicitly includes ``LiveLLMSkipped`` — a
+      live caller bounced because the GPU was busy is the single clearest
+      case for the remote, and today that work is simply dropped.
+    - ``parallel``: both are raced and the first usable answer wins. Halves
+      tail latency at the cost of doubling request volume; the loser is
+      cancelled as soon as a winner lands.
+
+    ``CancelledError`` is never swallowed — a cancelled call must stay
+    cancelled rather than silently re-issue against the remote.
+    """
+    if not _remote_enabled():
+        return await _ollama_chat_local(
+            system, user, schema,
+            model=model, temperature=temperature, num_ctx=num_ctx,
+            timeout=timeout, max_retries=max_retries,
+            keep_alive=keep_alive, think=think, caller_kind=caller_kind,
+        )
+
+    local_call = _ollama_chat_local(
+        system, user, schema,
+        model=model, temperature=temperature, num_ctx=num_ctx,
+        timeout=timeout, max_retries=max_retries,
+        keep_alive=keep_alive, think=think, caller_kind=caller_kind,
+    )
+
+    if settings.llm_remote_mode == "parallel":
+        return await _race_local_remote(
+            local_call,
+            lambda: _remote_chat(
+                system, user, schema,
+                temperature=temperature, think=think,
+            ),
+        )
+
+    # fallback mode
+    try:
+        return await local_call
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # includes LiveLLMSkipped — see docstring
+        logger.warning(
+            "local LLM unavailable (%s: %.120s) — retrying on remote %s/%s",
+            type(exc).__name__, str(exc),
+            settings.llm_remote_url, settings.llm_remote_model,
+        )
+        return await _remote_chat(
+            system, user, schema, temperature=temperature, think=think,
+        )
+
+
+async def _race_local_remote(local_coro, remote_factory) -> dict:
+    """Run local and remote concurrently; return the first usable result.
+
+    If the first finisher raises, the other is awaited rather than
+    propagating — the whole point of racing is that either side alone is
+    sufficient. Only when both fail does the local error surface, since
+    that is the one operators can act on.
+    """
+    local_task = asyncio.ensure_future(local_coro)
+    remote_task = asyncio.ensure_future(remote_factory())
+    pending = {local_task, remote_task}
+    local_exc: Exception | None = None
+    try:
+        while pending:
+            done, pending = await asyncio.wait(
+                pending, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in done:
+                try:
+                    result = task.result()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    if task is local_task:
+                        local_exc = exc
+                    logger.warning(
+                        "%s LLM leg failed in parallel mode (%s: %.120s)",
+                        "local" if task is local_task else "remote",
+                        type(exc).__name__, str(exc),
+                    )
+                    continue
+                return result
+        raise local_exc or RuntimeError("both LLM legs failed with no error captured")
+    finally:
+        for task in (local_task, remote_task):
+            if not task.done():
+                task.cancel()
+
+
+async def _ollama_chat_local(
     system: str,
     user: str,
     schema: dict,
