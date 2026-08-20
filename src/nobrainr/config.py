@@ -28,7 +28,21 @@ class Settings(BaseSettings):
     #   "fallback" — try local first, use remote only when local fails or
     #                times out. Cheapest safety net for GPU contention.
     #   "parallel" — race both, first usable answer wins, loser cancelled.
-    #                Lowest latency, but doubles request volume.
+    #                Lowest latency, but doubles request volume and buys no
+    #                extra throughput: both legs do the SAME work.
+    #   "split"    — route by caller instead of duplicating. Batch work
+    #                (scheduler, extraction, distill) goes remote; live and
+    #                MCP calls stay local. Each leg then works on DIFFERENT
+    #                jobs, so effective capacity roughly doubles and the
+    #                local 27b slot stops competing with interactive use.
+    #                Whichever leg is preferred, the other is still the
+    #                fallback, so an outage on either side degrades rather
+    #                than fails.
+    #
+    # "split" is the throughput option; "parallel" is the latency option.
+    # Reach for parallel only on low-volume latency-sensitive paths — as a
+    # blanket setting on a continuously-distilling scheduler it just burns
+    # remote quota against a rate-limited free tier.
     #
     # NOTE: in "parallel" and "fallback" modes prompt content leaves this
     # machine. Hetzner state they do not store request/response bodies, but
@@ -37,8 +51,15 @@ class Settings(BaseSettings):
     llm_remote_url: str = ""
     llm_remote_api_key: str = ""
     llm_remote_model: str = ""
-    llm_remote_mode: str = "off"  # off | fallback | parallel
+    llm_remote_mode: str = "off"  # off | fallback | parallel | split
     llm_remote_timeout: float = 300.0
+    # Ceiling on concurrent in-flight remote calls. The remote is a shared,
+    # rate-limited service (Hetzner answer 429 when a key exceeds its
+    # allowance), and in "split" mode the scheduler can otherwise open as
+    # many sockets as it has jobs. 4 keeps batch work moving without
+    # tripping the limiter; a 429 is not fatal anyway — it fails the remote
+    # leg and the call lands back on local.
+    llm_remote_max_concurrency: int = 4
     embedding_model: str = "qwen3-embedding-cpu"
     # Additional labels that refer to bit-identical vectors. The search
     # safeguard matches ANY of these so runtime-only tag drift (cpu vs gpu,
