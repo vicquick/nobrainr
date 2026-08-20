@@ -157,6 +157,42 @@ def _parse_metrics_ts(raw: str) -> _dt.datetime | None:
         return None
 
 
+_gpu_yield_warned: bool = False
+
+
+def _warn_gpu_yield_unavailable(exc: Exception) -> None:
+    """Say once, loudly, that the GPU-yield probe has no data source.
+
+    The probe deliberately swallows errors so a missing endpoint can never
+    fail a real LLM call. The cost of that is silence: for weeks the yield
+    could be a no-op and look identical to "nothing is using the GPU".
+
+    This bit us on 2026-08-20. llama-swap v250 dropped the JSON
+    ``/api/metrics`` array this reads; ``/metrics`` is now Prometheus text
+    carrying host and GPU telemetry only, with no per-model request data,
+    and ``/running`` reports residency, which this function's docstring
+    already explains is the wrong signal. So on v250+ the yield is off and
+    there is no drop-in replacement.
+
+    That is tolerable in the current layout — every local consumer
+    (OpenWebUI, the bimavo wizard, nobrainr live) shares ONE llama-swap
+    model, so there is no eviction left to prevent, which was the whole
+    point of the yield. It stops being tolerable the moment two different
+    local models are in play again. Log it so that day is noticed.
+    """
+    global _gpu_yield_warned
+    if _gpu_yield_warned:
+        return
+    _gpu_yield_warned = True
+    logger.warning(
+        "GPU-yield probe unavailable (%s: %.120s) — %s/api/metrics did not "
+        "return usable data. Scheduler work will NOT park for live GPU use. "
+        "Harmless while all local callers share one model; revisit if that "
+        "changes. llama-swap v250+ removed this endpoint.",
+        type(exc).__name__, str(exc), settings.llm_server_url,
+    )
+
+
 async def _live_model_active() -> bool:
     """True when a gpu_yield model served a request recently.
 
@@ -200,8 +236,9 @@ async def _live_model_active() -> bool:
                 if ts is not None and ts >= cutoff:
                     busy = True
                     break
-    except Exception:
+    except Exception as exc:
         busy = False
+        _warn_gpu_yield_unavailable(exc)
     _gpu_yield_cache = (time.monotonic(), busy)
     return busy
 
@@ -336,6 +373,36 @@ def _get_remote_semaphore() -> asyncio.Semaphore:
     return _remote_semaphore
 
 
+def _in_local_batch_window(now: _dt.datetime | None = None) -> bool:
+    """True when split mode should keep batch work on the local GPU.
+
+    Window is ``settings.llm_local_batch_hours`` as "HH-HH" in server local
+    time and may wrap midnight ("23-07"). A malformed value disables the
+    window rather than failing the call — an unparseable config should cost
+    throughput, never correctness.
+    """
+    spec = (settings.llm_local_batch_hours or "").strip()
+    if not spec:
+        return False
+    try:
+        start_raw, end_raw = spec.split("-", 1)
+        start, end = int(start_raw), int(end_raw)
+    except ValueError:
+        logger.warning(
+            "llm_local_batch_hours=%r is not 'HH-HH' — ignoring the window", spec
+        )
+        return False
+    if not (0 <= start <= 23 and 0 <= end <= 23) or start == end:
+        logger.warning(
+            "llm_local_batch_hours=%r is not a usable range — ignoring", spec
+        )
+        return False
+    hour = (now or _dt.datetime.now()).hour
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end  # wraps midnight
+
+
 def _split_prefers_remote(caller_kind: str) -> bool:
     """In split mode, does this caller's work belong on the remote leg?
 
@@ -347,8 +414,15 @@ def _split_prefers_remote(caller_kind: str) -> bool:
     Sending batch work remote has a second-order benefit worth naming: it
     never increments ``_scheduler_in_flight``, so live callers stop being
     bounced with LiveLLMSkipped while a distill campaign runs.
+
+    During the configured night window (``llm_local_batch_hours``) batch
+    work goes back to the local GPU: nobody is holding the slot then, and
+    an idle GPU is throughput we already paid for. Live work is never
+    affected by the window — it is local in both directions.
     """
-    return caller_kind != "live"
+    if caller_kind == "live":
+        return False
+    return not _in_local_batch_window()
 
 
 def _get_ollama_client() -> httpx.AsyncClient:

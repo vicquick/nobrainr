@@ -60,6 +60,17 @@ class Settings(BaseSettings):
     # tripping the limiter; a 429 is not fatal anyway — it fails the remote
     # leg and the call lands back on local.
     llm_remote_max_concurrency: int = 4
+    # Night window for split mode, as "HH-HH" in server local time (e.g.
+    # "23-07"). Inside it, batch work goes back to the LOCAL GPU instead of
+    # the remote; outside it, batch goes remote as usual. Wraps midnight.
+    # Empty disables the window, so batch is always remote.
+    #
+    # The point: during the day the GPU belongs to people (OpenWebUI, the
+    # bimavo wizard, live MCP calls) and batch should stay off it. At night
+    # nobody holds the slot, and an idle GPU is wasted throughput — local
+    # inference also costs nothing and leaks nothing, unlike the remote.
+    # Live callers are unaffected either way; they are always local.
+    llm_local_batch_hours: str = ""
     embedding_model: str = "qwen3-embedding-cpu"
     # Additional labels that refer to bit-identical vectors. The search
     # safeguard matches ANY of these so runtime-only tag drift (cpu vs gpu,
