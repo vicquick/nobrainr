@@ -60,6 +60,25 @@ class Settings(BaseSettings):
     # tripping the limiter; a 429 is not fatal anyway — it fails the remote
     # leg and the call lands back on local.
     llm_remote_max_concurrency: int = 4
+    # Requests-per-60s ceiling for the remote leg. This is the binding
+    # constraint on Hetzner's Experiments API, which documents (2026-08-21):
+    #   60s: 4M input tokens / 100k output tokens / 10 REQUESTS
+    # The token budgets are generous; the request count is what bites.
+    #
+    # A concurrency semaphore does NOT prevent this. Two workers issuing
+    # ~2s calls back-to-back reach ~60 req/min while never exceeding 2 in
+    # flight. Observed 2026-08-21: 14 429s inside a single minute at
+    # concurrency 2, while the hourly average was only ~2.7 req/min. The
+    # limit is a rate, so the fix has to be pacing, not parallelism.
+    #
+    # Set slightly under the documented ceiling to leave room for the
+    # occasional live call sharing the same key. 0 disables pacing.
+    llm_remote_rate_limit_per_min: int = 9
+    # How many times to retry the remote leg on a 429 before giving up and
+    # falling back to local. A 429 means "retry shortly", not "this backend
+    # is broken" — dropping straight to the local GPU costs far more than
+    # waiting a few seconds, since local runs ~17 tok/s.
+    llm_remote_rate_limit_retries: int = 2
     # Night window for split mode, as "HH-HH" in server local time (e.g.
     # "23-07"). Inside it, batch work goes back to the LOCAL GPU instead of
     # the remote; outside it, batch goes remote as usual. Wraps midnight.
