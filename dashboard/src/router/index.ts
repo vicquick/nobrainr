@@ -78,6 +78,11 @@ const router = createRouter({
       component: () => import('@/views/SchedulerView.vue'),
     },
     {
+      path: '/scriptorium',
+      name: 'scriptorium',
+      component: () => import('@/views/ScriptoriumView.vue'),
+    },
+    {
       path: '/pulse',
       name: 'pulse',
       component: () => import('@/views/PulseView.vue'),
