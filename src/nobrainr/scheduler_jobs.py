@@ -1957,12 +1957,19 @@ async def community_detection() -> dict:
 async def cooccurrence_linking() -> dict:
     """Find entity pairs co-occurring in 3+ memories without edges, use LLM to classify."""
     model = settings.scheduler_llm_model
-    pairs = await queries.get_unlinked_cooccurrences(min_shared=3, limit=30)
+    # Was hardcoded to 30 while settings.cooccurrence_batch_size sat unused.
+    # Batch size matters here: the candidate backlog was ~77k pairs, so at
+    # 30/run x ~9 runs/day it would take ~285 days to work through even once
+    # the rejection-memo below stops the job re-judging the same top-30.
+    pairs = await queries.get_unlinked_cooccurrences(
+        min_shared=3, limit=settings.cooccurrence_batch_size
+    )
     if not pairs:
         return {"status": "no_pairs", "ran_at": datetime.now().isoformat()}
 
     created = 0
-    skipped = 0
+    skipped = 0        # LLM judged them unrelated — memoized, never re-asked
+    no_context = 0     # transient: sample memories had no usable content
     errors = 0
 
     for pair in pairs:
@@ -1973,7 +1980,10 @@ async def cooccurrence_linking() -> dict:
             snippet for snippet in pair["sample_contents"] if snippet
         )
         if not context_snippets:
-            skipped += 1
+            # Deliberately NOT memoized: an empty snippet is missing data,
+            # not a verdict. If the content appears later the pair should be
+            # judged on its merits rather than being permanently excluded.
+            no_context += 1
             continue
 
         prompt = (
@@ -2034,6 +2044,17 @@ async def cooccurrence_linking() -> dict:
                     pair["shared_count"],
                 )
             else:
+                # Record the "no" so this pair is never re-judged. Before
+                # this, a rejection left no trace and the same top-30 by
+                # shared_count returned every run, making the ~77k pairs
+                # behind them unreachable.
+                await queries.store_entity_pair_rejection(
+                    pair["entity_a_id"],
+                    pair["entity_b_id"],
+                    reason=result.get("reason") or None,
+                    shared_count=pair.get("shared_count"),
+                    model=model,
+                )
                 skipped += 1
 
         except Exception:
@@ -2048,6 +2069,7 @@ async def cooccurrence_linking() -> dict:
         "pairs_evaluated": len(pairs),
         "relationships_created": created,
         "skipped": skipped,
+        "no_context": no_context,
         "errors": errors,
         "ran_at": datetime.now().isoformat(),
     }
