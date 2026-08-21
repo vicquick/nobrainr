@@ -21,9 +21,41 @@
             @click="setTier(i)"
           >{{ t.label }}</button>
         </span>
+        <span class="sep">·</span>
+        <button class="plate-act" :class="{ active: showForces }" @click="showForces = !showForces">forces</button>
       </p>
       <p class="plate-stats" v-else>charting the heavens…</p>
     </header>
+
+    <!-- Forces: Obsidian's four sliders, live on the running simulation -->
+    <aside v-if="showForces" class="forces">
+      <p class="forces-head">Forces</p>
+      <label class="force-row">
+        <span>Center force</span>
+        <input type="range" min="0" max="1" step="0.05" v-model.number="fCenter" @input="applyForces" />
+        <em>{{ fCenter.toFixed(2) }}</em>
+      </label>
+      <label class="force-row">
+        <span>Repel force</span>
+        <input type="range" min="0" max="2" step="0.05" v-model.number="fRepel" @input="applyForces" />
+        <em>{{ fRepel.toFixed(2) }}</em>
+      </label>
+      <label class="force-row">
+        <span>Link force</span>
+        <input type="range" min="0" max="1" step="0.05" v-model.number="fLink" @input="applyForces" />
+        <em>{{ fLink.toFixed(2) }}</em>
+      </label>
+      <label class="force-row">
+        <span>Link distance</span>
+        <input type="range" min="10" max="200" step="5" v-model.number="fDist" @input="applyForces" />
+        <em>{{ fDist }}</em>
+      </label>
+      <label class="force-row">
+        <span>Text fade</span>
+        <input type="range" min="0.3" max="3" step="0.1" v-model.number="fOpacity" @input="updateLabelAlphas" />
+        <em>{{ fOpacity.toFixed(1) }}</em>
+      </label>
+    </aside>
 
     <!-- Seek: focus a named star -->
     <div class="seek">
@@ -47,9 +79,39 @@
 </template>
 
 <script setup lang="ts">
+/**
+ * Obsidian-faithful rebuild (2026-08-21). The previous Constellarium ran
+ * cosmos.gl — a GPU particle simulator with its own shader integrator. It
+ * showed 12k points, but no tuning could make it FEEL like Obsidian,
+ * because the feel is not a parameter: it is d3-force's velocity-Verlet
+ * settle plus a handful of very specific interaction behaviours. This view
+ * now runs the exact stack of the canonical replica (Quartz v4): pixi.js
+ * rendering, d3-force physics, mechanics verbatim from its source:
+ *
+ *   charge  = forceManyBody().strength(-100 * repelForce)
+ *   center  = forceCenter().strength(centerForce)
+ *   link    = forceLink().distance(linkDistance)  (+ strength slider)
+ *   collide = forceCollide(nodeRadius)
+ *   radius  = 2 + sqrt(degree)
+ *   hover   → non-neighbours (nodes AND links) tween to α0.2 in 200ms
+ *   label   → α = max((k · opacityScale − 1) / 3.75, 0), zoom-driven
+ *   drag    → alphaTarget(1) reheat; fx offset divided by zoom k
+ *
+ * Honest tradeoff: d3-force is CPU. The old "deep" tier (12k) is now 5k —
+ * Obsidian itself slows at that scale, and the feel matters more here than
+ * raw count. The GPU full-sky view still exists at /galaxy.
+ */
 import { ref, onMounted, onUnmounted } from 'vue'
 import { RouterLink } from 'vue-router'
-import { Graph } from '@cosmos.gl/graph'
+import { Application, Container, Graphics, Text, TextStyle } from 'pixi.js'
+import {
+  forceSimulation, forceManyBody, forceCenter, forceLink, forceCollide,
+  type Simulation, type SimulationNodeDatum,
+} from 'd3-force'
+import { select } from 'd3-selection'
+import { zoom, zoomIdentity, type ZoomBehavior, type ZoomTransform } from 'd3-zoom'
+import { drag } from 'd3-drag'
+import { Group as TweenGroup, Tween } from '@tweenjs/tween.js'
 import api from '@/api/client'
 
 interface LiveGraph {
@@ -61,6 +123,23 @@ interface LiveGraph {
   node_count: number
   link_count: number
 }
+interface StarNode extends SimulationNodeDatum {
+  idx: number
+  id: string
+  name: string
+  community: number
+  degree: number
+  gfx?: Graphics
+  label?: Text
+  active: boolean
+  fx?: number | null
+  fy?: number | null
+}
+interface StarLink {
+  source: StarNode
+  target: StarNode
+  active: boolean
+}
 
 const canvasHost = ref<HTMLDivElement | null>(null)
 const ready = ref(false)
@@ -68,299 +147,454 @@ const nodeCount = ref(0)
 const linkCount = ref(0)
 const seekQuery = ref('')
 const focused = ref<{ name: string; degree: number; community: number } | null>(null)
+const showForces = ref(false)
 
-let cosmos: Graph | null = null
-let data: LiveGraph | null = null
+/* Obsidian slider defaults — Quartz ships 0.5 / 0.3 / 30. Link force 1.0
+   keeps d3's default per-link strength curve as the baseline. */
+const fCenter = ref(0.3)
+const fRepel = ref(0.5)
+const fLink = ref(1.0)
+const fDist = ref(30)
+const fOpacity = ref(1.3)
 
-// Codex palette: gold-family constellations on deep parchment-night.
-// Hue walks the warm band per community; large communities stay closest
-// to the house gold so the whole sky reads as one manuscript.
-function communityColor(c: number, alpha = 0.92): [number, number, number, number] {
-  if (c < 0) return [154, 134, 110, alpha * 255] as unknown as [number, number, number, number]
-  const hues = [
-    [200, 169, 110], [214, 158, 94], [181, 146, 128], [226, 189, 122],
-    [168, 148, 96], [204, 140, 92], [190, 170, 140], [172, 128, 100],
-    [222, 174, 96], [158, 138, 118], [210, 186, 138], [186, 152, 84],
-  ]
-  const [r, g, b] = hues[c % hues.length]
-  return [r, g, b, alpha * 255] as unknown as [number, number, number, number]
-}
-
-// Scale tiers: light laptops get a calm sky, big GPUs can ask for more.
-// FPS watchdog downshifts automatically if the first seconds stutter.
+/* CPU physics budget, not GPU: sized so charge + collide hold frame rate.
+   The 12k sky lives on /galaxy. */
 const TIERS = [
-  { label: 'faint', nodes: 1500, degree: 4 },
-  { label: 'clear', nodes: 4000, degree: 3 },
-  { label: 'deep', nodes: 12000, degree: 2 },
+  { label: 'faint', nodes: 800, degree: 5 },
+  { label: 'clear', nodes: 2000, degree: 3 },
+  { label: 'deep', nodes: 5000, degree: 2 },
 ] as const
 const tier = ref(1)
 
-async function boot() {
-  const t = TIERS[tier.value]
-  const { data: g } = await api.get<LiveGraph>(
-    `/api/graph/live?max_nodes=${t.nodes}&min_degree=${t.degree}`)
-  data = g
-  nodeCount.value = g.node_count
-  linkCount.value = g.link_count
-  if (!canvasHost.value) return
+// Codex palette: gold-family constellations on deep parchment-night.
+// Kept verbatim from the cosmos version — the house voice, not a formula.
+const HUES: Array<[number, number, number]> = [
+  [200, 169, 110], [214, 158, 94], [181, 146, 128], [226, 189, 122],
+  [168, 148, 96], [204, 140, 92], [190, 170, 140], [172, 128, 100],
+  [222, 174, 96], [158, 138, 118], [210, 186, 138], [186, 152, 84],
+]
+function communityColor(c: number): number {
+  const [r, g, b] = c < 0 ? [154, 134, 110] : HUES[c % HUES.length]
+  return (r << 16) | (g << 8) | b
+}
+const LINK_DIM = 0x3a3226
+const LINK_LIT = 0x8a7a58
 
-  const n = g.node_count
-  const colors = new Float32Array(n * 4)
-  const sizes = new Float32Array(n)
-  for (let i = 0; i < n; i++) {
-    const [r, gg, b, a] = communityColor(g.communities[i])
-    colors[i * 4] = r / 255
-    colors[i * 4 + 1] = gg / 255
-    colors[i * 4 + 2] = b / 255
-    colors[i * 4 + 3] = a / 255
-    // log-scaled by degree: hubs glow, leaves stay starlight
-    sizes[i] = 1.5 + Math.log2(1 + g.degrees[i]) * 1.15
+let app: Application | null = null
+let stage: Container | null = null
+let linkGfx: Graphics | null = null
+let nodeLayer: Container | null = null
+let labelLayer: Container | null = null
+let simulation: Simulation<StarNode, undefined> | null = null
+let zoomB: ZoomBehavior<HTMLCanvasElement, unknown> | null = null
+let nodes: StarNode[] = []
+let links: StarLink[] = []
+let currentTransform: ZoomTransform = zoomIdentity
+let hoveredId: number | null = null
+let dragging = false
+let destroyed = false
+
+/* One tween group per concern so a fresh hover cancels only its own kind —
+   how Quartz stops rapid hover-jumps fighting themselves. */
+const tweens = new Map<string, TweenGroup>()
+function retween(key: string): TweenGroup {
+  tweens.get(key)?.getAll().forEach((t) => t.stop())
+  const group = new TweenGroup()
+  tweens.set(key, group)
+  return group
+}
+
+/* radius = 2 + sqrt(degree), capped: our hub entities reach degree 500+,
+   which no Obsidian vault sees — uncapped they would render as plates. */
+function nodeRadius(d: StarNode): number {
+  return Math.min(2 + Math.sqrt(d.degree), 14)
+}
+
+/* All-node labels would mean 5k pixi Texts; Obsidian vaults are hundreds.
+   Label the named tier of the sky and materialise on hover for the rest —
+   visually indistinguishable, since faint stars' labels are zoom-faded to
+   zero anyway. */
+const LABEL_BUDGET = 400
+const labelStyle = new TextStyle({
+  fontFamily: "Georgia, 'Palatino Linotype', serif",
+  fontSize: 11,
+  fill: 0xeee0c4,
+})
+
+/* The exact Obsidian/Quartz label law. */
+function labelAlphaForZoom(): number {
+  const scale = currentTransform.k * fOpacity.value
+  return Math.max((scale - 1) / 3.75, 0)
+}
+
+function ensureLabel(n: StarNode): Text {
+  if (n.label) return n.label
+  const t = new Text({ text: n.name, style: labelStyle })
+  t.anchor.set(0.5, 0)
+  t.alpha = 0
+  n.label = t
+  labelLayer!.addChild(t)
+  return t
+}
+
+function neighboursOf(id: number): Set<number> {
+  const set = new Set<number>([id])
+  for (const l of links) {
+    if (l.source.idx === id) set.add(l.target.idx)
+    if (l.target.idx === id) set.add(l.source.idx)
   }
+  return set
+}
 
-  cosmos = new Graph(canvasHost.value, {
-    backgroundColor: 'rgba(10, 8, 5, 1)',
-    defaultLinkColor: 'rgba(200, 169, 110, 0.16)',
-    defaultLinkWidth: 0.6,
-    enableSimulation: true,
-    simulationGravity: 0.12,
-    simulationRepulsion: 1.1,
-    simulationLinkSpring: 0.9,
-    simulationFriction: 0.88,
-    // Finite decay (2026-08-14, laptop-lag fix): the sim runs lively for
-    // a few seconds and then RESTS — rendering stays interactive and any
-    // drag/seek re-heats it. A never-settling sim is a space heater on
-    // integrated GPUs; Obsidian's graph rests too.
-    simulationDecay: 4000,
-    // 4K laptops otherwise render 4x the pixels for no visible gain.
-    pixelRatio: Math.min(window.devicePixelRatio || 1, 1.5),
-    fitViewOnInit: true,
-    fitViewDelay: 1200,
-    renderHoveredPointRing: true,
-    hoveredPointRingColor: 'rgba(226, 189, 122, 0.95)',
-    focusedPointRingColor: 'rgba(226, 189, 122, 0.95)',
-    onPointMouseOver: (index: number) => setFocus(index),
-    onPointMouseOut: () => { focused.value = null },
-    onClick: (index?: number) => { if (index !== undefined) setFocus(index) },
+function updateHover(newId: number | null) {
+  hoveredId = newId
+  const hood = newId === null ? new Set<number>() : neighboursOf(newId)
+  for (const n of nodes) n.active = newId !== null && hood.has(n.idx)
+  for (const l of links) l.active = newId !== null && (l.source.idx === newId || l.target.idx === newId)
+
+  /* The signature: everything outside the neighbourhood fades to 0.2 over
+     200ms; the hovered label pops to full alpha at 1.1× over 100ms. */
+  const hoverG = retween('hover')
+  for (const n of nodes) {
+    if (!n.gfx) continue
+    const alpha = newId === null ? 1 : n.active ? 1 : 0.2
+    hoverG.add(new Tween(n.gfx).to({ alpha }, 200).start())
+  }
+  const labelG = retween('label')
+  const restingAlpha = labelAlphaForZoom()
+  for (const n of nodes) {
+    if (newId === n.idx) {
+      const t = ensureLabel(n)
+      labelG.add(new Tween(t).to({ alpha: 1 }, 100).start())
+      labelG.add(new Tween(t.scale).to({ x: 1.1, y: 1.1 }, 100).start())
+    } else if (n.label) {
+      labelG.add(new Tween(n.label).to({ alpha: n.active ? Math.max(restingAlpha, 0.85) : restingAlpha }, 100).start())
+      labelG.add(new Tween(n.label.scale).to({ x: 1, y: 1 }, 100).start())
+    }
+  }
+}
+
+function updateLabelAlphas() {
+  const a = labelAlphaForZoom()
+  for (const n of nodes) {
+    if (n.label && !n.active && hoveredId !== n.idx) n.label.alpha = a
+  }
+}
+
+function drawLinks() {
+  if (!linkGfx) return
+  linkGfx.clear()
+  const fading = hoveredId !== null
+  for (const l of links) {
+    linkGfx.moveTo(l.source.x!, l.source.y!)
+    linkGfx.lineTo(l.target.x!, l.target.y!)
+    linkGfx.stroke({
+      width: 1,
+      color: l.active ? LINK_LIT : LINK_DIM,
+      alpha: fading ? (l.active ? 1 : 0.15) : 0.55,
+    })
+  }
+}
+
+function tickRender() {
+  for (const n of nodes) {
+    if (n.gfx) n.gfx.position.set(n.x!, n.y!)
+    if (n.label) n.label.position.set(n.x!, n.y! + nodeRadius(n) + 3)
+  }
+  drawLinks()
+}
+
+function applyForces() {
+  if (!simulation) return
+  simulation
+    .force('charge', forceManyBody().strength(-100 * fRepel.value))
+    .force('center', forceCenter(0, 0).strength(fCenter.value))
+    .force('link', forceLink<StarNode, StarLink>(links)
+      .distance(fDist.value)
+      .strength((l) => fLink.value / Math.min(l.source.degree, l.target.degree, 10)))
+  simulation.alpha(0.4).restart()
+}
+
+async function build(payload: LiveGraph) {
+  const host = canvasHost.value!
+  app = new Application()
+  await app.init({
+    background: 0x0a0805,
+    resizeTo: host,
+    antialias: true,
+    autoDensity: true,
+    resolution: Math.min(window.devicePixelRatio || 1, 1.5),
   })
+  if (destroyed) { app.destroy(true); return }
+  host.appendChild(app.canvas)
 
-  // cosmos derives the point count from the positions array — without it
-  // there are no points at all. Seed a loose disc clustered by community
-  // so related stars start near each other and the simulation converges
-  // into constellations instead of untangling pure noise.
-  const positions = new Float32Array(n * 2)
+  stage = new Container()
+  app.stage.addChild(stage)
+  linkGfx = new Graphics()
+  nodeLayer = new Container()
+  labelLayer = new Container()
+  stage.addChild(linkGfx, nodeLayer, labelLayer)
+
+  /* Seed each community around its own bearing so the sim untangles into
+     constellations rather than pure noise (kept from the cosmos version). */
   const communityAngle = new Map<number, number>()
-  for (let i = 0; i < n; i++) {
-    const c = g.communities[i]
+  nodes = payload.names.map((name, i) => {
+    const c = payload.communities[i]
     if (!communityAngle.has(c)) {
       communityAngle.set(c, (communityAngle.size * 2.399963) % (Math.PI * 2))
     }
     const base = communityAngle.get(c)!
-    const jitterA = base + (Math.random() - 0.5) * 0.9
-    const jitterR = 1200 + Math.random() * 1800
-    positions[i * 2] = Math.cos(jitterA) * jitterR + 4096
-    positions[i * 2 + 1] = Math.sin(jitterA) * jitterR + 4096
+    const a = base + (Math.random() - 0.5) * 0.9
+    const r = 160 + Math.random() * 240
+    return {
+      idx: i,
+      id: payload.ids[i],
+      name,
+      community: c,
+      degree: payload.degrees[i],
+      active: false,
+      x: Math.cos(a) * r,
+      y: Math.sin(a) * r,
+    }
+  })
+  links = []
+  for (let i = 0; i < payload.links.length; i += 2) {
+    links.push({
+      source: nodes[payload.links[i]],
+      target: nodes[payload.links[i + 1]],
+      active: false,
+    })
   }
-  startFpsWatchdog()
-  cosmos.setPointPositions(positions)
-  cosmos.setPointColors(colors)
-  cosmos.setPointSizes(sizes)
-  cosmos.setLinks(new Float32Array(g.links))
-  cosmos.render()
+  nodeCount.value = nodes.length
+  linkCount.value = links.length
+
+  for (const n of nodes) {
+    const g = new Graphics()
+    g.circle(0, 0, nodeRadius(n)).fill(communityColor(n.community))
+    g.eventMode = 'static'
+    g.cursor = 'pointer'
+    g.on('pointerover', () => {
+      if (dragging) return
+      updateHover(n.idx)
+      focused.value = n
+    })
+    g.on('pointerleave', () => { if (!dragging) updateHover(null) })
+    nodeLayer.addChild(g)
+    n.gfx = g
+  }
+  const byDegree = [...nodes].sort((a, b) => b.degree - a.degree).slice(0, LABEL_BUDGET)
+  for (const n of byDegree) ensureLabel(n)
+
+  /* physics — the exact Obsidian/Quartz recipe */
+  simulation = forceSimulation<StarNode>(nodes)
+    .force('collide', forceCollide<StarNode>((n) => nodeRadius(n))
+      .iterations(nodes.length > 2500 ? 1 : 3))
+    .on('tick', tickRender)
+  applyForces()
+
+  /* zoom + pan. Centering lives inside the transform (Quartz pattern):
+     stage.position = transform.x/y, stage.scale = k — nothing else. */
+  const canvas = app.canvas as HTMLCanvasElement
+  zoomB = zoom<HTMLCanvasElement, unknown>()
+    .scaleExtent([0.15, 6])
+    /* wheel always zooms; drags only pan when not over a star, so the
+       node drag behaviour below wins that gesture */
+    .filter((e: any) => !e.button && (e.type === 'wheel' || hoveredId === null))
+    .on('zoom', (e) => {
+      currentTransform = e.transform
+      stage!.scale.set(e.transform.k)
+      stage!.position.set(e.transform.x, e.transform.y)
+      updateLabelAlphas()
+    })
+  select(canvas).call(zoomB)
+  select(canvas).call(
+    zoomB.transform,
+    zoomIdentity.translate(host.clientWidth / 2, host.clientHeight / 2),
+  )
+
+  /* node drag — verbatim mechanics: reheat on grab, fx delta divided by
+     zoom k so the node tracks the cursor at any magnification, release
+     un-pins so the node re-floats. Short grab = click = pin the folio. */
+  let dragStart = 0
+  const dragB = drag<HTMLCanvasElement, unknown>()
+    .container(() => canvas)
+    .subject(() => (hoveredId !== null ? nodes[hoveredId] : undefined) as any)
+    .on('start', (e: any) => {
+      if (!e.active) simulation!.alphaTarget(1).restart()
+      e.subject.fx = e.subject.x
+      e.subject.fy = e.subject.y
+      e.subject.__initialDragPos = { x: e.subject.x, y: e.subject.y }
+      dragStart = Date.now()
+      dragging = true
+    })
+    .on('drag', (e: any) => {
+      const p = e.subject.__initialDragPos
+      e.subject.fx = p.x + (e.x - p.x) / currentTransform.k
+      e.subject.fy = p.y + (e.y - p.y) / currentTransform.k
+    })
+    .on('end', (e: any) => {
+      if (!e.active) simulation!.alphaTarget(0)
+      e.subject.fx = null
+      e.subject.fy = null
+      dragging = false
+      if (Date.now() - dragStart < 400) focused.value = e.subject
+    })
+  select(canvas).call(dragB as any)
+
+  /* tween pump */
+  app.ticker.add(() => {
+    const now = performance.now()
+    for (const group of tweens.values()) group.update(now)
+  })
+
   ready.value = true
 }
 
-let fpsRaf = 0
-function startFpsWatchdog() {
-  let frames = 0
-  const started = performance.now()
-  const tick = () => {
-    frames++
-    const elapsed = performance.now() - started
-    if (elapsed < 4000) { fpsRaf = requestAnimationFrame(tick); return }
-    const fps = (frames / elapsed) * 1000
-    if (fps < 28 && tier.value > 0) {
-      tier.value--
-      reboot()
-    }
-  }
-  fpsRaf = requestAnimationFrame(tick)
+async function load() {
+  const t = TIERS[tier.value]
+  const { data } = await api.get<LiveGraph>(
+    `/api/graph/live?max_nodes=${t.nodes}&min_degree=${t.degree}`,
+  )
+  if (!destroyed && canvasHost.value) await build(data)
 }
 
-async function reboot() {
-  cancelAnimationFrame(fpsRaf)
-  cosmos?.destroy()
-  cosmos = null
+function teardown() {
+  simulation?.stop()
+  simulation = null
+  tweens.forEach((g) => g.getAll().forEach((t) => t.stop()))
+  tweens.clear()
+  hoveredId = null
+  if (app) { app.destroy(true, { children: true }); app = null }
+  stage = null; linkGfx = null; nodeLayer = null; labelLayer = null
+  nodes = []; links = []
+  currentTransform = zoomIdentity
   ready.value = false
   focused.value = null
-  await boot()
 }
 
 function setTier(i: number) {
   if (i === tier.value) return
   tier.value = i
-  reboot()
+  teardown()
+  load()
 }
 
-function setFocus(index: number) {
-  if (!data) return
-  focused.value = {
-    name: data.names[index],
-    degree: data.degrees[index],
-    community: data.communities[index],
-  }
-}
-
-function stir() {
-  // Wake the resting simulation with a gentle alpha — the constellations
-  // shuffle and drift back to rest on the finite decay.
-  cosmos?.start(0.35)
-}
+function stir() { simulation?.alpha(0.6).restart() }
 
 function refit() {
-  cosmos?.fitView()
+  if (!app || !zoomB || !canvasHost.value) return
+  select(app.canvas as HTMLCanvasElement).call(
+    zoomB.transform,
+    zoomIdentity.translate(canvasHost.value.clientWidth / 2, canvasHost.value.clientHeight / 2),
+  )
 }
 
 function seek() {
-  if (!data || !cosmos) return
   const q = seekQuery.value.trim().toLowerCase()
-  if (!q) return
-  const i = data.names.findIndex((nm) => nm.toLowerCase().includes(q))
-  if (i >= 0) {
-    setFocus(i)
-    cosmos.zoomToPointByIndex(i, 700, 6)
-  }
+  if (!q || !app || !zoomB || !canvasHost.value) return
+  const hit = nodes.find((n) => n.name.toLowerCase().includes(q))
+  if (!hit) return
+  focused.value = hit
+  updateHover(hit.idx)
+  const host = canvasHost.value
+  const k = Math.max(currentTransform.k, 1.8)
+  select(app.canvas as HTMLCanvasElement).call(
+    zoomB.transform,
+    zoomIdentity
+      .translate(host.clientWidth / 2 - hit.x! * k, host.clientHeight / 2 - hit.y! * k)
+      .scale(k),
+  )
 }
 
-onMounted(boot)
-onUnmounted(() => {
-  cancelAnimationFrame(fpsRaf)
-  cosmos?.destroy()
-  cosmos = null
-})
+onMounted(load)
+onUnmounted(() => { destroyed = true; teardown() })
 </script>
 
 <style scoped>
 .constellarium {
-  --cp-gold: #c8a96e;
-  --cp-gold-soft: rgba(200, 169, 110, 0.45);
-  --cp-ink: rgba(238, 224, 196, 0.94);
-  --cp-ink-mute: rgba(238, 224, 196, 0.55);
   position: relative;
   height: calc(100vh - 64px);
   overflow: hidden;
   background: #0a0805;
+  font-family: Georgia, 'Palatino Linotype', Palatino, serif;
+  color: rgba(238, 224, 196, 0.94);
 }
-
-.cosmos-host {
-  position: absolute;
-  inset: 0;
-}
+.cosmos-host { position: absolute; inset: 0; }
+.cosmos-host :deep(canvas) { display: block; }
 
 .plate {
-  position: absolute;
-  top: 28px;
-  left: 32px;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 1.4s ease 0.4s;
+  position: absolute; top: 22px; left: 28px; z-index: 2; pointer-events: none;
 }
-.ready .plate { opacity: 1; }
-
 .plate-kicker {
-  font-size: 11px;
-  letter-spacing: 0.28em;
-  color: var(--cp-gold-soft);
-  margin: 0 0 6px;
+  font-size: 9px; letter-spacing: 0.28em; color: #c8a96e;
+  margin: 0 0 4px; font-style: italic;
 }
 .plate-title {
-  font-family: Georgia, 'Times New Roman', serif;
-  font-size: 28px;
-  font-weight: 400;
-  color: var(--cp-ink);
-  margin: 0 0 8px;
+  font-size: clamp(22px, 3vw, 30px); font-weight: 400; margin: 0 0 6px;
 }
-.plate-stats {
-  font-family: Georgia, serif;
-  font-style: italic;
-  font-size: 13px;
-  color: var(--cp-ink-mute);
-  margin: 0;
-  pointer-events: auto;
-}
-.plate-stats em { color: var(--cp-gold); font-style: normal; }
-.sep { margin: 0 8px; opacity: 0.5; }
+.plate-stats { font-size: 11.5px; color: rgba(238, 224, 196, 0.55); margin: 0; pointer-events: auto; }
+.plate-stats em { color: #c8a96e; font-style: normal; }
+.sep { margin: 0 7px; color: rgba(200, 169, 110, 0.4); }
 .plate-act {
-  background: none;
-  border: none;
-  padding: 0;
-  font: inherit;
-  color: var(--cp-gold);
-  cursor: pointer;
-  border-bottom: 1px dotted var(--cp-gold-soft);
+  background: none; border: none; color: #c8a96e; cursor: pointer;
+  font: inherit; font-style: italic; padding: 0;
+  border-bottom: 1px dotted rgba(200, 169, 110, 0.4);
 }
-.plate-act:hover { border-bottom-style: solid; }
-.tier-picker { display: inline-flex; gap: 8px; }
-.tier-opt { opacity: 0.55; border-bottom: none; }
-.tier-opt.active { opacity: 1; border-bottom: 1px solid var(--cp-gold); }
+.plate-act:hover { color: #e2bd7a; }
+.plate-act.active { border-bottom-style: solid; }
+.tier-opt { margin-right: 8px; opacity: 0.55; }
+.tier-opt.active { opacity: 1; border-bottom-style: solid; }
 
-.seek {
-  position: absolute;
-  top: 32px;
-  right: 32px;
+.forces {
+  position: absolute; top: 118px; left: 28px; z-index: 3;
+  background: rgba(14, 11, 6, 0.92);
+  border: 1px solid rgba(200, 169, 110, 0.18);
+  padding: 14px 16px; width: 248px;
+  backdrop-filter: blur(6px);
 }
+.forces-head {
+  font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase;
+  color: #c8a96e; margin: 0 0 10px; font-style: italic;
+}
+.force-row {
+  display: grid; grid-template-columns: 84px 1fr 34px; align-items: center;
+  gap: 8px; font-size: 11px; margin-bottom: 8px;
+  color: rgba(238, 224, 196, 0.7);
+}
+.force-row em { font-style: normal; color: #c8a96e; text-align: right; }
+.force-row input[type='range'] { accent-color: #c8a96e; }
+
+.seek { position: absolute; top: 26px; right: 28px; z-index: 2; }
 .seek-input {
-  background: rgba(14, 11, 6, 0.72);
-  border: 1px solid rgba(200, 169, 110, 0.28);
-  border-radius: 2px;
-  color: var(--cp-ink);
-  font-family: Georgia, serif;
-  font-style: italic;
-  font-size: 13px;
-  padding: 7px 12px;
-  width: 200px;
-  outline: none;
-  transition: border-color 0.3s;
+  background: rgba(14, 11, 6, 0.85);
+  border: 1px solid rgba(200, 169, 110, 0.25);
+  color: rgba(238, 224, 196, 0.94);
+  padding: 7px 12px; width: 190px;
+  font: inherit; font-size: 12px; font-style: italic; outline: none;
 }
-.seek-input:focus { border-color: var(--cp-gold-soft); }
+.seek-input:focus { border-color: rgba(200, 169, 110, 0.6); }
 .seek-input::placeholder { color: rgba(238, 224, 196, 0.35); }
 
 .folio {
-  position: absolute;
-  bottom: 30px;
-  left: 32px;
-  background: rgba(14, 11, 6, 0.82);
-  border: 1px solid rgba(200, 169, 110, 0.25);
-  border-left: 2px solid var(--cp-gold);
-  border-radius: 2px;
-  padding: 12px 18px;
-  max-width: 340px;
+  position: absolute; bottom: 26px; right: 28px; z-index: 2;
+  background: rgba(14, 11, 6, 0.92);
+  border: 1px solid rgba(200, 169, 110, 0.22);
+  padding: 14px 18px; max-width: 300px;
   backdrop-filter: blur(6px);
 }
-.folio-name {
-  font-family: Georgia, serif;
-  font-size: 17px;
-  color: var(--cp-ink);
-  margin: 0 0 3px;
-}
-.folio-meta {
-  font-size: 12px;
-  font-style: italic;
-  color: var(--cp-ink-mute);
-  margin: 0 0 6px;
-}
+.folio-name { font-size: 15px; margin: 0 0 3px; color: #e2bd7a; }
+.folio-meta { font-size: 11px; color: rgba(238, 224, 196, 0.55); margin: 0 0 8px; font-style: italic; }
 .folio-link {
-  font-size: 12px;
-  color: var(--cp-gold);
-  text-decoration: none;
-  border-bottom: 1px dotted var(--cp-gold-soft);
+  font-size: 11px; color: #c8a96e; text-decoration: none; font-style: italic;
+  border-bottom: 1px dotted rgba(200, 169, 110, 0.4);
 }
-.folio-link:hover { border-bottom-style: solid; }
+.folio-link:hover { color: #e2bd7a; }
 
-@media (max-width: 720px) {
-  .plate { top: 16px; left: 16px; }
-  .plate-title { font-size: 20px; }
+@media (max-width: 640px) {
+  .plate { left: 16px; top: 14px; }
   .seek { top: 14px; right: 16px; }
   .seek-input { width: 130px; }
+  .forces { left: 16px; width: 216px; }
   .folio { left: 16px; right: 16px; max-width: none; }
 }
 </style>
