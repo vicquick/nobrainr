@@ -2616,6 +2616,43 @@ async def link_entity_to_memory(
         )
 
 
+async def store_entity_pair_rejection(
+    entity_a_id: str,
+    entity_b_id: str,
+    *,
+    reason: str | None = None,
+    shared_count: int | None = None,
+    model: str | None = None,
+) -> None:
+    """Record that the LLM judged this pair unrelated, so we stop re-asking.
+
+    Normalises to smallest-uuid-first so (a,b) and (b,a) collapse to one row
+    and match the ``em1.entity_id < em2.entity_id`` ordering that
+    ``get_unlinked_cooccurrences`` uses when it filters these out.
+
+    ``reason`` is kept deliberately: a rejection that is never revisited is
+    indistinguishable from a rejection that was wrong. Storing the model's
+    stated reasoning makes a bad verdict findable, and deleting the row
+    requeues the pair.
+    """
+    # Sort the UUID objects natively: Python compares them by .int, i.e. the
+    # 16-byte value, which is exactly how Postgres orders uuid. Sorting by
+    # str() would happen to agree, but only because of hex/ASCII collation —
+    # not something to rely on for a key that must match the SQL side.
+    a, b = sorted((UUID(entity_a_id), UUID(entity_b_id)))
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO entity_pair_rejections
+                (entity_a_id, entity_b_id, reason, shared_count, model)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (entity_a_id, entity_b_id) DO NOTHING
+            """,
+            a, b, reason, shared_count, model,
+        )
+
+
 async def store_entity_relation(
     source_entity_id: str,
     target_entity_id: str,
@@ -4937,6 +4974,18 @@ async def get_unlinked_cooccurrences(
                     ON (er.source_entity_id = c.a_id AND er.target_entity_id = c.b_id)
                     OR (er.source_entity_id = c.b_id AND er.target_entity_id = c.a_id)
                 WHERE er.id IS NULL
+                  -- Skip pairs the LLM already judged unrelated. Without this
+                  -- the top-N by shared_count is immovable: a rejection left
+                  -- no trace, so every run re-asked the same question about
+                  -- the same 30 pairs while ~77k candidates waited behind
+                  -- them. Rejections are stored smallest-uuid-first, matching
+                  -- the em1.entity_id < em2.entity_id ordering above, so one
+                  -- lookup covers both directions.
+                  AND NOT EXISTS (
+                      SELECT 1 FROM entity_pair_rejections rj
+                      WHERE rj.entity_a_id = c.a_id
+                        AND rj.entity_b_id = c.b_id
+                  )
                 ORDER BY c.shared_count DESC
                 LIMIT $2
             )
