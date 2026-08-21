@@ -153,6 +153,7 @@ const navLinks = [
   { to: '/timeline', label: 'Timeline', icon: 'mdi-timeline-clock-outline' },
   { to: '/scheduler', label: 'Scheduler', icon: 'mdi-calendar-clock' },
   { to: '/pulse', label: 'Pulse', icon: 'mdi-pulse' },
+  { to: '/scriptorium', label: 'Scriptorium', icon: 'mdi-feather' },
 ]
 </script>
 
