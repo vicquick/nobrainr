@@ -373,6 +373,42 @@ def _get_remote_semaphore() -> asyncio.Semaphore:
     return _remote_semaphore
 
 
+_remote_rate_lock: asyncio.Lock | None = None
+_remote_call_times: "_collections.deque[float]" = _collections.deque()
+
+
+def _get_remote_rate_lock() -> asyncio.Lock:
+    global _remote_rate_lock
+    if _remote_rate_lock is None:
+        _remote_rate_lock = asyncio.Lock()
+    return _remote_rate_lock
+
+
+async def _remote_rate_gate() -> None:
+    """Block until issuing one more remote request stays inside the cap.
+
+    Sliding 60s window over actual call timestamps. This exists because the
+    remote's limit is a RATE, and a concurrency semaphore cannot enforce a
+    rate: two workers making ~2s calls back-to-back sit at 2 in flight while
+    reaching ~60 req/min. Hetzner allows 10 req/60s, and we measured 14 429s
+    in one minute at concurrency 2 before this gate existed.
+    """
+    limit = settings.llm_remote_rate_limit_per_min
+    if limit <= 0:
+        return
+    while True:
+        async with _get_remote_rate_lock():
+            now = time.monotonic()
+            while _remote_call_times and now - _remote_call_times[0] >= 60.0:
+                _remote_call_times.popleft()
+            if len(_remote_call_times) < limit:
+                _remote_call_times.append(now)
+                return
+            # Sleep only until the oldest call ages out of the window.
+            wait = 60.0 - (now - _remote_call_times[0]) + 0.05
+        await asyncio.sleep(wait)
+
+
 def _in_local_batch_window(now: _dt.datetime | None = None) -> bool:
     """True when split mode should keep batch work on the local GPU.
 
@@ -681,8 +717,32 @@ async def _remote_chat(
         payload["chat_template_kwargs"] = {"enable_thinking": False}
 
     client = _get_remote_client()
-    async with _get_remote_semaphore():
-        resp = await client.post("/v1/chat/completions", json=payload)
+    attempts = max(0, settings.llm_remote_rate_limit_retries) + 1
+    for attempt in range(attempts):
+        await _remote_rate_gate()
+        async with _get_remote_semaphore():
+            resp = await client.post("/v1/chat/completions", json=payload)
+        if resp.status_code != 429:
+            break
+        # 429 means "retry shortly", not "this backend is broken". Falling
+        # straight through to the local GPU costs far more than waiting:
+        # local runs ~17 tok/s. Honour Retry-After when the server sends it.
+        if attempt == attempts - 1:
+            logger.warning(
+                "remote rate-limited %d times; giving up to the local leg. "
+                "Consider lowering llm_remote_rate_limit_per_min (now %d).",
+                attempts, settings.llm_remote_rate_limit_per_min,
+            )
+            break
+        try:
+            delay = float(resp.headers.get("retry-after", ""))
+        except ValueError:
+            delay = _next_jitter_sleep(_JITTER_BASE)
+        logger.info(
+            "remote 429 (attempt %d/%d) — waiting %.1fs before retrying remote",
+            attempt + 1, attempts, delay,
+        )
+        await asyncio.sleep(min(delay, 60.0))
     resp.raise_for_status()
     data = resp.json()
     content = (
