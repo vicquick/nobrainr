@@ -297,6 +297,30 @@ CREATE INDEX IF NOT EXISTS idx_entity_relations_source
 CREATE INDEX IF NOT EXISTS idx_entity_relations_target
     ON entity_relations (target_entity_id);
 
+-- Judged-but-unlinked entity pairs (2026-08-21).
+--
+-- cooccurrence_linking asks the LLM whether two co-occurring entities are
+-- genuinely related. A "no" left no record of any kind, so the next run
+-- fetched the identical top-N by shared_count and asked again — forever.
+-- Measured before this table existed: two consecutive calls to
+-- get_unlinked_cooccurrences returned the SAME 30 pairs (overlap 30/30)
+-- while 77,141 candidate pairs waited behind them. The job burned ~270 LLM
+-- calls/day re-judging those 30 and created ~0-2 relations.
+--
+-- Storing the verdict AND its reason makes rejections skippable and
+-- auditable: a wrongly-rejected pair can be found and requeued by deleting
+-- its row, instead of being invisible. Pairs are stored with the smaller
+-- uuid first so (a,b) and (b,a) cannot both be recorded.
+CREATE TABLE IF NOT EXISTS entity_pair_rejections (
+    entity_a_id  uuid NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    entity_b_id  uuid NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    reason       text,
+    shared_count integer,
+    model        text,
+    created_at   timestamptz DEFAULT now(),
+    PRIMARY KEY (entity_a_id, entity_b_id)
+);
+
 -- Phase K: Priority cascade tiers for facts
 -- tier: 1=canonical (verified, overrides vector), 2=historical, 3=derived (default)
 ALTER TABLE entity_relations ADD COLUMN IF NOT EXISTS tier smallint DEFAULT 3;
