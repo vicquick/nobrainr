@@ -190,6 +190,7 @@ const ROUTES: RouteHit[] = [
   { to: '/timeline',    label: 'Timeline' },
   { to: '/scheduler',   label: 'Scheduler' },
   { to: '/pulse',       label: 'Pulse' },
+  { to: '/scriptorium', label: 'Scriptorium' },
   { to: '/threads',     label: 'Threads' },
 ]
 
