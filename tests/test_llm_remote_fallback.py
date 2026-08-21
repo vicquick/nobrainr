@@ -246,6 +246,9 @@ def test_remote_concurrency_is_bounded(monkeypatch, remote_on):
     peak = {"now": 0, "max": 0}
 
     class FakeResponse:
+        status_code = 200
+        headers: dict = {}
+
         def raise_for_status(self):
             return None
 
@@ -321,6 +324,121 @@ def test_night_window_never_pushes_live_work_remote(monkeypatch, remote_on):
             llm_mod, "_in_local_batch_window", lambda now=None, v=in_window: v
         )
         assert llm_mod._split_prefers_remote("live") is False
+
+
+@pytest.fixture
+def clean_rate_window(monkeypatch):
+    """Reset the sliding-window state between rate-limit tests."""
+    monkeypatch.setattr(llm_mod, "_remote_call_times", llm_mod._collections.deque())
+    monkeypatch.setattr(llm_mod, "_remote_rate_lock", None)
+
+
+def test_rate_gate_allows_up_to_the_cap_without_waiting(monkeypatch, clean_rate_window):
+    monkeypatch.setattr(settings, "llm_remote_rate_limit_per_min", 5)
+    slept = []
+    monkeypatch.setattr(llm_mod.asyncio, "sleep", lambda d: slept.append(d) or _noop())
+
+    async def drive():
+        for _ in range(5):
+            await llm_mod._remote_rate_gate()
+
+    asyncio.run(drive())
+    assert slept == [], "should not throttle below the cap"
+    assert len(llm_mod._remote_call_times) == 5
+
+
+def test_rate_gate_throttles_past_the_cap(monkeypatch, clean_rate_window):
+    """The 6th call in a window must wait for the oldest to age out."""
+    monkeypatch.setattr(settings, "llm_remote_rate_limit_per_min", 5)
+    slept = []
+
+    async def fake_sleep(d):
+        slept.append(d)
+        # simulate the window advancing so the loop can make progress
+        llm_mod._remote_call_times.popleft()
+
+    monkeypatch.setattr(llm_mod.asyncio, "sleep", fake_sleep)
+
+    async def drive():
+        for _ in range(6):
+            await llm_mod._remote_rate_gate()
+
+    asyncio.run(drive())
+    assert len(slept) == 1, f"expected exactly one throttle, got {slept}"
+    assert 0 < slept[0] <= 60.1
+
+
+def test_rate_gate_disabled_at_zero(monkeypatch, clean_rate_window):
+    monkeypatch.setattr(settings, "llm_remote_rate_limit_per_min", 0)
+    slept = []
+    monkeypatch.setattr(llm_mod.asyncio, "sleep", lambda d: slept.append(d) or _noop())
+
+    async def drive():
+        for _ in range(50):
+            await llm_mod._remote_rate_gate()
+
+    asyncio.run(drive())
+    assert slept == []
+    assert len(llm_mod._remote_call_times) == 0, "disabled gate must not track calls"
+
+
+async def _noop():
+    return None
+
+
+def test_remote_retries_on_429_before_falling_back(monkeypatch, clean_rate_window):
+    """A 429 must be retried on the remote, not dumped straight to local."""
+    monkeypatch.setattr(settings, "llm_remote_rate_limit_per_min", 0)
+    monkeypatch.setattr(settings, "llm_remote_rate_limit_retries", 2)
+    monkeypatch.setattr(llm_mod.asyncio, "sleep", lambda d: _noop())
+
+    calls = {"n": 0}
+
+    class Resp:
+        def __init__(self, code):
+            self.status_code = code
+            self.headers = {"retry-after": "0"}
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+        def json(self):
+            return {"choices": [{"message": {"content": '{"ok": true}'}}]}
+
+    class Client:
+        async def post(self, *a, **k):
+            calls["n"] += 1
+            return Resp(429 if calls["n"] == 1 else 200)
+
+    monkeypatch.setattr(llm_mod, "_get_remote_client", lambda: Client())
+    out = asyncio.run(llm_mod._remote_chat("s", "u", {}))
+    assert out == {"ok": True}
+    assert calls["n"] == 2, "should have retried the remote once"
+
+
+def test_remote_gives_up_after_exhausting_429_retries(monkeypatch, clean_rate_window):
+    monkeypatch.setattr(settings, "llm_remote_rate_limit_per_min", 0)
+    monkeypatch.setattr(settings, "llm_remote_rate_limit_retries", 1)
+    monkeypatch.setattr(llm_mod.asyncio, "sleep", lambda d: _noop())
+    calls = {"n": 0}
+
+    class Resp:
+        status_code = 429
+        headers: dict = {}
+
+        def raise_for_status(self):
+            raise RuntimeError("HTTP 429")
+
+    class Client:
+        async def post(self, *a, **k):
+            calls["n"] += 1
+            return Resp()
+
+    monkeypatch.setattr(llm_mod, "_get_remote_client", lambda: Client())
+    with pytest.raises(RuntimeError, match="429"):
+        asyncio.run(llm_mod._remote_chat("s", "u", {}))
+    assert calls["n"] == 2, "1 retry configured -> 2 total attempts"
 
 
 def test_gpu_yield_probe_failure_warns_once_and_never_raises(monkeypatch, caplog):
