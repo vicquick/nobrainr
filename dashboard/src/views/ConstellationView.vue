@@ -2,6 +2,10 @@
   <div class="constellarium" :class="{ ready }">
     <div ref="canvasHost" class="cosmos-host" />
 
+    <p v-if="webglMissing" class="webgl-note">
+      The constellarium is drawn with WebGL, which this browser has disabled.
+    </p>
+
     <!-- Plate: title + living stats -->
     <header class="plate">
       <p class="plate-kicker">CONSTELLARIUM · THE LIVING GRAPH</p>
@@ -67,11 +71,12 @@
       />
     </div>
 
-    <!-- Folio: hovered/selected entity -->
-    <aside v-if="focused" class="folio">
-      <p class="folio-name">{{ focused.name }}</p>
-      <p class="folio-meta">{{ focused.degree }} connections · constellation {{ focused.community }}</p>
-      <RouterLink class="folio-link" :to="{ path: '/graph', query: { q: focused.name } }">
+    <!-- Folio: pinned (click) beats hovered; pinned is dismissable -->
+    <aside v-if="folio" class="folio">
+      <button v-if="pinnedFocus" class="folio-close" @click="pinnedFocus = null" title="unpin">×</button>
+      <p class="folio-name">{{ folio.name }}</p>
+      <p class="folio-meta">{{ folio.degree }} connections · constellation {{ folio.community }}</p>
+      <RouterLink class="folio-link" :to="{ path: '/graph', query: { q: folio.name } }">
         open in the atlas →
       </RouterLink>
     </aside>
@@ -80,30 +85,52 @@
 
 <script setup lang="ts">
 /**
- * Obsidian-faithful rebuild (2026-08-21). The previous Constellarium ran
- * cosmos.gl — a GPU particle simulator with its own shader integrator. It
- * showed 12k points, but no tuning could make it FEEL like Obsidian,
- * because the feel is not a parameter: it is d3-force's velocity-Verlet
- * settle plus a handful of very specific interaction behaviours. This view
- * now runs the exact stack of the canonical replica (Quartz v4): pixi.js
- * rendering, d3-force physics, mechanics verbatim from its source:
+ * Obsidian-faithful Constellarium, round 3 (2026-08-22).
  *
- *   charge  = forceManyBody().strength(-100 * repelForce)
- *   center  = forceCenter().strength(centerForce)
- *   link    = forceLink().distance(linkDistance)  (+ strength slider)
- *   collide = forceCollide(nodeRadius)
- *   radius  = 2 + sqrt(degree)
- *   hover   → non-neighbours (nodes AND links) tween to α0.2 in 200ms
- *   label   → α = max((k · opacityScale − 1) / 3.75, 0), zoom-driven
- *   drag    → alphaTarget(1) reheat; fx offset divided by zoom k
+ * Round 2 fixed the interaction structure but missed the elephant an
+ * adversarial verification pass then measured: this graph's DEFAULT tier
+ * carries ~58,000 links (faint ~31k, deep ~106k) — ~30x an Obsidian
+ * vault — and pixi v8's Graphics.stroke() clones a path and re-tessellates
+ * EVERY instruction whenever the context is dirty (GraphicsContext.js:174,
+ * verified against pixi 8.20). One shared Graphics redrawn per frame meant
+ * 58k tessellations at 60fps: a slideshow. Round 2's "render every frame"
+ * fix made it unconditional.
  *
- * Honest tradeoff: d3-force is CPU. The old "deep" tier (12k) is now 5k —
- * Obsidian itself slows at that scale, and the feel matters more here than
- * raw count. The GPU full-sky view still exists at /galaxy.
+ * Round 3's render core:
+ *  - LINKS ARE ONE GPU MESH. 4 verts / 6 indices per link; a position
+ *    buffer rewritten in-place only while geometry can actually change
+ *    (sim alpha above rest, or a node drag), and a per-vertex style
+ *    attribute (alpha, litness) written only while a hover transition is
+ *    in flight. No tessellation, ever.
+ *  - HOVER IS ONE SHARED ANIMATION, not per-object tweens. Round 2
+ *    allocated a Tween per node AND per link on every pointerover — 60k
+ *    allocations per hover. Now: from/to arrays and a single 200ms
+ *    progress value advanced on the ticker. Labels (≤ ~400) keep real
+ *    tweens; that is the scale tweens are for.
+ *  - eventMode 'static' + explicit Circle hitArea (cheap math test instead
+ *    of containsPoint over every Graphics context). 'dynamic' re-synthesises
+ *    pointer events between real moves and flapped hover at hit-circle rims.
+ *  - click-to-pin decided in d3-drag's end handler by pointer distance;
+ *    grab radius mirrors the hitArea, so an empty-sky press pans instead of
+ *    silently dragging an unseen star.
+ *  - generation guard around the async build: a tier switch mid-init used
+ *    to destroy a not-yet-initialised Application.
+ *  - Vue refs receive plain snapshots, never StarNode (which drags pixi
+ *    Graphics/Text into Vue's reactive proxy).
+ *
+ * The Obsidian mechanics themselves are unchanged from round 2 and match
+ * the Quartz reference: charge -100*repel / center / linkDistance /
+ * collide; radius 2+sqrt(subgraph degree); hover dims non-neighbours to
+ * 0.2 in 200ms; labels obey a = max((k*opacityScale-1)/3.75, 0); drag
+ * reheats alphaTarget(1) with the fx delta divided by zoom k; drag is
+ * attached BEFORE zoom so d3's own nopropagation arbitrates the gesture.
  */
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { RouterLink } from 'vue-router'
-import { Application, Container, Graphics, Text, TextStyle } from 'pixi.js'
+import {
+  Application, Container, Graphics, Text, TextStyle, Circle,
+  Mesh, MeshGeometry, Shader, GlProgram, Buffer, BufferUsage,
+} from 'pixi.js'
 import {
   forceSimulation, forceManyBody, forceCenter, forceLink, forceCollide,
   type Simulation, type SimulationNodeDatum,
@@ -111,6 +138,7 @@ import {
 import { select } from 'd3-selection'
 import { zoom, zoomIdentity, type ZoomBehavior, type ZoomTransform } from 'd3-zoom'
 import { drag } from 'd3-drag'
+import 'd3-transition'
 import { Group as TweenGroup, Tween } from '@tweenjs/tween.js'
 import api from '@/api/client'
 
@@ -129,36 +157,31 @@ interface StarNode extends SimulationNodeDatum {
   name: string
   community: number
   degree: number
+  subDegree: number
   gfx?: Graphics
   label?: Text
-  active: boolean
   fx?: number | null
   fy?: number | null
 }
-interface StarLink {
-  source: StarNode
-  target: StarNode
-  active: boolean
-}
+interface FocusInfo { name: string; degree: number; community: number; idx: number }
 
 const canvasHost = ref<HTMLDivElement | null>(null)
 const ready = ref(false)
+const webglMissing = ref(false)
 const nodeCount = ref(0)
 const linkCount = ref(0)
 const seekQuery = ref('')
-const focused = ref<{ name: string; degree: number; community: number } | null>(null)
+const hoverFocus = ref<FocusInfo | null>(null)
+const pinnedFocus = ref<FocusInfo | null>(null)
+const folio = computed(() => pinnedFocus.value ?? hoverFocus.value)
 const showForces = ref(false)
 
-/* Obsidian slider defaults — Quartz ships 0.5 / 0.3 / 30. Link force 1.0
-   keeps d3's default per-link strength curve as the baseline. */
 const fCenter = ref(0.3)
 const fRepel = ref(0.5)
 const fLink = ref(1.0)
 const fDist = ref(30)
 const fOpacity = ref(1.3)
 
-/* CPU physics budget, not GPU: sized so charge + collide hold frame rate.
-   The 12k sky lives on /galaxy. */
 const TIERS = [
   { label: 'faint', nodes: 800, degree: 5 },
   { label: 'clear', nodes: 2000, degree: 3 },
@@ -166,8 +189,6 @@ const TIERS = [
 ] as const
 const tier = ref(1)
 
-// Codex palette: gold-family constellations on deep parchment-night.
-// Kept verbatim from the cosmos version — the house voice, not a formula.
 const HUES: Array<[number, number, number]> = [
   [200, 169, 110], [214, 158, 94], [181, 146, 128], [226, 189, 122],
   [168, 148, 96], [204, 140, 92], [190, 170, 140], [172, 128, 100],
@@ -177,25 +198,50 @@ function communityColor(c: number): number {
   const [r, g, b] = c < 0 ? [154, 134, 110] : HUES[c % HUES.length]
   return (r << 16) | (g << 8) | b
 }
-const LINK_DIM = 0x3a3226
-const LINK_LIT = 0x8a7a58
 
 let app: Application | null = null
 let stage: Container | null = null
-let linkGfx: Graphics | null = null
 let nodeLayer: Container | null = null
 let labelLayer: Container | null = null
 let simulation: Simulation<StarNode, undefined> | null = null
 let zoomB: ZoomBehavior<HTMLCanvasElement, unknown> | null = null
 let nodes: StarNode[] = []
-let links: StarLink[] = []
+/* links as flat index pairs; per-link state lives in typed arrays that feed
+   the mesh directly — no per-link objects at 58k scale */
+let linkPairs: Uint32Array = new Uint32Array(0)
+let adjacency: Int32Array[] = []
 let currentTransform: ZoomTransform = zoomIdentity
 let hoveredId: number | null = null
+let highlightId: number | null = null
 let dragging = false
 let destroyed = false
+/* generation guard: a tier switch mid-await must not destroy the app the
+   NEXT build is initialising */
+let buildGen = 0
 
-/* One tween group per concern so a fresh hover cancels only its own kind —
-   how Quartz stops rapid hover-jumps fighting themselves. */
+/* ── link mesh state ─────────────────────────────────────────────── */
+let linkMesh: Mesh | null = null
+let posBuf: Buffer | null = null
+let styleBuf: Buffer | null = null
+let posArr: Float32Array = new Float32Array(0)
+let styleArr: Float32Array = new Float32Array(0) // (alpha, lit) per vertex
+const LINK_HALF_W = 0.5
+const LINK_BASE_ALPHA = 0.55
+
+/* ── shared hover animation (one progress value, zero allocations) ── */
+let nodeAlphaCur: Float32Array = new Float32Array(0)
+let nodeAlphaFrom: Float32Array = new Float32Array(0)
+let nodeAlphaTo: Float32Array = new Float32Array(0)
+let linkAlphaCur: Float32Array = new Float32Array(0)
+let linkAlphaFrom: Float32Array = new Float32Array(0)
+let linkAlphaTo: Float32Array = new Float32Array(0)
+let linkLitCur: Float32Array = new Float32Array(0)
+let linkLitFrom: Float32Array = new Float32Array(0)
+let linkLitTo: Float32Array = new Float32Array(0)
+let hoverAnimStart = 0
+let hoverAnimActive = false
+const HOVER_MS = 200
+
 const tweens = new Map<string, TweenGroup>()
 function retween(key: string): TweenGroup {
   tweens.get(key)?.getAll().forEach((t) => t.stop())
@@ -204,16 +250,10 @@ function retween(key: string): TweenGroup {
   return group
 }
 
-/* radius = 2 + sqrt(degree), capped: our hub entities reach degree 500+,
-   which no Obsidian vault sees — uncapped they would render as plates. */
 function nodeRadius(d: StarNode): number {
-  return Math.min(2 + Math.sqrt(d.degree), 14)
+  return Math.min(2 + Math.sqrt(d.subDegree), 20)
 }
 
-/* All-node labels would mean 5k pixi Texts; Obsidian vaults are hundreds.
-   Label the named tier of the sky and materialise on hover for the rest —
-   visually indistinguishable, since faint stars' labels are zoom-faded to
-   zero anyway. */
 const LABEL_BUDGET = 400
 const labelStyle = new TextStyle({
   fontFamily: "Georgia, 'Palatino Linotype', serif",
@@ -221,7 +261,6 @@ const labelStyle = new TextStyle({
   fill: 0xeee0c4,
 })
 
-/* The exact Obsidian/Quartz label law. */
 function labelAlphaForZoom(): number {
   const scale = currentTransform.k * fOpacity.value
   return Math.max((scale - 1) / 3.75, 0)
@@ -232,44 +271,59 @@ function ensureLabel(n: StarNode): Text {
   const t = new Text({ text: n.name, style: labelStyle })
   t.anchor.set(0.5, 0)
   t.alpha = 0
+  t.position.set(n.x ?? 0, (n.y ?? 0) + nodeRadius(n) + 3)
   n.label = t
   labelLayer!.addChild(t)
   return t
 }
 
-function neighboursOf(id: number): Set<number> {
-  const set = new Set<number>([id])
-  for (const l of links) {
-    if (l.source.idx === id) set.add(l.target.idx)
-    if (l.target.idx === id) set.add(l.source.idx)
-  }
-  return set
+function snapshot(n: StarNode): FocusInfo {
+  /* plain object — never hand a StarNode (with pixi children) to a Vue ref */
+  return { name: n.name, degree: n.degree, community: n.community, idx: n.idx }
 }
 
-function updateHover(newId: number | null) {
-  hoveredId = newId
-  const hood = newId === null ? new Set<number>() : neighboursOf(newId)
-  for (const n of nodes) n.active = newId !== null && hood.has(n.idx)
-  for (const l of links) l.active = newId !== null && (l.source.idx === newId || l.target.idx === newId)
-
-  /* The signature: everything outside the neighbourhood fades to 0.2 over
-     200ms; the hovered label pops to full alpha at 1.1× over 100ms. */
-  const hoverG = retween('hover')
-  for (const n of nodes) {
-    if (!n.gfx) continue
-    const alpha = newId === null ? 1 : n.active ? 1 : 0.2
-    hoverG.add(new Tween(n.gfx).to({ alpha }, 200).start())
+/* The signature interaction. Computes TARGET alphas into flat arrays and
+   arms the single shared 200ms animation; the ticker does the lerping. */
+function applyHighlight(newId: number | null) {
+  highlightId = newId
+  const n = nodes.length
+  const L = linkPairs.length / 2
+  if (newId === null) {
+    nodeAlphaTo.fill(1)
+    linkAlphaTo.fill(LINK_BASE_ALPHA)
+    linkLitTo.fill(0)
+  } else {
+    nodeAlphaTo.fill(0.2)
+    linkAlphaTo.fill(0.2 * LINK_BASE_ALPHA)
+    linkLitTo.fill(0)
+    nodeAlphaTo[newId] = 1
+    const adj = adjacency[newId]
+    for (let i = 0; i < adj.length; i++) nodeAlphaTo[adj[i]] = 1
+    for (let li = 0; li < L; li++) {
+      const a = linkPairs[li * 2], b = linkPairs[li * 2 + 1]
+      if (a === newId || b === newId) {
+        linkAlphaTo[li] = 1
+        linkLitTo[li] = 1
+      }
+    }
   }
+  nodeAlphaFrom.set(nodeAlphaCur)
+  linkAlphaFrom.set(linkAlphaCur)
+  linkLitFrom.set(linkLitCur)
+  hoverAnimStart = performance.now()
+  hoverAnimActive = true
+
+  /* labels: few enough for real tweens */
   const labelG = retween('label')
   const restingAlpha = labelAlphaForZoom()
-  for (const n of nodes) {
-    if (newId === n.idx) {
-      const t = ensureLabel(n)
+  for (const nd of nodes) {
+    if (newId === nd.idx) {
+      const t = ensureLabel(nd)
       labelG.add(new Tween(t).to({ alpha: 1 }, 100).start())
       labelG.add(new Tween(t.scale).to({ x: 1.1, y: 1.1 }, 100).start())
-    } else if (n.label) {
-      labelG.add(new Tween(n.label).to({ alpha: n.active ? Math.max(restingAlpha, 0.85) : restingAlpha }, 100).start())
-      labelG.add(new Tween(n.label.scale).to({ x: 1, y: 1 }, 100).start())
+    } else if (nd.label) {
+      labelG.add(new Tween(nd.label).to({ alpha: restingAlpha }, 100).start())
+      labelG.add(new Tween(nd.label.scale).to({ x: 1, y: 1 }, 100).start())
     }
   }
 }
@@ -277,66 +331,109 @@ function updateHover(newId: number | null) {
 function updateLabelAlphas() {
   const a = labelAlphaForZoom()
   for (const n of nodes) {
-    if (n.label && !n.active && hoveredId !== n.idx) n.label.alpha = a
+    if (n.label && highlightId !== n.idx) n.label.alpha = a
   }
 }
 
-function drawLinks() {
-  if (!linkGfx) return
-  linkGfx.clear()
-  const fading = hoveredId !== null
-  for (const l of links) {
-    linkGfx.moveTo(l.source.x!, l.source.y!)
-    linkGfx.lineTo(l.target.x!, l.target.y!)
-    linkGfx.stroke({
-      width: 1,
-      color: l.active ? LINK_LIT : LINK_DIM,
-      alpha: fading ? (l.active ? 1 : 0.15) : 0.55,
-    })
+/* geometry pass: rewrite the mesh position buffer from sim coordinates.
+   Runs only while positions can actually change. */
+function writeLinkGeometry() {
+  const L = linkPairs.length / 2
+  for (let li = 0; li < L; li++) {
+    const s = nodes[linkPairs[li * 2]], t = nodes[linkPairs[li * 2 + 1]]
+    const x1 = s.x!, y1 = s.y!, x2 = t.x!, y2 = t.y!
+    let dx = x2 - x1, dy = y2 - y1
+    const len = Math.hypot(dx, dy) || 1
+    const nx = (-dy / len) * LINK_HALF_W, ny = (dx / len) * LINK_HALF_W
+    const o = li * 8
+    posArr[o] = x1 + nx;     posArr[o + 1] = y1 + ny
+    posArr[o + 2] = x1 - nx; posArr[o + 3] = y1 - ny
+    posArr[o + 4] = x2 + nx; posArr[o + 5] = y2 + ny
+    posArr[o + 6] = x2 - nx; posArr[o + 7] = y2 - ny
   }
+  posBuf!.update()
 }
 
-function tickRender() {
+function writeLinkStyle() {
+  const L = linkPairs.length / 2
+  for (let li = 0; li < L; li++) {
+    const a = linkAlphaCur[li], lit = linkLitCur[li]
+    const o = li * 8
+    styleArr[o] = a;     styleArr[o + 1] = lit
+    styleArr[o + 2] = a; styleArr[o + 3] = lit
+    styleArr[o + 4] = a; styleArr[o + 5] = lit
+    styleArr[o + 6] = a; styleArr[o + 7] = lit
+  }
+  styleBuf!.update()
+}
+
+function syncNodeVisuals() {
   for (const n of nodes) {
     if (n.gfx) n.gfx.position.set(n.x!, n.y!)
     if (n.label) n.label.position.set(n.x!, n.y! + nodeRadius(n) + 3)
   }
-  drawLinks()
 }
 
-function applyForces() {
+function applyForces(alpha = 0.4) {
   if (!simulation) return
+  const d3links = [] as Array<{ source: StarNode; target: StarNode }>
+  for (let i = 0; i < linkPairs.length; i += 2) {
+    d3links.push({ source: nodes[linkPairs[i]], target: nodes[linkPairs[i + 1]] })
+  }
   simulation
     .force('charge', forceManyBody().strength(-100 * fRepel.value))
     .force('center', forceCenter(0, 0).strength(fCenter.value))
-    .force('link', forceLink<StarNode, StarLink>(links)
+    .force('link', forceLink<StarNode, { source: StarNode; target: StarNode }>(d3links)
       .distance(fDist.value)
-      .strength((l) => fLink.value / Math.min(l.source.degree, l.target.degree, 10)))
-  simulation.alpha(0.4).restart()
+      .strength((l) => fLink.value / Math.min(l.source.subDegree || 1, l.target.subDegree || 1)))
+  simulation.alpha(alpha).restart()
 }
 
 async function build(payload: LiveGraph) {
+  const gen = ++buildGen
   const host = canvasHost.value!
-  app = new Application()
-  await app.init({
+  const newApp = new Application()
+  await newApp.init({
     background: 0x0a0805,
     resizeTo: host,
     antialias: true,
     autoDensity: true,
     resolution: Math.min(window.devicePixelRatio || 1, 1.5),
+    preference: 'webgl', // the link shader is GLSL; keep the renderer deterministic
   })
-  if (destroyed) { app.destroy(true); return }
+  if (destroyed || gen !== buildGen) { newApp.destroy(true); return }
+  app = newApp
+  /* the link mesh below is a raw GL shader; pixi's canvas fallback has no
+     pipe for it and throws on EVERY render — measured as a 60fps uncaught-
+     exception storm that froze the world (stale worldTransforms, dead hit
+     tests) and leaked MBs/s into any attached CDP client. No WebGL → say
+     so once and stop, instead of storming. */
+  if (app.renderer.name !== 'webgl' && app.renderer.name !== 'webgpu') {
+    app.destroy(true, { children: true })
+    app = null
+    webglMissing.value = true
+    return
+  }
+  /* pixi v8 preventDefaults pointerdown by default, and a cancelled
+     pointerdown suppresses the browser's COMPATIBILITY mousedown (spec) —
+     which is the only event d3-drag and d3-zoom listen to. With the
+     default, every mouse gesture except wheel is silently dead. */
+  ;(app.renderer.events as any).autoPreventDefault = false
+  ;(app.canvas as HTMLCanvasElement).style.touchAction = 'none'
   host.appendChild(app.canvas)
 
   stage = new Container()
   app.stage.addChild(stage)
-  linkGfx = new Graphics()
+  if (import.meta.env.DEV) (window as any).__app = app /* behaviour-suite seam */
   nodeLayer = new Container()
   labelLayer = new Container()
-  stage.addChild(linkGfx, nodeLayer, labelLayer)
 
-  /* Seed each community around its own bearing so the sim untangles into
-     constellations rather than pure noise (kept from the cosmos version). */
+  /* ── data ── */
+  const subDeg = new Map<number, number>()
+  for (let i = 0; i < payload.links.length; i += 2) {
+    subDeg.set(payload.links[i], (subDeg.get(payload.links[i]) || 0) + 1)
+    subDeg.set(payload.links[i + 1], (subDeg.get(payload.links[i + 1]) || 0) + 1)
+  }
   const communityAngle = new Map<number, number>()
   nodes = payload.names.map((name, i) => {
     const c = payload.communities[i]
@@ -347,59 +444,198 @@ async function build(payload: LiveGraph) {
     const a = base + (Math.random() - 0.5) * 0.9
     const r = 160 + Math.random() * 240
     return {
-      idx: i,
-      id: payload.ids[i],
-      name,
-      community: c,
-      degree: payload.degrees[i],
-      active: false,
-      x: Math.cos(a) * r,
-      y: Math.sin(a) * r,
+      idx: i, id: payload.ids[i], name, community: c,
+      degree: payload.degrees[i], subDegree: subDeg.get(i) || 0,
+      x: Math.cos(a) * r, y: Math.sin(a) * r,
     }
   })
-  links = []
-  for (let i = 0; i < payload.links.length; i += 2) {
-    links.push({
-      source: nodes[payload.links[i]],
-      target: nodes[payload.links[i + 1]],
-      active: false,
-    })
-  }
-  nodeCount.value = nodes.length
-  linkCount.value = links.length
+  linkPairs = new Uint32Array(payload.links)
+  const N = nodes.length, L = linkPairs.length / 2
+  nodeCount.value = N
+  linkCount.value = L
 
+  /* adjacency once — applyHighlight must not rescan 58k links per hover */
+  const adjCount = new Uint32Array(N)
+  for (let i = 0; i < linkPairs.length; i += 2) { adjCount[linkPairs[i]]++; adjCount[linkPairs[i + 1]]++ }
+  adjacency = Array.from({ length: N }, (_, i) => new Int32Array(adjCount[i]))
+  const cursor = new Uint32Array(N)
+  for (let i = 0; i < linkPairs.length; i += 2) {
+    const a = linkPairs[i], b = linkPairs[i + 1]
+    adjacency[a][cursor[a]++] = b
+    adjacency[b][cursor[b]++] = a
+  }
+
+  /* ── link mesh: 4 verts + 6 indices per link, one draw call ── */
+  posArr = new Float32Array(L * 8)
+  styleArr = new Float32Array(L * 8)
+  const indices = new Uint32Array(L * 6)
+  for (let li = 0; li < L; li++) {
+    const v = li * 4, o = li * 6
+    indices[o] = v; indices[o + 1] = v + 1; indices[o + 2] = v + 2
+    indices[o + 3] = v + 1; indices[o + 4] = v + 3; indices[o + 5] = v + 2
+  }
+  posBuf = new Buffer({ data: posArr, usage: BufferUsage.VERTEX | BufferUsage.COPY_DST })
+  styleBuf = new Buffer({ data: styleArr, usage: BufferUsage.VERTEX | BufferUsage.COPY_DST })
+  const geometry = new MeshGeometry({ positions: new Float32Array(0), indices })
+  geometry.addAttribute('aPosition', { buffer: posBuf, format: 'float32x2' })
+  geometry.addAttribute('aStyle', { buffer: styleBuf, format: 'float32x2' })
+  const glProgram = GlProgram.from({
+    vertex: `
+      in vec2 aPosition;
+      in vec2 aStyle;
+      out vec2 vStyle;
+      uniform mat3 uProjectionMatrix;
+      uniform mat3 uWorldTransformMatrix;
+      uniform mat3 uTransformMatrix;
+      void main() {
+        mat3 mvp = uProjectionMatrix * uWorldTransformMatrix * uTransformMatrix;
+        gl_Position = vec4((mvp * vec3(aPosition, 1.0)).xy, 0.0, 1.0);
+        vStyle = aStyle;
+      }`,
+    fragment: `
+      in vec2 vStyle;
+      out vec4 finalColor;
+      void main() {
+        vec3 dim = vec3(0.227, 0.196, 0.149);   /* 0x3a3226 */
+        vec3 lit = vec3(0.541, 0.478, 0.345);   /* 0x8a7a58 */
+        vec3 c = mix(dim, lit, clamp(vStyle.y, 0.0, 1.0));
+        float a = vStyle.x;
+        finalColor = vec4(c * a, a);            /* premultiplied */
+      }`,
+  })
+  linkMesh = new Mesh({ geometry, shader: new Shader({ glProgram }) })
+  stage.addChild(linkMesh, nodeLayer, labelLayer)
+
+  /* ── hover animation arrays ── */
+  nodeAlphaCur = new Float32Array(N).fill(1)
+  nodeAlphaFrom = new Float32Array(N).fill(1)
+  nodeAlphaTo = new Float32Array(N).fill(1)
+  linkAlphaCur = new Float32Array(L).fill(LINK_BASE_ALPHA)
+  linkAlphaFrom = new Float32Array(L).fill(LINK_BASE_ALPHA)
+  linkAlphaTo = new Float32Array(L).fill(LINK_BASE_ALPHA)
+  linkLitCur = new Float32Array(L)
+  linkLitFrom = new Float32Array(L)
+  linkLitTo = new Float32Array(L)
+  writeLinkStyle()
+
+  /* ── node sprites ── */
   for (const n of nodes) {
     const g = new Graphics()
     g.circle(0, 0, nodeRadius(n)).fill(communityColor(n.community))
+    /* 'static', matching the reference. 'dynamic' re-synthesizes hit tests
+       every ticker frame, which FLAPS hover at the hit-circle rim (measured:
+       folio dying on mousedown because hoveredId flapped null between the
+       last real move and the click). 'static' still hit-tests against
+       CURRENT transforms on every real pointer event — the only loss is a
+       node sliding out from under a perfectly still cursor keeping its
+       highlight until the next move, which is exactly what Quartz does. */
     g.eventMode = 'static'
     g.cursor = 'pointer'
+    /* explicit circle hit area: math test, not containsPoint over the
+       graphics context — with thousands of nodes this is the difference
+       between a free pointermove and a stutter */
+    g.hitArea = new Circle(0, 0, nodeRadius(n) + 2)
     g.on('pointerover', () => {
       if (dragging) return
-      updateHover(n.idx)
-      focused.value = n
+      hoveredId = n.idx
+      applyHighlight(n.idx)
+      hoverFocus.value = snapshot(n)
     })
-    g.on('pointerleave', () => { if (!dragging) updateHover(null) })
+    /* click-to-pin lives in d3-drag's end handler (pointer distance < 5px).
+       NOT pixi pointertap: a dragged node travels WITH the cursor, so pixi
+       sees down+up over the same object and fires tap after every drag —
+       each drag ended with a phantom pin. d3's e.x/e.y measure the POINTER,
+       which is immune to the node following it. */
+    g.on('pointerleave', () => {
+      hoveredId = null
+      if (!dragging) {
+        applyHighlight(null)
+        hoverFocus.value = null
+      }
+    })
     nodeLayer.addChild(g)
     n.gfx = g
   }
-  const byDegree = [...nodes].sort((a, b) => b.degree - a.degree).slice(0, LABEL_BUDGET)
+  const byDegree = [...nodes].sort((a, b) => b.subDegree - a.subDegree).slice(0, LABEL_BUDGET)
   for (const n of byDegree) ensureLabel(n)
 
-  /* physics — the exact Obsidian/Quartz recipe */
   simulation = forceSimulation<StarNode>(nodes)
     .force('collide', forceCollide<StarNode>((n) => nodeRadius(n))
-      .iterations(nodes.length > 2500 ? 1 : 3))
-    .on('tick', tickRender)
-  applyForces()
+      .iterations(N > 2500 ? 1 : 3))
+  applyForces(1) /* the reference blooms from full alpha */
 
-  /* zoom + pan. Centering lives inside the transform (Quartz pattern):
-     stage.position = transform.x/y, stage.scale = k — nothing else. */
   const canvas = app.canvas as HTMLCanvasElement
+
+  /* drag FIRST, zoom SECOND — attach order is the arbitration */
+  let downX = 0, downY = 0
+  /* Subject by PROXIMITY at mousedown, not by trusting the last pointerover.
+     While the sim drifts (settle runs ~seconds at this node count), the
+     node moves between the last hover event and the click; pixi's
+     pointerdown then re-hit-tests empty sky and emits pointerleave BEFORE
+     d3 sees the mousedown — hoveredId is null, no subject, no drag, no
+     click. Measured as a nondeterministic click failure. Nearest-node
+     within grab radius in world coords is immune to all of it. */
+  const grabSubject = (e: any): StarNode | undefined => {
+    const wx = (e.x - currentTransform.x) / currentTransform.k
+    const wy = (e.y - currentTransform.y) / currentTransform.k
+    let best: StarNode | undefined
+    let bd = Infinity
+    for (const n of nodes) {
+      const dx = n.x! - wx, dy = n.y! - wy
+      const d2 = dx * dx + dy * dy
+      /* grab radius mirrors the pixi hitArea exactly: if a star isn't
+         hoverable it must not be grabbable, or an empty-sky press silently
+         drags an unseen node and the background pan never reaches d3-zoom */
+      const r = nodeRadius(n) + 2
+      if (d2 < r * r && d2 < bd) { best = n; bd = d2 }
+    }
+    return best
+  }
+  const dragB = drag<HTMLCanvasElement, unknown>()
+    .container(() => canvas)
+    .subject(grabSubject as any)
+    .on('start', (e: any) => {
+      if (!simulation) return
+      /* grabbing IS hovering — restore the highlight the drift race may
+         have just cleared */
+      applyHighlight(e.subject.idx)
+      hoverFocus.value = snapshot(e.subject)
+      if (!e.active) simulation.alphaTarget(1).restart()
+      e.subject.fx = e.subject.x
+      e.subject.fy = e.subject.y
+      e.subject.__initialDragPos = { x: e.subject.x, y: e.subject.y }
+      downX = e.x; downY = e.y
+      dragging = true
+    })
+    .on('drag', (e: any) => {
+      const p = e.subject.__initialDragPos
+      e.subject.fx = p.x + (e.x - downX) / currentTransform.k
+      e.subject.fy = p.y + (e.y - downY) / currentTransform.k
+    })
+    .on('end', (e: any) => {
+      dragging = false
+      if (!simulation) return
+      if (!e.active) simulation.alphaTarget(0)
+      e.subject.fx = null
+      e.subject.fy = null
+      /* Click-vs-drag decided HERE, on POINTER distance — not via pixi
+         pointertap. The grab reheats the sim (alphaTarget(1), as Obsidian
+         does), so the node scoots out from under a still cursor before
+         mouseup and pixi's tap never sees up over the same object. d3's
+         e.x/e.y are pointer coords and immune to that. */
+      const dist = Math.hypot(e.x - downX, e.y - downY)
+      if (dist < 5) {
+        pinnedFocus.value = snapshot(e.subject)
+      } else if (hoveredId === null) {
+        applyHighlight(null)
+        hoverFocus.value = null
+      }
+    })
+  select(canvas).call(dragB as any)
+
   zoomB = zoom<HTMLCanvasElement, unknown>()
     .scaleExtent([0.15, 6])
-    /* wheel always zooms; drags only pan when not over a star, so the
-       node drag behaviour below wins that gesture */
-    .filter((e: any) => !e.button && (e.type === 'wheel' || hoveredId === null))
+    .filter((e: any) => (!e.ctrlKey || e.type === 'wheel') && !e.button)
     .on('zoom', (e) => {
       currentTransform = e.transform
       stage!.scale.set(e.transform.k)
@@ -412,39 +648,32 @@ async function build(payload: LiveGraph) {
     zoomIdentity.translate(host.clientWidth / 2, host.clientHeight / 2),
   )
 
-  /* node drag — verbatim mechanics: reheat on grab, fx delta divided by
-     zoom k so the node tracks the cursor at any magnification, release
-     un-pins so the node re-floats. Short grab = click = pin the folio. */
-  let dragStart = 0
-  const dragB = drag<HTMLCanvasElement, unknown>()
-    .container(() => canvas)
-    .subject(() => (hoveredId !== null ? nodes[hoveredId] : undefined) as any)
-    .on('start', (e: any) => {
-      if (!e.active) simulation!.alphaTarget(1).restart()
-      e.subject.fx = e.subject.x
-      e.subject.fy = e.subject.y
-      e.subject.__initialDragPos = { x: e.subject.x, y: e.subject.y }
-      dragStart = Date.now()
-      dragging = true
-    })
-    .on('drag', (e: any) => {
-      const p = e.subject.__initialDragPos
-      e.subject.fx = p.x + (e.x - p.x) / currentTransform.k
-      e.subject.fy = p.y + (e.y - p.y) / currentTransform.k
-    })
-    .on('end', (e: any) => {
-      if (!e.active) simulation!.alphaTarget(0)
-      e.subject.fx = null
-      e.subject.fy = null
-      dragging = false
-      if (Date.now() - dragStart < 400) focused.value = e.subject
-    })
-  select(canvas).call(dragB as any)
-
-  /* tween pump */
+  /* ── the frame loop: strictly dirty-driven ── */
   app.ticker.add(() => {
     const now = performance.now()
     for (const group of tweens.values()) group.update(now)
+
+    const simActive = !!simulation && simulation.alpha() > simulation.alphaMin()
+    if (simActive || dragging) {
+      syncNodeVisuals()
+      writeLinkGeometry()
+    }
+    if (hoverAnimActive) {
+      const t = Math.min(1, (now - hoverAnimStart) / HOVER_MS)
+      /* quad ease-out — the closest curve to tween.js' default feel */
+      const e = 1 - (1 - t) * (1 - t)
+      for (let i = 0; i < nodeAlphaCur.length; i++) {
+        nodeAlphaCur[i] = nodeAlphaFrom[i] + (nodeAlphaTo[i] - nodeAlphaFrom[i]) * e
+        const g = nodes[i].gfx
+        if (g) g.alpha = nodeAlphaCur[i]
+      }
+      for (let i = 0; i < linkAlphaCur.length; i++) {
+        linkAlphaCur[i] = linkAlphaFrom[i] + (linkAlphaTo[i] - linkAlphaFrom[i]) * e
+        linkLitCur[i] = linkLitFrom[i] + (linkLitTo[i] - linkLitFrom[i]) * e
+      }
+      writeLinkStyle()
+      if (t >= 1) hoverAnimActive = false
+    }
   })
 
   ready.value = true
@@ -459,17 +688,23 @@ async function load() {
 }
 
 function teardown() {
+  buildGen++ /* invalidate any build still awaiting init */
   simulation?.stop()
   simulation = null
   tweens.forEach((g) => g.getAll().forEach((t) => t.stop()))
   tweens.clear()
   hoveredId = null
+  highlightId = null
+  dragging = false
+  hoverAnimActive = false
   if (app) { app.destroy(true, { children: true }); app = null }
-  stage = null; linkGfx = null; nodeLayer = null; labelLayer = null
-  nodes = []; links = []
+  stage = null; nodeLayer = null; labelLayer = null
+  linkMesh = null; posBuf = null; styleBuf = null
+  nodes = []; linkPairs = new Uint32Array(0); adjacency = []
   currentTransform = zoomIdentity
   ready.value = false
-  focused.value = null
+  hoverFocus.value = null
+  pinnedFocus.value = null
 }
 
 function setTier(i: number) {
@@ -483,10 +718,12 @@ function stir() { simulation?.alpha(0.6).restart() }
 
 function refit() {
   if (!app || !zoomB || !canvasHost.value) return
-  select(app.canvas as HTMLCanvasElement).call(
-    zoomB.transform,
-    zoomIdentity.translate(canvasHost.value.clientWidth / 2, canvasHost.value.clientHeight / 2),
-  )
+  select(app.canvas as HTMLCanvasElement)
+    .transition().duration(500)
+    .call(
+      zoomB.transform as any,
+      zoomIdentity.translate(canvasHost.value.clientWidth / 2, canvasHost.value.clientHeight / 2),
+    )
 }
 
 function seek() {
@@ -494,16 +731,18 @@ function seek() {
   if (!q || !app || !zoomB || !canvasHost.value) return
   const hit = nodes.find((n) => n.name.toLowerCase().includes(q))
   if (!hit) return
-  focused.value = hit
-  updateHover(hit.idx)
+  pinnedFocus.value = snapshot(hit)
+  applyHighlight(hit.idx) /* highlight, never hoveredId — that belongs to the pointer */
   const host = canvasHost.value
   const k = Math.max(currentTransform.k, 1.8)
-  select(app.canvas as HTMLCanvasElement).call(
-    zoomB.transform,
-    zoomIdentity
-      .translate(host.clientWidth / 2 - hit.x! * k, host.clientHeight / 2 - hit.y! * k)
-      .scale(k),
-  )
+  select(app.canvas as HTMLCanvasElement)
+    .transition().duration(650)
+    .call(
+      zoomB.transform as any,
+      zoomIdentity
+        .translate(host.clientWidth / 2 - hit.x! * k, host.clientHeight / 2 - hit.y! * k)
+        .scale(k),
+    )
 }
 
 onMounted(load)
@@ -581,6 +820,17 @@ onUnmounted(() => { destroyed = true; teardown() })
   border: 1px solid rgba(200, 169, 110, 0.22);
   padding: 14px 18px; max-width: 300px;
   backdrop-filter: blur(6px);
+}
+.folio-close {
+  position: absolute; top: 6px; right: 9px;
+  background: none; border: none; cursor: pointer;
+  color: rgba(238, 224, 196, 0.45); font-size: 15px; line-height: 1;
+  font-family: inherit; padding: 2px;
+}
+.folio-close:hover { color: #e2bd7a; }
+.webgl-note {
+  position: absolute; top: 45%; left: 50%; transform: translate(-50%, -50%);
+  color: rgba(238, 224, 196, 0.6); font-style: italic; font-size: 14px;
 }
 .folio-name { font-size: 15px; margin: 0 0 3px; color: #e2bd7a; }
 .folio-meta { font-size: 11px; color: rgba(238, 224, 196, 0.55); margin: 0 0 8px; font-style: italic; }
