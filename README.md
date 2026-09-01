@@ -29,36 +29,6 @@ memory_search(query="postgres backup gotcha")
 
 ### Architecture
 
-```mermaid
-graph TB
-    subgraph Agents
-        A1[Claude Code<br/>Machine A]
-        A2[Claude Code<br/>Machine B]
-        A3[Cursor / Windsurf<br/>Machine C]
-    end
-
-    A1 & A2 & A3 -->|MCP over HTTPS| NB
-
-    subgraph nobrainr [nobrainr server :8420]
-        NB[FastMCP + JSON API]
-        NB --> EMB[Ollama<br/>nomic-embed-text]
-        NB --> EXT[Ollama<br/>qwen3.5:9b<br/>Entity Extraction]
-        NB --> PG[(PostgreSQL 18<br/>+ pgvector)]
-    end
-
-    subgraph Storage [Knowledge]
-        PG --> MEM[Memories<br/>vector similarity]
-        PG --> KG[Knowledge Graph<br/>entities + relations]
-        PG --> EVT[Events + Feedback]
-    end
-
-    NB --> DASH[Vue 3 Dashboard<br/>Graph · Memories · Timeline]
-
-    style nobrainr fill:#1a1a2e,stroke:#16213e,color:#e6e6e6
-    style Agents fill:#0d1117,stroke:#30363d,color:#e6e6e6
-    style Storage fill:#0d1117,stroke:#30363d,color:#e6e6e6
-```
-
 <p align="center">
   <img src="docs/nobrainr-architecture.png" alt="nobrainr Knowledge Flywheel Architecture" width="800">
 </p>
