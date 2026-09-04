@@ -177,7 +177,21 @@ export const useChatStore = defineStore('chat', () => {
       })
 
       if (!res.ok || !res.body) {
-        assistantMsg.content = 'Sorry, something went wrong. Please try again.'
+        // api_chat returns structured JSON on every non-2xx (see api.py
+        // api_chat / _chat_rate / settings.chat_enabled) — surface it
+        // instead of a blanket message that makes "chat disabled" look
+        // identical to a crash. Verified 2026-09-04: NOBRAINR_CHAT_ENABLED
+        // was false for 5 months and every failure read as "something went
+        // wrong" with zero signal pointing at the actual cause.
+        let detail = ''
+        try {
+          const body = await res.json()
+          detail = typeof body?.error === 'string' ? body.error : ''
+        } catch {
+          // non-JSON body (proxy error page, network-level failure) — fall
+          // through to the generic message below
+        }
+        assistantMsg.content = detail || 'Sorry, something went wrong. Please try again.'
         isStreaming.value = false
         return
       }
