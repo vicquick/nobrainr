@@ -414,20 +414,26 @@ async def stream_chat_response(
     yield _sse("thinking", {"status": f"Thinking... ({len(context_memories)} memories in context)"})
     model = settings.chat_model or settings.extraction_model
     client = _get_client()
+    # OpenAI-compatible shape — llama-server has no /api/chat route (Ollama-
+    # native) and 404s on it; confirmed 2026-09-04 after NOBRAINR_CHAT_ENABLED
+    # was re-enabled following the Ollama decommission and every request
+    # failed with "Ollama chat error 404". num_ctx/keep_alive/think are
+    # Ollama-only options with no OpenAI equivalent — thinking is already
+    # disabled server-side via --chat-template-kwargs on the llama-swap
+    # command line (see /data/coolify/llama-swap/config.yaml), so dropping
+    # `think` here changes nothing about actual generation behaviour.
     payload = {
         "model": model,
         "messages": llm_messages,
         "stream": True,
-        "think": False,
-        "options": {"temperature": 0.3, "num_ctx": 8192},
-        "keep_alive": "24h",
+        "temperature": 0.3,
     }
 
     try:
-        async with client.stream("POST", "/api/chat", json=payload, timeout=120.0) as resp:
+        async with client.stream("POST", "/v1/chat/completions", json=payload, timeout=120.0) as resp:
             if resp.status_code != 200:
                 body = await resp.aread()
-                logger.error("Ollama chat error %d: %s", resp.status_code, body[:500])
+                logger.error("Chat backend error %d: %s", resp.status_code, body[:500])
                 yield _sse("error", {"message": "Generation temporarily unavailable."})
                 return
             # Use aiter_bytes for minimal buffering (aiter_lines batches)
@@ -437,16 +443,20 @@ async def stream_chat_response(
                 while b"\n" in buf:
                     raw_line, buf = buf.split(b"\n", 1)
                     line = raw_line.strip()
-                    if not line:
+                    if not line or not line.startswith(b"data:"):
                         continue
+                    payload_bytes = line[len(b"data:"):].strip()
+                    if payload_bytes == b"[DONE]":
+                        break
                     try:
-                        data = json.loads(line)
+                        data = json.loads(payload_bytes)
                     except json.JSONDecodeError:
                         continue
-                    token = data.get("message", {}).get("content", "")
+                    choices = data.get("choices") or []
+                    token = choices[0].get("delta", {}).get("content", "") if choices else ""
                     if token:
                         yield _sse("token", {"content": token})
-                    if data.get("done"):
+                    if choices and choices[0].get("finish_reason"):
                         break
     except httpx.ReadTimeout:
         yield _sse("error", {"message": "Response timed out. Please try a shorter question."})
