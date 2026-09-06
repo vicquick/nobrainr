@@ -1669,6 +1669,129 @@ async def api_chat(request: Request) -> StreamingResponse | JSONResponse:
     )
 
 
+# ── LLM queue status ──────────────────────────────────────────────────────
+# Pollable by any frontend (bimavo, webgis, OpenWebUI) to show "you are Nth in
+# line" instead of an opaque spinner. Added 2026-09-06.
+#
+# Signals are aggregated from llama-swap because no single endpoint has them:
+#   GET /running                     -> which models are resident, and their state
+#   GET /upstream/<model>/slots      -> per-slot is_processing (the actual queue)
+# llama-swap's own /metrics carries no queue depth, and /slots is 404 at the
+# top level — it must be addressed per-model via /upstream/<model>/.
+#
+# The GPU chat slot is EXCLUSIVE: only one of the chat-group models is resident
+# at a time and requesting another evicts it (~35s cold load). That swap is
+# invisible in slot counts, so it is surfaced separately as `swap_pending` —
+# a frontend showing only "0 busy" during a swap would be lying to the user.
+_QUEUE_CACHE: dict = {"ts": 0.0, "data": None}
+_QUEUE_TTL = 2.0  # seconds; frontends may poll hard, llama-swap should not wear it
+
+
+async def api_llm_queue(request: Request) -> JSONResponse:
+    """GET /api/llm-queue — aggregated LLM slot/queue state for frontends."""
+    now = time.monotonic()
+    if _QUEUE_CACHE["data"] is not None and (now - _QUEUE_CACHE["ts"]) < _QUEUE_TTL:
+        return JSONResponse(_QUEUE_CACHE["data"])
+
+    base = settings.llm_server_url.rstrip("/")
+    out: dict = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "backend": base,
+        "models": {},
+        "resident": None,
+        "swap_pending": False,
+        "busy_total": 0,
+        "capacity_total": 0,
+        "error": None,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(f"{base}/running")
+            r.raise_for_status()
+            running = r.json().get("running", [])
+
+            for entry in running:
+                model = entry.get("model")
+                state = entry.get("state")
+                if not model:
+                    continue
+                # "ready" is resident and serving; anything else (loading,
+                # stopping) means a swap is in flight and requests will block.
+                if state != "ready":
+                    out["swap_pending"] = True
+                # Tier matters to a frontend: the GPU chat slot is the only
+                # CONTENDED resource (exclusive group, one model resident at a
+                # time). The CPU model runs independently and is never evicted,
+                # so folding its slots into one capacity number would tell a
+                # user "3 free" when the GPU they actually need is full.
+                tier = "cpu" if model.endswith("-cpu") else (
+                    "embed" if ("embed" in model or "rerank" in model) else "gpu_chat")
+                info = {"state": state, "tier": tier,
+                        "slots_total": None, "slots_busy": None}
+
+                # Embedding/rerank servers have no chat slots — skip the probe
+                # rather than emit misleading nulls for them.
+                if "embed" not in model and "rerank" not in model:
+                    try:
+                        sr = await client.get(f"{base}/upstream/{model}/slots")
+                        if sr.status_code == 200:
+                            slots = sr.json()
+                            if isinstance(slots, list):
+                                info["slots_total"] = len(slots)
+                                info["slots_busy"] = sum(
+                                    1 for sl in slots if sl.get("is_processing")
+                                )
+                                info["ctx_per_slot"] = slots[0].get("n_ctx") if slots else None
+                                if tier == "gpu_chat":
+                                    out["capacity_total"] += info["slots_total"]
+                                    out["busy_total"] += info["slots_busy"]
+                                    if state == "ready":
+                                        out["resident"] = model
+                                else:
+                                    out.setdefault("cpu_slots_total", 0)
+                                    out.setdefault("cpu_slots_busy", 0)
+                                    out["cpu_slots_total"] += info["slots_total"]
+                                    out["cpu_slots_busy"] += info["slots_busy"]
+                    except Exception:
+                        # A model can be evicted between /running and this probe.
+                        # Report what we know instead of failing the whole call.
+                        pass
+                out["models"][model] = info
+    except Exception as exc:
+        out["error"] = f"{type(exc).__name__}: {exc}"[:160]
+
+    # Everything below is about the GPU chat slot specifically — see tier note.
+    free = max(0, out["capacity_total"] - out["busy_total"])
+    out["slots_free"] = free
+    # queue_depth is what a frontend renders. llama.cpp does not expose a
+    # pending-request count, so this is capacity pressure, not a true backlog:
+    # 0 free slots means the next request waits, and a swap means it waits ~35s.
+    out["queue_depth"] = 0 if free > 0 else 1
+    out["accepting_now"] = free > 0 and not out["swap_pending"]
+    out["hint"] = (
+        "swapping model (~35s)" if out["swap_pending"]
+        else ("ready" if free > 0 else "all slots busy")
+    )
+
+    # nobrainr's own write backlog, so one poll answers "is anything queued
+    # anywhere" rather than the frontend hitting two endpoints.
+    try:
+        from nobrainr.db.pool import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            pending = await conn.fetchval(
+                "SELECT count(*) FROM memory_write_queue "
+                "WHERE status IN ('pending','processing')"
+            )
+        out["write_queue_pending"] = int(pending or 0)
+    except Exception:
+        out["write_queue_pending"] = None
+
+    _QUEUE_CACHE["ts"] = now
+    _QUEUE_CACHE["data"] = out
+    return JSONResponse(out)
+
 async def api_memory_history(request):
     """GET /api/memories/{memory_id}/history — full version audit trail."""
     memory_id = request.path_params["memory_id"]
@@ -3043,6 +3166,7 @@ api_routes = [
     Route("/api/timeline", api_timeline),
     Route("/api/node/{entity_id}", api_node_detail),
     Route("/api/stats", api_stats),
+    Route("/api/llm-queue", api_llm_queue),
     Route("/api/scheduler", api_scheduler),
     Route("/api/redistill-progress", api_redistill_progress),
     Route("/api/presence", api_presence),
