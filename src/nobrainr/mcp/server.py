@@ -2781,6 +2781,8 @@ async def crawl_page(
 
     Uses a local Crawl4AI instance with headless Chromium for JS-rendered pages.
     Content is automatically filtered to remove boilerplate (nav, sidebars, ads).
+    PDFs are fetched and their text layer extracted directly (page-separated
+    markdown, plus source="pdf-direct", pages, pages_extracted, truncated).
 
     Args:
         url: The URL to crawl.
@@ -2842,11 +2844,19 @@ async def crawl_page(
         return data
 
     result = data["results"][0]
+    meta = result.get("metadata") or {}
     output: dict = {
         "url": result.get("url", url),
         "status_code": result.get("status_code"),
-        "title": result.get("metadata", {}).get("title"),
+        "title": meta.get("title"),
     }
+    # PDFs bypass Crawl4AI (crawler/pdf.py); css_selector, query and the
+    # other browser options do not apply to them.
+    if meta.get("source") == "pdf-direct":
+        output["source"] = "pdf-direct"
+        output["pages"] = meta.get("pages")
+        output["pages_extracted"] = meta.get("pages_extracted")
+        output["truncated"] = meta.get("truncated", False)
 
     if extract_markdown:
         md = result.get("markdown", {})
@@ -3159,6 +3169,8 @@ async def crawl_and_store(
     # untouched.
     content, _flags = _sanitize_crawled_text(content)
     all_tags = list(tags or []) + ["crawled"]
+    if crawl_result.get("source") == "pdf-direct":
+        all_tags.append("pdf")
     if _flags:
         all_tags.append("sanitized-injection")
     norm_category = normalize_category(category)
