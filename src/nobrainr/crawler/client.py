@@ -2,14 +2,20 @@
 
 Provides a single function to call the Crawl4AI /crawl endpoint with proper
 crawler_config format, content filtering defaults, and auth.
+
+PDFs never reach Crawl4AI's browser: a URL ending in .pdf — or any URL whose
+Crawl4AI crawl failed and whose bytes turn out to be a PDF — is fetched and
+extracted directly (crawler/pdf.py), returned in the same result shape.
 """
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 
 import httpx
 
 from nobrainr.config import settings
+from nobrainr.crawler.pdf import crawl_pdf, is_pdf_path
 
 logger = logging.getLogger("nobrainr")
 
@@ -28,12 +34,109 @@ DEFAULT_MARKDOWN_GENERATOR = {
     },
 }
 
+# Crawl4AI answers a failed crawl with a bare 500 and keeps the reason in its
+# own log, keyed by correlation_id. Say so, instead of a raw httpx message.
+_HINT_5XX = (
+    "Crawl4AI keeps the cause of a 5xx in its server log under the "
+    "correlation_id. Typical causes: the site blocked the headless browser "
+    "(anti-bot / JS challenge) or the URL is not an HTML page."
+)
+
+# Crawl4AI 0.9.0's /crawl/job route crashes in its metrics middleware on every
+# request (500, "_IncludedRouter has no attribute path"), which silently killed
+# all four scheduled crawl jobs. crawl4ai_job falls back to the synchronous
+# endpoint; warn once per process, not once per URL.
+_job_api_warned = False
+
 
 def _auth_headers() -> dict:
     headers = {"Content-Type": "application/json"}
     if settings.crawl4ai_api_token:
         headers["Authorization"] = f"Bearer {settings.crawl4ai_api_token}"
     return headers
+
+
+def _with_defaults(crawler_config: dict | None) -> dict:
+    config = dict(crawler_config or {})
+    config.setdefault("cache_mode", "bypass")
+    config.setdefault("word_count_threshold", 20)
+    config.setdefault("exclude_social_media_links", True)
+    config.setdefault("remove_overlay_elements", True)
+    # Apply default content filter if none specified
+    if "markdown_generator" not in config:
+        config["markdown_generator"] = DEFAULT_MARKDOWN_GENERATOR
+    return config
+
+
+def _crawl_error(e: Exception, url: str, endpoint: str, prefix: str = "Crawl failed") -> dict:
+    """Turn an exception from a Crawl4AI call into an error dict a person can act on."""
+    if not isinstance(e, httpx.HTTPStatusError):
+        return {"error": f"{prefix}: {e}", "url": url}
+    resp = e.response
+    detail = ""
+    cid = None
+    try:
+        body = resp.json()
+        if isinstance(body, dict):
+            detail = str(body.get("detail") or body.get("error") or "")
+            cid = body.get("correlation_id")
+    except Exception:
+        detail = resp.text[:300]
+    msg = f"{prefix}: Crawl4AI {endpoint} returned HTTP {resp.status_code}"
+    if detail:
+        msg += f" ({detail})"
+    out: dict = {"error": msg, "url": url, "status_code": resp.status_code}
+    if cid:
+        out["correlation_id"] = cid
+    if resp.status_code >= 500:
+        out["hint"] = _HINT_5XX
+    return out
+
+
+def _crawl_failed(data: dict) -> bool:
+    if "error" in data:
+        return True
+    results = data.get("results") or data.get("result", {}).get("results") or []
+    return not results or results[0].get("success") is False
+
+
+async def _with_pdf(url: str, crawl: Callable[[], Awaitable[dict]]) -> dict:
+    """Run a Crawl4AI crawl, routing PDFs to the direct path.
+
+    A .pdf URL goes direct first and only falls back to Crawl4AI when the
+    bytes are not a PDF (a landing page behind a .pdf link). Any other URL
+    goes to Crawl4AI first; only when that crawl fails is it probed for a PDF
+    body — so HTML pages pay nothing for this.
+    """
+    if is_pdf_path(url):
+        pdf = await crawl_pdf(url)
+        return pdf if pdf is not None else await crawl()
+    data = await crawl()
+    if _crawl_failed(data):
+        pdf = await crawl_pdf(url)
+        if pdf is not None:
+            return pdf
+    return data
+
+
+async def _crawl_sync(url: str, config: dict, timeout: float) -> dict:
+    payload = {"urls": [url], "crawler_config": config}
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(
+                f"{settings.crawl4ai_url}/crawl",
+                json=payload,
+                headers=_auth_headers(),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        return _crawl_error(e, url, "/crawl")
+
+    if not data.get("success") or not data.get("results"):
+        return {"error": "Crawl returned no results", "url": url, "raw": str(data)[:500]}
+
+    return data
 
 
 async def crawl4ai_request(
@@ -51,72 +154,39 @@ async def crawl4ai_request(
         timeout: HTTP timeout in seconds.
 
     Returns:
-        On success: {"success": True, "results": [...]}
-        On failure: {"error": "...", "url": "..."}
+        On success: {"success": True, "results": [...]} — for a PDF also
+            "source": "pdf-direct", with pages/title in results[0]["metadata"].
+        On failure: {"error": "...", "url": "..."} (+ status_code,
+            correlation_id, hint when Crawl4AI answered with an HTTP error)
     """
-    config = dict(crawler_config or {})
-    config.setdefault("cache_mode", "bypass")
-    config.setdefault("word_count_threshold", 20)
-    config.setdefault("exclude_social_media_links", True)
-    config.setdefault("remove_overlay_elements", True)
-
-    # Apply default content filter if none specified
-    if "markdown_generator" not in config:
-        config["markdown_generator"] = DEFAULT_MARKDOWN_GENERATOR
-
-    payload = {"urls": [url], "crawler_config": config}
-
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(
-                f"{settings.crawl4ai_url}/crawl",
-                json=payload,
-                headers=_auth_headers(),
-            )
-            resp.raise_for_status()
-            data = resp.json()
-    except Exception as e:
-        return {"error": f"Crawl failed: {e}", "url": url}
-
-    if not data.get("success") or not data.get("results"):
-        return {"error": "Crawl returned no results", "url": url, "raw": str(data)[:500]}
-
-    return data
+    config = _with_defaults(crawler_config)
+    return await _with_pdf(url, lambda: _crawl_sync(url, config, timeout))
 
 
-async def crawl4ai_job(
-    url: str,
-    *,
-    crawler_config: dict | None = None,
-    poll_interval: float = 2.0,
-    max_wait: float = 300.0,
-) -> dict:
-    """Submit an async crawl job and poll until completion.
-
-    Uses POST /crawl/job + GET /crawl/job/{task_id} to avoid HTTP timeouts
-    on slow pages. Recommended for scheduler jobs.
-
-    Returns same format as crawl4ai_request.
-    """
-    config = dict(crawler_config or {})
-    config.setdefault("cache_mode", "bypass")
-    config.setdefault("word_count_threshold", 20)
-    config.setdefault("exclude_social_media_links", True)
-    config.setdefault("remove_overlay_elements", True)
-    if "markdown_generator" not in config:
-        config["markdown_generator"] = DEFAULT_MARKDOWN_GENERATOR
-
+async def _crawl_job(url: str, config: dict, poll_interval: float, max_wait: float) -> dict:
+    global _job_api_warned
     payload = {"urls": [url], "crawler_config": config}
 
     try:
         async with httpx.AsyncClient(timeout=max_wait + 30) as client:
             # Submit job
-            resp = await client.post(
-                f"{settings.crawl4ai_url}/crawl/job",
-                json=payload,
-                headers=_auth_headers(),
-            )
-            resp.raise_for_status()
+            try:
+                resp = await client.post(
+                    f"{settings.crawl4ai_url}/crawl/job",
+                    json=payload,
+                    headers=_auth_headers(),
+                )
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code < 500 and e.response.status_code not in (404, 405):
+                    raise
+                if not _job_api_warned:
+                    logger.warning(
+                        "Crawl4AI /crawl/job unavailable (HTTP %d) — using synchronous /crawl",
+                        e.response.status_code,
+                    )
+                    _job_api_warned = True
+                return await _crawl_sync(url, config, max_wait)
             job = resp.json()
             task_id = job.get("task_id")
             if not task_id:
@@ -147,7 +217,26 @@ async def crawl4ai_job(
             return {"error": f"Crawl job timed out after {max_wait}s", "url": url}
 
     except Exception as e:
-        return {"error": f"Crawl job failed: {e}", "url": url}
+        return _crawl_error(e, url, "/crawl/job", prefix="Crawl job failed")
+
+
+async def crawl4ai_job(
+    url: str,
+    *,
+    crawler_config: dict | None = None,
+    poll_interval: float = 2.0,
+    max_wait: float = 300.0,
+) -> dict:
+    """Submit an async crawl job and poll until completion.
+
+    Uses POST /crawl/job + GET /crawl/job/{task_id} to avoid HTTP timeouts
+    on slow pages. Recommended for scheduler jobs. Falls back to the
+    synchronous /crawl (timeout max_wait) when the job API itself is down.
+
+    Returns same format as crawl4ai_request.
+    """
+    config = _with_defaults(crawler_config)
+    return await _with_pdf(url, lambda: _crawl_job(url, config, poll_interval, max_wait))
 
 
 def bm25_markdown_generator(query: str, threshold: float = 1.0) -> dict:
@@ -259,13 +348,7 @@ async def crawl4ai_deep(
         On success: {"success": True, "pages": [...], "total_pages": N}
         On failure: {"error": "..."}
     """
-    config = dict(crawler_config or {})
-    config.setdefault("cache_mode", "bypass")
-    config.setdefault("word_count_threshold", 20)
-    config.setdefault("exclude_social_media_links", True)
-    config.setdefault("remove_overlay_elements", True)
-    if "markdown_generator" not in config:
-        config["markdown_generator"] = DEFAULT_MARKDOWN_GENERATOR
+    config = _with_defaults(crawler_config)
 
     # Deep crawl config
     deep_crawl_config = {
@@ -337,4 +420,8 @@ async def crawl4ai_deep(
             return {"error": f"Deep crawl timed out after {max_wait}s"}
 
     except Exception as e:
-        return {"error": f"Deep crawl failed: {e}"}
+        # No synchronous fallback here: Crawl4AI 0.9 rejects a deep-crawl
+        # strategy on /crawl ("may not be constructed from an untrusted request").
+        err = _crawl_error(e, start_url, "/crawl/job", prefix="Deep crawl failed")
+        err.pop("url", None)
+        return err
