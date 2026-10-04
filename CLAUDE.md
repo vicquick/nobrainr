@@ -65,6 +65,7 @@ src/nobrainr/              # Python backend
 │   └── pipeline.py        # Full pipeline: extract → dedup → store → link
 ├── crawler/
 │   ├── client.py          # Shared Crawl4AI HTTP client (crawl4ai_request, crawl4ai_job, crawl4ai_deep, discover_sitemap_urls, bm25_markdown_generator)
+│   ├── pdf.py             # Direct PDF fetch + pymupdf text extraction (bypasses Crawl4AI for PDFs; public hosts only)
 │   └── knowledge.py       # Scheduled knowledge crawler (seed URLs, link discovery, freshness, saturation detection)
 ├── dashboard/
 │   ├── app.py             # Parent ASGI app: create_app(), lifespan
@@ -419,7 +420,7 @@ docker network disconnect mcp <container> && docker network connect --alias nobr
 ```
 
 ### Crawl4AI Configuration
-- Container: `crawl4ai` on `mcp` network, port 11235 (v0.8.0)
+- Container: `crawl4ai` on `mcp` network, port 11235 (v0.9.0)
 - CPU only (no GPU), 4GB RAM, 4 CPUs, `--shm-size=2g` for Chromium
 - Connects to llama-swap via `http://llama-server:8080` for LLM-based extraction
 - Env vars: `NOBRAINR_CRAWL4AI_URL=http://crawl4ai:11235`, `NOBRAINR_CRAWL4AI_API_TOKEN`
@@ -431,6 +432,21 @@ docker network disconnect mcp <container> && docker network connect --alias nobr
   (query-aware, extracts only relevant sections — used by entity_web_research, interest_expansion)
 - **Async job API**: Scheduler jobs use POST `/crawl/job` + polling to avoid HTTP timeouts
 - **Deep crawl**: BFS/DFS strategies via `crawl4ai_deep()`, exposed as `deep_crawl` MCP tool
+- **PDFs bypass Crawl4AI** (`crawler/pdf.py`): v0.9.0 fetches a PDF, then fails it as
+  "Blocked by anti-bot protection: Cloudflare JS challenge" (HTTP 500). URLs ending in `.pdf`
+  are fetched directly; any other URL is probed for a `%PDF-` body only after its Crawl4AI crawl
+  failed. Text layer via pymupdf → page-separated markdown (`## Page N`, `---`), result in
+  Crawl4AI's shape with `metadata.source = "pdf-direct"` + page counts. Caps: 50 MB, 500 pages,
+  1M chars. The direct fetch refuses hosts that resolve to non-public addresses (checked per
+  redirect hop) — internal URLs keep going to Crawl4AI as before. Scanned PDFs return an error
+  pointing at `memory_import_documents` (vision OCR).
+- **v0.9.0 `/crawl/job` is broken** (500 on every request — its metrics middleware crashes on
+  `_IncludedRouter`). `crawl4ai_job()` falls back to synchronous `/crawl` with `max_wait` as
+  timeout, so the four scheduled crawl jobs work again. `deep_crawl` has no fallback: `/crawl`
+  rejects deep-crawl strategies from requests ("may not be constructed from an untrusted
+  request") — it stays down until Crawl4AI is fixed or pinned back.
+- **Error dicts**: a Crawl4AI HTTP error carries `status_code`, `correlation_id` (grep
+  `docker logs crawl4ai` for the real cause) and, on 5xx, a `hint`.
 
 ### TLS Certificates
 Uses Traefik `letsencrypt-dns` resolver (Cloudflare DNS challenge) — works behind VPN
