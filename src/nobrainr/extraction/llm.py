@@ -139,108 +139,140 @@ def _mark_live_call() -> None:
     _last_live_call_ts = time.monotonic()
 
 
-# GPU-yield activity cache. The /api/metrics poll is cheap but every
-# scheduler call passes through here; a short cache keeps it to at most
-# one HTTP round-trip per TTL window even under batch fan-out.
-_gpu_yield_cache: tuple[float, bool] = (0.0, False)
-_GPU_YIELD_CACHE_TTL_S = 10.0
+# ──────────────────────────────────────────────
+# GPU-yield recency (2026-10-07 rewrite)
+# ──────────────────────────────────────────────
+# llama-swap v250 removed /api/metrics (confirmed 404 on the live instance).
+# What's left: /metrics is Prometheus host+GPU telemetry with no per-model
+# field at all; /running gives residency only (already the wrong signal per
+# the old docstring here — flips the instant one scheduler call slips
+# through); /upstream/<model>/slots gives a live is_processing SNAPSHOT
+# (confirmed empirically) with no timestamp or history. None of these
+# remember request history for us the way /api/metrics used to — and the
+# 2026-08-20 assumption that this didn't matter anymore ("every local
+# consumer shares ONE llama-swap model") was simply wrong: the live
+# config.yaml chat group has 5 exclusive members (qwen3-8b, qwen3.6-27b,
+# qwen3.8-27b, qwen3.6-27b-vision, qwen3.8-27b-vision), so eviction is live,
+# not hypothetical — confirmed by observing qwen3.8-27b resident while
+# qwen3-8b was not.
+#
+# So nobrainr keeps that memory itself: gpu_yield_poll_loop (started once at
+# scheduler startup) samples the snapshot every gpu_yield_poll_s and stamps
+# _gpu_yield_last_busy_ts whenever it catches a yield model genuinely
+# mid-request. _live_model_active() just compares "now" against nobrainr's
+# own stamp — no network call, no reliance on any upstream endpoint
+# remembering anything on our behalf. Survives the next time llama-swap's
+# API changes shape again.
+_gpu_yield_last_busy_ts: float = 0.0
 
+# Only ever used against a model /running already reported resident, so a
+# timeout here is a genuine anomaly, not "model not loaded" — probing
+# /slots for a NON-resident model hangs with no response rather than
+# erroring (confirmed empirically), so we deliberately never probe /slots
+# for a model we haven't first confirmed is resident.
+_GPU_YIELD_PROBE_TIMEOUT_S = 3.0
 
-def _parse_metrics_ts(raw: str) -> _dt.datetime | None:
-    """llama-swap timestamps carry nanosecond precision which
-    ``fromisoformat`` rejects; second precision is plenty here."""
-    try:
-        return _dt.datetime.fromisoformat(raw.split(".")[0]).replace(
-            tzinfo=_dt.timezone.utc
-        )
-    except ValueError:
-        return None
-
-
-_gpu_yield_warned: bool = False
+_gpu_yield_warned_at: float = 0.0
+_GPU_YIELD_WARN_INTERVAL_S = 3600.0  # re-warn hourly, not once-ever
 
 
 def _warn_gpu_yield_unavailable(exc: Exception) -> None:
-    """Say once, loudly, that the GPU-yield probe has no data source.
+    """Say loudly, and REPEATEDLY, that the GPU-yield probe is broken.
 
-    The probe deliberately swallows errors so a missing endpoint can never
-    fail a real LLM call. The cost of that is silence: for weeks the yield
-    could be a no-op and look identical to "nothing is using the GPU".
-
-    This bit us on 2026-08-20. llama-swap v250 dropped the JSON
-    ``/api/metrics`` array this reads; ``/metrics`` is now Prometheus text
-    carrying host and GPU telemetry only, with no per-model request data,
-    and ``/running`` reports residency, which this function's docstring
-    already explains is the wrong signal. So on v250+ the yield is off and
-    there is no drop-in replacement.
-
-    That is tolerable in the current layout — every local consumer
-    (OpenWebUI, the bimavo wizard, nobrainr live) shares ONE llama-swap
-    model, so there is no eviction left to prevent, which was the whole
-    point of the yield. It stops being tolerable the moment two different
-    local models are in play again. Log it so that day is noticed.
+    Warn-once (2026-08-20) is mechanically correct but operationally
+    silent: this container runs for days, and json-file log rotation here
+    keeps only ~2 days of output — a flag that logs ONE time near process
+    start is gone from ``docker logs`` long before anyone has reason to
+    look. That's exactly what happened: the real warning almost certainly
+    fired once on 2026-08-20 and then rotated out while the underlying
+    404s kept accumulating silently for weeks. Re-warning hourly instead
+    of once keeps at least one copy inside any retention window measured
+    in hours, not seconds.
     """
-    global _gpu_yield_warned
-    if _gpu_yield_warned:
+    global _gpu_yield_warned_at
+    now = time.monotonic()
+    if now - _gpu_yield_warned_at < _GPU_YIELD_WARN_INTERVAL_S:
         return
-    _gpu_yield_warned = True
+    _gpu_yield_warned_at = now
     logger.warning(
-        "GPU-yield probe unavailable (%s: %.120s) — %s/api/metrics did not "
-        "return usable data. Scheduler work will NOT park for live GPU use. "
-        "Harmless while all local callers share one model; revisit if that "
-        "changes. llama-swap v250+ removed this endpoint.",
+        "GPU-yield probe broken (%s: %.120s) against %s for models %s — "
+        "scheduler work will NOT park for live GPU use until this is "
+        "fixed. Re-logged hourly so log rotation can't hide it.",
         type(exc).__name__, str(exc), settings.llm_server_url,
+        settings.gpu_yield_models,
     )
 
 
-async def _live_model_active() -> bool:
-    """True when a gpu_yield model served a request recently.
+async def _poll_gpu_yield_once() -> None:
+    """One sampling pass: check residency first (cheap, always answers
+    fast), then only probe /slots for yield models that are actually
+    loaded, and only count real usage, not heartbeats."""
+    global _gpu_yield_last_busy_ts
+    if not settings.gpu_yield_models:
+        return
+    yield_set = set(settings.gpu_yield_models)
+    async with httpx.AsyncClient(timeout=_GPU_YIELD_PROBE_TIMEOUT_S) as client:
+        try:
+            resp = await client.get(f"{settings.llm_server_url}/running")
+            resp.raise_for_status()
+            resident = {m.get("model") for m in resp.json().get("running", [])}
+        except Exception as exc:
+            _warn_gpu_yield_unavailable(exc)
+            return
+        for model in yield_set & resident:
+            try:
+                resp = await client.get(
+                    f"{settings.llm_server_url}/upstream/{model}/slots"
+                )
+                resp.raise_for_status()
+                slots = resp.json()
+            except Exception as exc:
+                _warn_gpu_yield_unavailable(exc)
+                continue
+            for slot in slots:
+                if not slot.get("is_processing"):
+                    continue
+                # Probe filter (2026-08-15, carried over from the old
+                # /api/metrics fields): bimavo's backend heartbeats
+                # qwen3-8b with 1-token requests every few seconds. A
+                # request this small proves the server is alive, not
+                # that a human is mid-conversation — only real usage
+                # should re-arm the park.
+                params = slot.get("params") or {}
+                if (slot.get("n_prompt_tokens") or 0) <= 8 and (
+                        params.get("max_tokens") or 0) <= 2:
+                    continue
+                _gpu_yield_last_busy_ts = time.monotonic()
+                break
 
-    Requesting the 27b while a live app is mid-conversation on the 8b
-    evicts it (exclusive chat slot) and costs two ~35s swaps per exchange.
-    Request-recency from llama-swap /api/metrics is the signal — residency
-    alone flips back as soon as one scheduler call slips through, while
-    recency keeps the park alive across the gaps between user exchanges.
-    Plain llama-server has no /api/metrics — any error degrades the check
-    to a no-op.
+
+async def gpu_yield_poll_loop() -> None:
+    """Background task: keep _gpu_yield_last_busy_ts fresh forever.
+    No-op loop when gpu_yield_models is empty. Started once at scheduler
+    startup (see scheduler.py)."""
+    if not settings.gpu_yield_models:
+        return
+    while True:
+        try:
+            await _poll_gpu_yield_once()
+        except Exception:
+            logger.exception("gpu_yield_poll_loop: unexpected failure, continuing")
+        await asyncio.sleep(settings.gpu_yield_poll_s)
+
+
+async def _live_model_active() -> bool:
+    """True when a gpu_yield model served a request within
+    gpu_yield_recent_s. Pure local check — no network call; recency is
+    maintained by gpu_yield_poll_loop sampling on a fixed cadence and
+    stamping _gpu_yield_last_busy_ts. (Previously this made its own HTTP
+    call to llama-swap's /api/metrics, which carried per-model request
+    history itself. v250 removed that endpoint with no per-model
+    replacement, so nobrainr now keeps the history itself instead of
+    asking an upstream that no longer remembers it.)
     """
-    global _gpu_yield_cache
     if not settings.gpu_yield_models:
         return False
-    checked_at, busy = _gpu_yield_cache
-    if time.monotonic() - checked_at < _GPU_YIELD_CACHE_TTL_S:
-        return busy
-    busy = False
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{settings.llm_server_url}/api/metrics")
-            resp.raise_for_status()
-            yield_set = set(settings.gpu_yield_models)
-            cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(
-                seconds=settings.gpu_yield_recent_s
-            )
-            for entry in resp.json():
-                if entry.get("model") not in yield_set:
-                    continue
-                # Probe filter (2026-08-15): bimavo's backend heartbeats
-                # qwen3-8b with 1-token requests every few seconds — each
-                # probe re-armed the 25-min park and held the re-distill
-                # at 2.3 conv/h indefinitely (found via tcpdump → container
-                # 10.0.4.13 = bimavo backend). A request this small proves
-                # the server is alive, not that a human is mid-conversation.
-                # Only real usage parks the campaign.
-                if (entry.get("output_tokens") or 0) <= 2 and (
-                        entry.get("input_tokens") or 0) <= 8:
-                    continue
-                ts = _parse_metrics_ts(entry.get("timestamp", ""))
-                if ts is not None and ts >= cutoff:
-                    busy = True
-                    break
-    except Exception as exc:
-        busy = False
-        _warn_gpu_yield_unavailable(exc)
-    _gpu_yield_cache = (time.monotonic(), busy)
-    return busy
+    return (time.monotonic() - _gpu_yield_last_busy_ts) < settings.gpu_yield_recent_s
 
 
 async def _wait_for_live_quiet(caller_kind: str) -> None:

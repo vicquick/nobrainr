@@ -13,6 +13,8 @@ service keeps working in environments that haven't rebuilt the container yet.
 Each community gets an LLM-generated summary for hierarchical retrieval.
 """
 
+import asyncio
+import functools
 import logging
 
 import networkx as nx
@@ -151,19 +153,35 @@ async def detect_communities(
     filtered_nodes = [nid for nid in node_ids if nid not in hub_ids]
     filtered_edges = [(s, t, w) for s, t, w in edge_tuples if s not in hub_ids and t not in hub_ids]
 
+    # Leiden/Louvain (igraph/leidenalg/networkx) are CPU-bound C-extension
+    # calls with no internal await — run directly, they'd block the whole
+    # asyncio event loop (HTTP/MCP API, memory_write_worker, the stale-
+    # processing reaper) for their full duration. run_in_executor (2026-10-07)
+    # hands them to a thread so the loop stays responsive; doesn't shrink the
+    # algorithm's own wall-clock cost, but stops it from freezing everything
+    # else on the process while it runs, and lets the job's own timeout
+    # actually land close to when it's hit instead of only once the blocking
+    # call happens to yield back.
+    loop = asyncio.get_running_loop()
     algo = "leiden"
     try:
-        communities = _run_leiden(filtered_nodes, filtered_edges, resolution=resolution)
+        communities = await loop.run_in_executor(
+            None, functools.partial(_run_leiden, filtered_nodes, filtered_edges, resolution=resolution)
+        )
     except ImportError:
         logger.warning(
             "leidenalg/igraph not installed — falling back to Louvain. "
             "Install `leidenalg` + `python-igraph` for guaranteed connected clusters."
         )
-        communities = _run_louvain(filtered_nodes, filtered_edges, resolution=resolution)
+        communities = await loop.run_in_executor(
+            None, functools.partial(_run_louvain, filtered_nodes, filtered_edges, resolution=resolution)
+        )
         algo = "louvain_fallback"
     except Exception:
         logger.exception("Leiden failed unexpectedly, falling back to Louvain")
-        communities = _run_louvain(filtered_nodes, filtered_edges, resolution=resolution)
+        communities = await loop.run_in_executor(
+            None, functools.partial(_run_louvain, filtered_nodes, filtered_edges, resolution=resolution)
+        )
         algo = "louvain_fallback"
 
     # Filter out singleton/tiny communities
@@ -218,46 +236,76 @@ async def detect_communities(
     # moved entities generate audit events. Typical steady-state run: <500
     # audit rows instead of 72,000.
     from uuid import UUID as _UUID
+    # Batch size for the write-back (2026-10-07). At current scale (~155K
+    # entities) the two UPDATEs below used to each touch up to ~150K rows in
+    # ONE statement/transaction, holding exclusive locks on all of them until
+    # that single statement committed at the very end. The NULL-out visited
+    # rows in physical scan order and the apply-assignments UPDATE visited
+    # them in Python dict/set-iteration order (driven by Leiden/Louvain's
+    # arbitrary internal ordering) — neither matches the lock order live
+    # extraction uses (find_or_create_entity's single-row mention_count
+    # UPDATE, store_entity_relation's source-then-target FK insert), so a
+    # long enough unordered scan is guaranteed to eventually invert against
+    # a concurrent extraction transaction and deadlock (observed 2026-10-04,
+    # killed after 515,939ms). Sorting by id ASC BEFORE chunking gives every
+    # batch, across every run, the same consistent lock order relative to
+    # extraction's writes, and each batch commits — and releases its locks —
+    # in well under a second instead of holding most of the table for the
+    # scan's whole duration.
+    WRITE_BACK_BATCH = 2000
     async with pool.acquire() as conn:
         await conn.execute(
             "ALTER TABLE entities ADD COLUMN IF NOT EXISTS community_id integer"
         )
 
         if community_assignments:
-            ids = []
-            cids = []
+            pairs = []
             for node_id_str, comm_id in community_assignments.items():
                 try:
-                    ids.append(_UUID(node_id_str))
-                    cids.append(int(comm_id))
+                    pairs.append((_UUID(node_id_str), int(comm_id)))
                 except (ValueError, TypeError):
                     continue
+            pairs.sort(key=lambda p: p[0])
+            ids = [p[0] for p in pairs]
+            cids = [p[1] for p in pairs]
 
             # 1) NULL out entities that are currently in a community but no
             # longer in the assignment map — only rows where the value
             # actually changes get audited because the trigger short-circuits
-            # on OLD IS NOT DISTINCT FROM NEW.
-            await conn.execute(
-                """
-                UPDATE entities
-                SET community_id = NULL
-                WHERE community_id IS NOT NULL
-                  AND id <> ALL($1::uuid[])
-                """,
-                ids,
-            )
+            # on OLD IS NOT DISTINCT FROM NEW. id-ordered so the batch below
+            # keeps the same consistent lock order as the apply step.
+            stale_ids = [
+                r["id"]
+                for r in await conn.fetch(
+                    """
+                    SELECT id FROM entities
+                    WHERE community_id IS NOT NULL AND id <> ALL($1::uuid[])
+                    ORDER BY id
+                    """,
+                    ids,
+                )
+            ]
+            for i in range(0, len(stale_ids), WRITE_BACK_BATCH):
+                await conn.execute(
+                    "UPDATE entities SET community_id = NULL WHERE id = ANY($1::uuid[])",
+                    stale_ids[i:i + WRITE_BACK_BATCH],
+                )
+                await asyncio.sleep(0)  # yield so queued extraction writes can land
+
             # 2) Apply new assignments, but only where the community_id is
             # actually changing (IS DISTINCT FROM catches NULL→N and N→M).
-            await conn.execute(
-                """
-                UPDATE entities AS e
-                SET community_id = v.cid
-                FROM unnest($1::uuid[], $2::int[]) AS v(eid, cid)
-                WHERE e.id = v.eid
-                  AND e.community_id IS DISTINCT FROM v.cid
-                """,
-                ids, cids,
-            )
+            for i in range(0, len(ids), WRITE_BACK_BATCH):
+                await conn.execute(
+                    """
+                    UPDATE entities AS e
+                    SET community_id = v.cid
+                    FROM unnest($1::uuid[], $2::int[]) AS v(eid, cid)
+                    WHERE e.id = v.eid
+                      AND e.community_id IS DISTINCT FROM v.cid
+                    """,
+                    ids[i:i + WRITE_BACK_BATCH], cids[i:i + WRITE_BACK_BATCH],
+                )
+                await asyncio.sleep(0)
         else:
             # No communities at all — NULL out everyone with a stale assignment
             await conn.execute(

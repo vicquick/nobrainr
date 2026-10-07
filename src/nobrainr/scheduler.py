@@ -173,13 +173,25 @@ LLM_JOB_TIMEOUT_OVERRIDES = {
     # from quality_scoring) stops killing otherwise-healthy runs. Batch
     # size is also being cut 15→10 in config so per-run work shrinks.
     "chatgpt_distill": 240 * 60,  # 4h: long-tail monster convos (up to 581 msgs / 30 windows each) need headroom to finish a small batch without a misleading timeout status
-    "community_detection": 90 * 60,  # 42k entities + 50 community summaries = slow
+    # 2026-10-07: graph grew to 155k entities / 505k relations (was ~42k-72k
+    # when 90m was set) — 4/5 recorded runs since 2026-09-13 hit this ceiling
+    # exactly, 0/5 ever completed. Same "many sequential scheduler-priority
+    # LLM calls parking behind live GPU use" disease already fixed above for
+    # chatgpt_distill. Bumped 2x for the same reason; paired with cutting
+    # max_communities 500->150 in scheduler_jobs.py to shrink worst-case
+    # sequential-call exposure too.
+    "community_detection": 180 * 60,
     # quality_scoring: batch=60 × ~90s queue-wait per call when entity extraction
     # is competing for llama-server = 5400s >> 30min default. 60min survives the
     # worst-case extraction-heavy startup window.
     "quality_scoring": 60 * 60,
-    # cooccurrence_linking: graph walk over 55k entities is slow under contention
-    "cooccurrence_linking": 60 * 60,
+    # cooccurrence_linking: graph walk over 55k entities is slow under contention.
+    # 2026-10-07: batch_size raised 60->250 (env var) to fix the degree-1
+    # star-graph backlog (new entities trending back toward the old ~69%
+    # isolated-node problem) — measured ~15.5s/pair blended local+remote cost
+    # means a 250-pair run can take ~65min on average with real variance
+    # above that at the current 60min ceiling, so bumped 2x for headroom.
+    "cooccurrence_linking": 120 * 60,
 }
 
 # Per-row timeout for memory_write_queue worker. If the dedup/extraction hangs
@@ -314,7 +326,18 @@ class Scheduler:
                     )
             except Exception:
                 logger.exception("orphan scheduler_runs cleanup failed")
-        self._tasks_pre = [asyncio.create_task(_close_orphan_runs())]
+
+        # GPU-yield recency poll (2026-10-07): keeps its own memory of
+        # "was a live-preferred model recently busy" instead of relying on
+        # llama-swap to remember request history for us — see
+        # extraction/llm.py's module comment for why. No-op when
+        # gpu_yield_models is unset.
+        from nobrainr.extraction.llm import gpu_yield_poll_loop
+
+        self._tasks_pre = [
+            asyncio.create_task(_close_orphan_runs()),
+            asyncio.create_task(gpu_yield_poll_loop()),
+        ]
 
         # Non-LLM jobs (existing)
         self._tasks = [
