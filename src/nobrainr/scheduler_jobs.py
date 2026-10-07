@@ -1936,7 +1936,15 @@ async def community_detection() -> dict:
 
     result = await detect_communities(min_community_size=3, resolution=1.5)
     if result["communities"] > 0:
-        summary_result = await generate_community_summaries(max_communities=500)
+        # 2026-10-07: cut 500->150. Each of up to 500 sequential ollama_chat
+        # calls can individually park up to gpu_yield_max_wait_s (1800s)
+        # behind live GPU use — this loop is why community_summaries never
+        # got written in any of the last 5 runs (the DB write only happens
+        # after the whole loop finishes). The existing accumulate-don't-
+        # DELETE UPSERT (biggest communities first) already makes a lower
+        # cap safe: remaining communities get covered over the next 2-3
+        # weekly cycles instead of one, no data loss.
+        summary_result = await generate_community_summaries(max_communities=150)
         result["summaries"] = summary_result
 
     # Invalidate graph layout cache — communities changed, layout needs recomputation
