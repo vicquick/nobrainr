@@ -544,6 +544,35 @@ async def _hybrid_search_rrf(
                 # of ~0.6-1.0 dominates as it should.
                 entity_weights[s["id"]] = float(s["sim"]) * float(s["idf"])
 
+            # Phase A2 (semantic seed, 2026-10-14): trigram-only seeding
+            # misses entities the query means without sharing substrings.
+            # Reuses the embedding already computed for the vector branch
+            # above — zero extra GPU calls.
+            if _cfg.graph_branch_semantic_seed_enabled:
+                try:
+                    sem_candidates = await conn.fetch(
+                        f"""
+                        SELECT id::text AS id,
+                               1 - (embedding::{_HV} <=> $1::{_HV}) AS sim,
+                               COALESCE(specificity, 1.0) AS idf
+                          FROM entities
+                         WHERE embedding IS NOT NULL
+                         ORDER BY embedding::{_HV} <=> $1::{_HV}
+                         LIMIT $2
+                        """,
+                        embedding, _cfg.graph_branch_max_entities,
+                    )
+                except Exception as exc:
+                    logger.debug("semantic entity seed skipped: %s", exc)
+                    sem_candidates = []
+                for s in sem_candidates:
+                    if float(s["sim"]) < _cfg.graph_branch_semantic_threshold:
+                        continue
+                    w = float(s["sim"]) * float(s["idf"])
+                    # max(), not +=: a trigram-AND-semantic match shouldn't
+                    # double-count.
+                    entity_weights[s["id"]] = max(entity_weights.get(s["id"], 0.0), w)
+
             if (
                 _cfg.ppr_enabled
                 and seeds
