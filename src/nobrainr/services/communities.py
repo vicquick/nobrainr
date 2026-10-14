@@ -16,6 +16,7 @@ Each community gets an LLM-generated summary for hierarchical retrieval.
 import asyncio
 import functools
 import logging
+import time
 
 import networkx as nx
 
@@ -30,6 +31,7 @@ def _run_leiden(
     edges: list[tuple[str, str, float]],
     *,
     resolution: float,
+    initial_membership: list[int] | None = None,
 ) -> list[set[str]]:
     """Run Leiden via ``leidenalg`` + ``igraph``. Returns communities as sets of node IDs."""
     import igraph as ig
@@ -53,6 +55,7 @@ def _run_leiden(
     partition = leidenalg.find_partition(
         g,
         leidenalg.RBConfigurationVertexPartition,
+        initial_membership=initial_membership,
         weights="weight",
         resolution_parameter=resolution,
         seed=42,
@@ -119,9 +122,9 @@ async def detect_communities(
             WHERE valid = true
         """)
 
-        # Load entity names for labeling
+        # Load entity names for labeling (+ community_id to seed Leiden below)
         entities = await conn.fetch("""
-            SELECT id, name, entity_type, canonical_name
+            SELECT id, name, entity_type, canonical_name, community_id
             FROM entities
         """)
 
@@ -153,6 +156,33 @@ async def detect_communities(
     filtered_nodes = [nid for nid in node_ids if nid not in hub_ids]
     filtered_edges = [(s, t, w) for s, t, w in edge_tuples if s not in hub_ids and t not in hub_ids]
 
+    # Seed Leiden from prior community_id assignments (2026-10-14) instead of
+    # recomputing from an all-singleton start every run. A full cold recompute
+    # on ~155K+ nodes never completed (4 timeouts then a deadlock since
+    # 2026-09-13; the 10-07 fix's one attempt hit the new 180min ceiling
+    # cleanly, still no progress) — seeding should make convergence land much
+    # closer to the already-correct prior state instead of re-deriving it.
+    # leidenalg requires initial_membership as DENSE 0..k-1 indices, not
+    # arbitrary labels (verified live: passing raw community_id values throws
+    # "Value cannot exceed length of list") — remap known ids to a dense
+    # range; entities with no prior assignment each get their own fresh
+    # singleton index, mathematically equivalent to "unseeded" for those
+    # nodes specifically.
+    prior_community = {str(e["id"]): e["community_id"] for e in entities}
+    label_to_idx: dict[int, int] = {}
+    seed_membership: list[int] = []
+    next_idx = 0
+    for nid in filtered_nodes:
+        cid = prior_community.get(nid)
+        if cid is None:
+            seed_membership.append(next_idx)
+            next_idx += 1
+        else:
+            if cid not in label_to_idx:
+                label_to_idx[cid] = next_idx
+                next_idx += 1
+            seed_membership.append(label_to_idx[cid])
+
     # Leiden/Louvain (igraph/leidenalg/networkx) are CPU-bound C-extension
     # calls with no internal await — run directly, they'd block the whole
     # asyncio event loop (HTTP/MCP API, memory_write_worker, the stale-
@@ -164,9 +194,22 @@ async def detect_communities(
     # call happens to yield back.
     loop = asyncio.get_running_loop()
     algo = "leiden"
+    # Timing instrumentation (2026-10-14): no prior run has ever logged where
+    # the 180min budget actually goes (fetch/filter vs algorithm convergence)
+    # — the 2026-10-07 run's logs already rotated out before anyone could
+    # check. These two lines turn the next run into real data instead of
+    # another inference.
+    _t_algo_start = time.monotonic()
+    logger.info(
+        "community_detection: entering Leiden/Louvain with %d nodes, %d edges (fetch+filter done)",
+        len(filtered_nodes), len(filtered_edges),
+    )
     try:
         communities = await loop.run_in_executor(
-            None, functools.partial(_run_leiden, filtered_nodes, filtered_edges, resolution=resolution)
+            None, functools.partial(
+                _run_leiden, filtered_nodes, filtered_edges,
+                resolution=resolution, initial_membership=seed_membership,
+            )
         )
     except ImportError:
         logger.warning(
@@ -183,6 +226,10 @@ async def detect_communities(
             None, functools.partial(_run_louvain, filtered_nodes, filtered_edges, resolution=resolution)
         )
         algo = "louvain_fallback"
+    logger.info(
+        "community_detection: %s converged in %.1fs, %d communities",
+        algo, time.monotonic() - _t_algo_start, len(communities),
+    )
 
     # Filter out singleton/tiny communities
     valid_communities = [c for c in communities if len(c) >= min_community_size]

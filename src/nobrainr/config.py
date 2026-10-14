@@ -295,6 +295,20 @@ class Settings(BaseSettings):
     # branch is additive signal for multi-hop, not a prior.
     graph_branch_rrf_weight: float = 0.35
 
+    # Semantic entity seed (2026-10-14): Phase A above is pg_trgm-only, pure
+    # lexical string overlap — a query like "that GPU contention bug" won't
+    # trigram-match "qwen3-8b" or "llama-swap" even though that's exactly
+    # what it means. entities.embedding is fully built + HNSW-indexed
+    # (schema.py) but was never queried anywhere in retrieval before this.
+    # Reuses the embedding already computed for the vector branch — zero
+    # extra GPU calls. Merges into the same entity_weights dict via max(),
+    # not a parallel branch, so no double-counting risk.
+    graph_branch_semantic_seed_enabled: bool = True
+    # Cosine similarity isn't on the same scale as trigram similarity —
+    # this is a conservative starting point, not empirically tuned yet.
+    # Tune against the 460-query eval set before trusting this value.
+    graph_branch_semantic_threshold: float = 0.55
+
     # ── HippoRAG 2 PPR layer (2026-05-03) ─────────────────────────
     # When the graph branch fires and finds at least `ppr_min_seeds` seed
     # entities, run Personalized PageRank from those seeds across the

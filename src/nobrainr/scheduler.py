@@ -192,6 +192,18 @@ LLM_JOB_TIMEOUT_OVERRIDES = {
     # means a 250-pair run can take ~65min on average with real variance
     # above that at the current 60min ceiling, so bumped 2x for headroom.
     "cooccurrence_linking": 120 * 60,
+    # card_builder: max 8 LLM calls/run (card_builder_max_builds_per_run), each
+    # individually exposed to gpu_yield_max_wait_s=1800s (30min) — the same
+    # number as the job's own default LLM_JOB_TIMEOUT, so even 1-2 real parks
+    # during live GPU use can exhaust the whole budget before real work
+    # happens. Confirmed (2026-10-14): every recorded timeout over 14 days
+    # lands at ~1,800,000ms exactly, never near actual workload size — this
+    # was a missing-override bug, not a yield-bypass. 60min gives headroom
+    # for multiple parks without over-provisioning a max-8-call job.
+    "card_builder": 60 * 60,
+    # card_factcheck: same park-ceiling-vs-job-timeout collision, batch_size=5
+    # calls/run. Same fix, same reasoning.
+    "card_factcheck": 60 * 60,
 }
 
 # Per-row timeout for memory_write_queue worker. If the dedup/extraction hangs

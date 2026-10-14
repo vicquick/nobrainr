@@ -101,6 +101,72 @@ def _recall_at_k(returned: list[str], expected: set[str], k: int) -> float:
     return hits / len(expected)
 
 
+async def repair_golden_query_ids() -> dict[str, int]:
+    """Resolve eval_golden_queries.expected_ids through memories.superseded_by
+    chains, and drop references to hard-deleted memories.
+
+    Why this exists (2026-10-14): the golden set's expected_ids were last
+    hand-edited 2026-07-22 and never revisited since. Memories legitimately
+    get deleted/merged over time (dashboard admin UI, CLI, the memory_delete
+    MCP tool — no automated job hard-deletes memories), and every deletion
+    permanently zeroes that query's contribution to recall_at_k/MRR/nDCG
+    with no way to recover. That produced a slow, monotonic-looking decline
+    in weekly eval_runs (recall@10 0.703->0.665 over 8 weeks) that read
+    exactly like a retrieval regression but wasn't one — root-caused
+    2026-10-14: 105/654 (16%) referenced ids were hard-deleted, 13/654 (2%)
+    pointed at stale superseded ids, with embedding/reranker model and HNSW
+    config both unchanged across the entire window. Called at the top of
+    every eval run so this can't silently rot again between fixes.
+    """
+    pool = await get_pool()
+    dropped = 0
+    resolved = 0
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, expected_ids FROM eval_golden_queries WHERE active"
+        )
+        for row in rows:
+            ids = list(row["expected_ids"] or [])
+            if not ids:
+                continue
+            new_ids: list = []
+            changed = False
+            for eid in ids:
+                # Follow superseded_by chains to the final live target.
+                seen = {eid}
+                current = eid
+                for _ in range(10):  # cycle guard — should never trigger
+                    target = await conn.fetchval(
+                        "SELECT superseded_by FROM memories WHERE id = $1", current
+                    )
+                    if target is None or target in seen:
+                        break
+                    seen.add(target)
+                    current = target
+                exists = await conn.fetchval(
+                    "SELECT 1 FROM memories WHERE id = $1", current
+                )
+                if exists:
+                    new_ids.append(current)
+                    if current != eid:
+                        changed = True
+                        resolved += 1
+                else:
+                    changed = True
+                    dropped += 1
+            if changed:
+                await conn.execute(
+                    "UPDATE eval_golden_queries SET expected_ids = $1, updated_at = now() WHERE id = $2",
+                    new_ids, row["id"],
+                )
+    if dropped or resolved:
+        logger.info(
+            "repair_golden_query_ids: resolved %d superseded ref(s), dropped %d dead ref(s)",
+            resolved, dropped,
+        )
+    return {"resolved": resolved, "dropped": dropped}
+
+
 async def load_active_golden_queries() -> list[dict]:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -143,6 +209,11 @@ async def run_retrieval_eval(
             return await _live_search(query=query, limit=limit)
 
         search_fn = _default_search
+
+    # Self-heal golden-set ID rot before scoring — see repair_golden_query_ids
+    # docstring. Cheap (small table, runs weekly), and prevents the exact
+    # silent-decline failure mode root-caused 2026-10-14.
+    repair_stats = await repair_golden_query_ids()
 
     goldens = await load_active_golden_queries()
     if not goldens:
@@ -261,6 +332,7 @@ async def run_retrieval_eval(
         "mrr": round(mrr, 4),
         "ndcg_at_10": round(ndcg, 4),
         "model_tag": model_tag,
+        "golden_set_repair": repair_stats,
     }
 
 
