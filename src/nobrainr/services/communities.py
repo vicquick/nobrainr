@@ -406,14 +406,43 @@ async def generate_community_summaries(*, max_communities: int = 500) -> dict:
     if not rows:
         return {"summarized": 0, "failed": 0}
 
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS community_summaries (
+                community_id integer PRIMARY KEY,
+                title text,
+                summary text,
+                key_topics text[],
+                member_count integer,
+                updated_at timestamptz DEFAULT now()
+            )
+        """)
+        # Seeded Leiden keeps community_ids stable across runs, so a summary
+        # whose community barely changed is still valid — skip it instead of
+        # spending a GPU call on it. Without this the 150-call loop re-did the
+        # same top communities every run and never got past them.
+        existing = {
+            r["community_id"]: r["member_count"]
+            for r in await conn.fetch("""
+                SELECT community_id, member_count FROM community_summaries
+                WHERE updated_at > now() - interval '30 days'
+            """)
+        }
+
     summarized = 0
     failed = 0
-    summaries = {}
+    skipped = 0
 
     for row in rows:
         comm_id = row["community_id"]
         names = list(row["names"])
         types = list(row["types"])
+        member_count = len(names)
+
+        prev = existing.get(comm_id)
+        if prev and abs(member_count - prev) <= max(2, prev * 0.2):
+            skipped += 1
+            continue
 
         # Build context for LLM
         members = []
@@ -426,7 +455,7 @@ async def generate_community_summaries(*, max_communities: int = 500) -> dict:
         context = "\n".join(members[:30])  # Limit to 30 members for context window
 
         try:
-            result = await ollama_chat(
+            s = await ollama_chat(
                 system=(
                     "You are analyzing a cluster of related entities from a knowledge graph. "
                     "Generate a concise title (3-5 words), a 1-2 sentence summary of what "
@@ -438,46 +467,26 @@ async def generate_community_summaries(*, max_communities: int = 500) -> dict:
                 timeout=120.0,
                 think=False,
             )
-            summaries[comm_id] = result
-            summarized += 1
         except Exception:
             logger.debug("Failed to summarize community %d", comm_id)
             failed += 1
+            continue
 
-    # Store summaries in a metadata table or in entity metadata
-    if summaries:
-        # Build member count lookup from the original query
-        member_counts = {r["community_id"]: len(list(r["names"])) for r in rows}
-
+        # Write each summary immediately. Batching the writes after the loop
+        # meant a job timeout (GPU parks add up) discarded every summary —
+        # none were stored between 2026-09-03 and 2026-10-15.
+        # NOTE: Don't DELETE — UPSERT accumulates summaries across batches.
         async with pool.acquire() as conn:
-            # Create community_summaries table if needed
             await conn.execute("""
-                CREATE TABLE IF NOT EXISTS community_summaries (
-                    community_id integer PRIMARY KEY,
-                    title text,
-                    summary text,
-                    key_topics text[],
-                    member_count integer,
-                    updated_at timestamptz DEFAULT now()
-                )
-            """)
-            # NOTE: Don't DELETE — relies on UPSERT below. The previous DELETE
-            # wiped every community whose id wasn't in the current top-N batch,
-            # which capped total summaries at max_communities (~50). Removing
-            # the DELETE lets us accumulate summaries across batches and keeps
-            # historical summaries even if community_ids drift. Stale entries
-            # are pruned by maintenance scripts, not by this function.
-            for comm_id, s in summaries.items():
-                member_count = member_counts.get(comm_id, 0)
-                await conn.execute("""
-                    INSERT INTO community_summaries (community_id, title, summary, key_topics, member_count)
-                    VALUES ($1, $2, $3, $4, $5)
-                    ON CONFLICT (community_id) DO UPDATE
-                    SET title = $2, summary = $3, key_topics = $4, member_count = $5, updated_at = now()
-                """, comm_id, s.get("title", ""), s.get("summary", ""),
-                     s.get("key_topics", []), member_count)
+                INSERT INTO community_summaries (community_id, title, summary, key_topics, member_count)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (community_id) DO UPDATE
+                SET title = $2, summary = $3, key_topics = $4, member_count = $5, updated_at = now()
+            """, comm_id, s.get("title", ""), s.get("summary", ""),
+                 s.get("key_topics", []), member_count)
+        summarized += 1
 
-    return {"summarized": summarized, "failed": failed}
+    return {"summarized": summarized, "failed": failed, "skipped_fresh": skipped}
 
 
 async def list_communities(*, limit: int = 50) -> list[dict]:

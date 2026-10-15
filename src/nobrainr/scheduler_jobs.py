@@ -865,6 +865,10 @@ async def fact_extraction() -> dict:
             SELECT m.id, m.content, m.summary
             FROM memories m
             WHERE m.tier < 3
+              -- Mirror the len<50 skip below in SQL: those rows got no
+              -- marker, so they were re-selected forever and kept the
+              -- extraction loop spinning ~13k no-op runs/day.
+              AND length(m.content) >= 50
               AND NOT EXISTS (SELECT 1 FROM memory_facts f WHERE f.memory_id = m.id)
             ORDER BY m.importance DESC NULLS LAST, m.created_at DESC
             LIMIT $1

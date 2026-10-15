@@ -1,16 +1,56 @@
 """GPU-yield probe filter (2026-08-15): 1-token heartbeats must not park
-the 27b — only real conversations do."""
+the 27b — only real conversations do. Rewritten 2026-10-15 for the
+slot-polling probe (_poll_gpu_yield_once) that replaced /api/metrics."""
 
 from __future__ import annotations
 
-import inspect
+import asyncio
 
 
-def test_probe_sized_requests_do_not_arm_the_park():
+def _run_poll(monkeypatch, slots):
+    from nobrainr.config import settings
     from nobrainr.extraction import llm
 
-    src = inspect.getsource(llm._live_model_active)
-    assert "output_tokens" in src and "<= 2" in src
-    assert "input_tokens" in src and "<= 8" in src
-    # the probe check must run BEFORE the recency comparison
-    assert src.index("output_tokens") < src.index("ts >= cutoff")
+    monkeypatch.setattr(settings, "gpu_yield_models", ["qwen3-8b"])
+    monkeypatch.setattr(llm, "_gpu_yield_last_busy_ts", -1e12)
+
+    class Resp:
+        def __init__(self, data):
+            self._data = data
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._data
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, **k):
+            if url.endswith("/running"):
+                return Resp({"running": [{"model": "qwen3-8b"}]})
+            return Resp(slots)
+
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda **k: Client())
+    asyncio.run(llm._poll_gpu_yield_once())
+    return asyncio.run(llm._live_model_active())
+
+
+def test_probe_sized_requests_do_not_arm_the_park(monkeypatch):
+    heartbeat = [{"is_processing": True, "n_prompt_tokens": 3, "params": {"max_tokens": 1}}]
+    assert _run_poll(monkeypatch, heartbeat) is False
+
+
+def test_real_requests_arm_the_park(monkeypatch):
+    real = [{"is_processing": True, "n_prompt_tokens": 900, "params": {"max_tokens": 512}}]
+    assert _run_poll(monkeypatch, real) is True
+
+
+def test_idle_slots_do_not_arm_the_park(monkeypatch):
+    idle = [{"is_processing": False, "n_prompt_tokens": 900, "params": {"max_tokens": 512}}]
+    assert _run_poll(monkeypatch, idle) is False
