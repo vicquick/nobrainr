@@ -380,7 +380,9 @@ async def detect_communities(
     }
 
 
-async def generate_community_summaries(*, max_communities: int = 500) -> dict:
+async def generate_community_summaries(
+    *, max_communities: int = 500, deadline: float | None = None,
+) -> dict:
     """Generate LLM summaries for each detected community.
 
     Returns:
@@ -434,6 +436,11 @@ async def generate_community_summaries(*, max_communities: int = 500) -> dict:
     skipped = 0
 
     for row in rows:
+        # Stop cleanly before the scheduler's hard timeout: everything
+        # written so far is kept, the rest is picked up next run.
+        if deadline is not None and time.monotonic() >= deadline:
+            logger.info("community summaries: time budget reached after %d", summarized)
+            break
         comm_id = row["community_id"]
         names = list(row["names"])
         types = list(row["types"])

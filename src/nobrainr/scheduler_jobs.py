@@ -1938,6 +1938,11 @@ async def community_detection() -> dict:
     """Detect entity communities using Louvain and generate summaries."""
     from nobrainr.services.communities import detect_communities, generate_community_summaries
 
+    import time
+    # Leave 15 min of the 180 min job timeout as headroom: GPU-yield parks
+    # make the summary loop's length unpredictable, and hitting the hard
+    # timeout marks the whole run failed even though work was saved.
+    deadline = time.monotonic() + 165 * 60
     result = await detect_communities(min_community_size=3, resolution=1.5)
     if result["communities"] > 0:
         # 2026-10-07: cut 500->150. Each of up to 500 sequential ollama_chat
@@ -1948,7 +1953,9 @@ async def community_detection() -> dict:
         # DELETE UPSERT (biggest communities first) already makes a lower
         # cap safe: remaining communities get covered over the next 2-3
         # weekly cycles instead of one, no data loss.
-        summary_result = await generate_community_summaries(max_communities=150)
+        summary_result = await generate_community_summaries(
+            max_communities=150, deadline=deadline,
+        )
         result["summaries"] = summary_result
 
     # Invalidate graph layout cache — communities changed, layout needs recomputation
