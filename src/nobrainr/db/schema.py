@@ -297,6 +297,19 @@ CREATE INDEX IF NOT EXISTS idx_entity_relations_source
 CREATE INDEX IF NOT EXISTS idx_entity_relations_target
     ON entity_relations (target_entity_id);
 
+-- FK indexes for deletes on memories (2026-10-15). Without them every
+-- deleted memory seq-scanned entity_relations (~520k rows) and memories
+-- for the ON DELETE actions: 1.6k deletes ran >4 min, <1s with these.
+CREATE INDEX IF NOT EXISTS idx_entity_relations_source_memory
+    ON entity_relations (source_memory) WHERE source_memory IS NOT NULL;
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'memories' AND column_name = 'supersedes') THEN
+        CREATE INDEX IF NOT EXISTS idx_memories_supersedes
+            ON memories (supersedes) WHERE supersedes IS NOT NULL;
+    END IF;
+END $$;
+
 -- Judged-but-unlinked entity pairs (2026-08-21).
 --
 -- cooccurrence_linking asks the LLM whether two co-occurring entities are
