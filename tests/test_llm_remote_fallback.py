@@ -444,15 +444,16 @@ def test_remote_gives_up_after_exhausting_429_retries(monkeypatch, clean_rate_wi
 def test_gpu_yield_probe_failure_warns_once_and_never_raises(monkeypatch, caplog):
     """A dead probe must be visible, but must never fail the caller.
 
-    llama-swap v250 removed the JSON /api/metrics this reads. Before this,
-    the failure was swallowed silently and a disabled yield looked exactly
-    like an idle GPU.
+    llama-swap v250 removed the JSON /api/metrics the old probe read. Before
+    that was caught, the failure was swallowed silently and a disabled yield
+    looked exactly like an idle GPU. The probe is now a background poll
+    (_poll_gpu_yield_once); warnings are rate-limited (hourly), not once.
     """
     import logging
 
     monkeypatch.setattr(settings, "gpu_yield_models", ["qwen3.8-27b"])
-    monkeypatch.setattr(llm_mod, "_gpu_yield_warned", False)
-    monkeypatch.setattr(llm_mod, "_gpu_yield_cache", (0.0, False))
+    monkeypatch.setattr(llm_mod, "_gpu_yield_warned_at", -1e12)
+    monkeypatch.setattr(llm_mod, "_gpu_yield_last_busy_ts", -1e12)
 
     class Boom:
         async def __aenter__(self):
@@ -467,12 +468,12 @@ def test_gpu_yield_probe_failure_warns_once_and_never_raises(monkeypatch, caplog
     monkeypatch.setattr(llm_mod.httpx, "AsyncClient", lambda **k: Boom())
 
     with caplog.at_level(logging.WARNING, logger="nobrainr"):
-        assert asyncio.run(llm_mod._live_model_active()) is False
-        monkeypatch.setattr(llm_mod, "_gpu_yield_cache", (0.0, False))
+        asyncio.run(llm_mod._poll_gpu_yield_once())
+        asyncio.run(llm_mod._poll_gpu_yield_once())
         assert asyncio.run(llm_mod._live_model_active()) is False
 
-    warnings = [r for r in caplog.records if "GPU-yield probe unavailable" in r.message]
-    assert len(warnings) == 1, "must warn exactly once, not on every call"
+    warnings = [r for r in caplog.records if "GPU-yield probe broken" in r.message]
+    assert len(warnings) == 1, "must rate-limit the warning, not log every poll"
 
 
 def test_remote_ignored_when_incompletely_configured(monkeypatch, remote_on):

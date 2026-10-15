@@ -900,6 +900,9 @@ class Scheduler:
             if self._llm_jobs_paused:
                 await asyncio.sleep(5)
                 continue
+            # Assume work remains unless the run proves the backlog is empty
+            # (timeouts/errors keep looping).
+            pending = 1
             try:
                 async with self._llm_semaphore:
                     logger.info("Running LLM job: fact_extraction")
@@ -909,6 +912,7 @@ class Scheduler:
                         )
                     await queries.log_scheduler_event("fact_extraction", result)
                     logger.info("LLM job 'fact_extraction' completed: %s", result)
+                    pending = result.get("extracted", 0)
             except asyncio.TimeoutError:
                 logger.warning("LLM job 'fact_extraction' timed out after %ds", job_timeout)
                 await queries.log_scheduler_event("fact_extraction", {
@@ -922,11 +926,9 @@ class Scheduler:
             # Fairness yield: always give other jobs a chance to acquire the semaphore
             await asyncio.sleep(5)
 
-            # Check if there's still work — if yes, loop immediately instead of sleeping
-            try:
-                pending = await queries.get_extraction_pending_count()
-            except Exception:
-                pending = 1  # assume work exists on error
+            # Was get_extraction_pending_count() — the ENTITY-extraction
+            # backlog, not the fact backlog — so any failed entity extraction
+            # kept this loop spinning on empty fact batches (~13k runs/day).
 
             if pending > 0:
                 logger.debug("fact_extraction: %d pending, looping immediately", pending)
