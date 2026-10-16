@@ -41,8 +41,10 @@ Why the defaults below look the way they do:
 import asyncio
 import collections as _collections
 import datetime as _dt
+import fcntl
 import json
 import logging
+import os
 import random
 import re
 import time
@@ -273,6 +275,62 @@ async def _live_model_active() -> bool:
     if not settings.gpu_yield_models:
         return False
     return (time.monotonic() - _gpu_yield_last_busy_ts) < settings.gpu_yield_recent_s
+
+
+# ──────────────────────────────────────────────
+# Host-wide GPU lease (2026-10-17)
+# ──────────────────────────────────────────────
+# Render/FLUX jobs on this host take an exclusive flock on
+# settings.gpu_lease_path while they own the GPU (bimavo gpu_leihe.py).
+# Incident 2026-10-17 01:00: the night batch window sent a qwen3.8-27b load
+# into a running Cycles render -> 58/62 GB RAM, swap full, render reaped.
+# While the lease is held nobrainr must not cause any local chat-model load:
+# batch work goes remote-only, local scheduler calls park, live calls take
+# their cheap fallback. We probe with LOCK_SH|LOCK_NB and release at once —
+# never hold it, never take LOCK_EX.
+_gpu_lease_warned_at: float = 0.0
+
+
+def gpu_lease_held() -> bool:
+    """True while another process holds the host GPU lease exclusively."""
+    global _gpu_lease_warned_at
+    path = settings.gpu_lease_path
+    if not path:
+        return False
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError as exc:
+        # A missing mount silently disables the protection — say so hourly,
+        # same reasoning as _warn_gpu_yield_unavailable.
+        now = time.monotonic()
+        if now - _gpu_lease_warned_at >= _GPU_YIELD_WARN_INTERVAL_S:
+            _gpu_lease_warned_at = now
+            logger.warning(
+                "GPU lease file %s unreadable (%s) — nobrainr will NOT yield "
+                "the GPU to renders. Is /opt/bimavo-gpu mounted at /gpu?",
+                path, exc,
+            )
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
+async def _wait_for_gpu_lease() -> None:
+    """Park a scheduler call while the GPU lease is held. Unbounded on
+    purpose: proceeding mid-render is exactly the incident; the job-level
+    timeout in scheduler.py is the backstop."""
+    if not gpu_lease_held():
+        return
+    logger.info("scheduler LLM call parked: host GPU lease held (render)")
+    while gpu_lease_held():
+        await asyncio.sleep(settings.gpu_yield_poll_s)
 
 
 async def _wait_for_live_quiet(caller_kind: str) -> None:
@@ -836,6 +894,12 @@ async def ollama_chat(
             system, user, schema, temperature=temperature, think=think,
         )
 
+    if caller_kind != "live" and gpu_lease_held():
+        # Render owns the GPU: remote only, no local fallback — a failed
+        # remote call fails this item rather than loading the 27b.
+        local_call.close()
+        return await remote_call()
+
     if settings.llm_remote_mode == "parallel":
         return await _race_local_remote(local_call, remote_call)
 
@@ -974,8 +1038,13 @@ async def _ollama_chat_local(
     # fired in the last few seconds. Live callers skip this entirely and
     # bump the timestamp so subsequent scheduler traffic backs off.
     if caller_kind == "live":
+        if gpu_lease_held():
+            raise LiveLLMSkipped(
+                "host GPU lease held (render); skipping live LLM enhancement"
+            )
         _mark_live_call()
     else:
+        await _wait_for_gpu_lease()
         await _wait_for_live_quiet(caller_kind)
 
     # Record LLM call for dashboard observability. We push the start
