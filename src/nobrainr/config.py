@@ -142,6 +142,11 @@ class Settings(BaseSettings):
     gpu_yield_recent_s: float = 1500.0
     gpu_yield_max_wait_s: float = 1800.0
     gpu_yield_poll_s: float = 15.0
+    # Host-wide GPU lease (host-a PR #1788, backend/services/gpu_leihe.py).
+    # Render/FLUX jobs hold an exclusive flock on this file while they own
+    # the GPU; nobrainr only probes it with a non-blocking LOCK_SH and never
+    # takes it. Bind-mounted from /opt/host-a-gpu. Empty disables the check.
+    gpu_lease_path: str = "/gpu/gpu0.lock"
 
     # MCP Server
     host: str = "0.0.0.0"

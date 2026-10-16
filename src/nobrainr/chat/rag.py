@@ -413,6 +413,11 @@ async def stream_chat_response(
     logger.info("Chat RAG pipeline: embed+search+context took %.1fs", _t_pre_llm - _t0)
     yield _sse("thinking", {"status": f"Thinking... ({len(context_memories)} memories in context)"})
     model = settings.chat_model or settings.extraction_model
+    from nobrainr.extraction.llm import gpu_lease_held
+    if gpu_lease_held():
+        # A chat-model load mid-render reaps the render (2026-10-17 incident).
+        yield _sse("error", {"message": "GPU busy with a render job — try again shortly."})
+        return
     client = _get_client()
     # OpenAI-compatible shape — llama-server has no /api/chat route (Ollama-
     # native) and 404s on it; confirmed 2026-09-04 after NOBRAINR_CHAT_ENABLED
