@@ -118,6 +118,19 @@ async def store_memory(
         return result
 
 
+def _tag_filter_values(tags: list[str]) -> list[str]:
+    """Tag values for an overlap filter: raw + canonical forms.
+
+    store_memory canonicalizes tags at insert (lowercase, `_`/space -> `-`,
+    synonym aliases), so a filter on the raw caller string — "My_Tag",
+    "Python", "lessons" — matched nothing. Raw forms stay in the list so
+    rows written before canonicalization still match.
+    """
+    from nobrainr.utils.tags import canonicalize_tags
+
+    return list(dict.fromkeys([*tags, *canonicalize_tags(tags)]))
+
+
 async def find_similar_memories(
     embedding: list[float],
     *,
@@ -221,7 +234,7 @@ async def search_memories(
 
     if tags:
         conditions.append(f"tags && ${idx}::text[]")
-        params.append(tags)
+        params.append(_tag_filter_values(tags))
         idx += 1
     if category:
         conditions.append(f"category = ${idx}")
@@ -332,7 +345,7 @@ def _build_filter_clause(
     idx = start_idx
     if tags:
         conditions.append(f"tags && ${idx}::text[]")
-        params.append(tags)
+        params.append(_tag_filter_values(tags))
         idx += 1
     if category:
         conditions.append(f"category = ${idx}")
@@ -1467,7 +1480,7 @@ async def query_memories(
 
     if tags:
         conditions.append(f"tags && ${idx}::text[]")
-        params.append(tags)
+        params.append(_tag_filter_values(tags))
         idx += 1
 
     if category:
