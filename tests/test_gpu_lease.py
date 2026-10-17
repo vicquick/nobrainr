@@ -71,6 +71,30 @@ def test_batch_goes_remote_only_while_held(lease, monkeypatch):
     assert calls == ["remote"]
 
 
+def test_batch_fallback_off_never_touches_local(monkeypatch):
+    calls = []
+
+    async def fake_local(*a, **kw):
+        calls.append("local")
+        return {"leg": "local"}
+
+    async def failing_remote(*a, **kw):
+        calls.append("remote")
+        raise RuntimeError("remote down")
+
+    monkeypatch.setattr(settings, "gpu_lease_path", "")
+    monkeypatch.setattr(llm, "_remote_enabled", lambda: True)
+    monkeypatch.setattr(llm, "_ollama_chat_local", fake_local)
+    monkeypatch.setattr(llm, "_remote_chat", failing_remote)
+    monkeypatch.setattr(llm, "_in_local_batch_window", lambda now=None: False)
+    monkeypatch.setattr(settings, "llm_remote_mode", "split")
+    monkeypatch.setattr(settings, "llm_batch_local_fallback", False)
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(llm.ollama_chat("s", "u", {}, caller_kind="scheduler"))
+    assert calls == ["remote"]
+
+
 def test_live_call_skips_while_held(lease):
     fcntl.flock(lease, fcntl.LOCK_EX)
     with pytest.raises(llm.LiveLLMSkipped):
