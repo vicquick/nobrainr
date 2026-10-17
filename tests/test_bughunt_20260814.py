@@ -22,12 +22,14 @@ def test_reranker_eval_persist_is_split_statements():
 
     src = inspect.getsource(scheduler_jobs.reranker_eval)
     # The multi-command prepared statement (CREATE + INSERT in one call
-    # with a parameter) failed on every run since 07-21. Each execute
-    # must now carry exactly one command.
-    creates = [seg for seg in src.split("await conn.execute(")
-               if "CREATE TABLE IF NOT EXISTS extraction_eval_runs" in seg]
-    assert len(creates) == 1
-    assert "INSERT INTO" not in creates[0].split('"""')[1]
+    # with a parameter) failed on every run since 07-21. Then the split
+    # version still targeted extraction_eval_runs, whose schema.py columns
+    # don't match (2026-10-17). Now: one INSERT into its own table.
+    execs = src.split("await conn.execute(")[1:]
+    assert len(execs) == 1
+    assert "INSERT INTO reranker_eval_runs" in execs[0]
+    assert "extraction_eval_runs" not in execs[0]
+    assert "CREATE TABLE" not in execs[0]
 
 
 def test_scheduler_boot_closes_orphan_running_rows():
