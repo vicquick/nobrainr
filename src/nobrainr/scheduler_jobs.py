@@ -1571,7 +1571,7 @@ async def reranker_eval() -> dict:
     """Run offline reranker eval against historical feedback — regression gate.
 
     Replays known (query, useful_memory_id) pairs through search + rerank
-    and measures recall@1/3/10 + MRR. Persists run to extraction_eval_runs
+    and measures recall@1/3/10 + MRR. Persists run to reranker_eval_runs
     so we can spot regressions when changing reranker model or candidates.
     """
     import json
