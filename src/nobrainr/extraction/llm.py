@@ -914,6 +914,14 @@ async def ollama_chat(
             local_call.close()
             raise
         except Exception as exc:
+            if not settings.llm_batch_local_fallback:
+                local_call.close()
+                logger.warning(
+                    "remote LLM unavailable (%s: %.120s) — local batch "
+                    "fallback disabled, failing this call",
+                    type(exc).__name__, str(exc),
+                )
+                raise
             logger.warning(
                 "remote LLM unavailable (%s: %.120s) — falling back to local",
                 type(exc).__name__, str(exc),

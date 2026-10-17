@@ -90,6 +90,12 @@ class Settings(BaseSettings):
     # inference also costs nothing and leaks nothing, unlike the remote.
     # Live callers are unaffected either way; they are always local.
     llm_local_batch_hours: str = ""
+    # Split mode: may batch work fall back to the LOCAL GPU when the remote
+    # fails (outage, exhausted 429 retries)? True keeps throughput; False
+    # keeps the GPU free for people — the failed item is simply retried by
+    # the next scheduler run. vic 2026-10-17: batch belongs on Hetzner, the
+    # local 27b slot stays free, so production sets this False.
+    llm_batch_local_fallback: bool = True
     embedding_model: str = "qwen3-embedding-cpu"
     # Additional labels that refer to bit-identical vectors. The search
     # safeguard matches ANY of these so runtime-only tag drift (cpu vs gpu,
