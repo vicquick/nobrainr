@@ -35,6 +35,11 @@ for p in ("/app/src", "/opt/nobrainr/src"):
     if Path(p).is_dir() and p not in sys.path:
         sys.path.insert(0, p)
 
+# Remote-only LLM guard shared by all benches (scripts/bench_remote.py;
+# copied next to the script dirs as /tmp/bench_remote.py in the container).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import bench_remote  # noqa: E402
+
 from nobrainr.services.memory import store_memory_with_extraction  # noqa: E402
 from nobrainr.db import queries  # noqa: E402
 from nobrainr.embeddings.ollama import embed_text  # noqa: E402
@@ -218,6 +223,7 @@ async def cleanup_lme_memories():
 
 
 async def main():
+    bench_remote.enforce_remote_only()
     ap = argparse.ArgumentParser()
     ap.add_argument("--split", choices=["oracle", "s_cleaned"], default="oracle")
     ap.add_argument("--sample", type=int, default=30)
@@ -280,6 +286,7 @@ async def main():
     out = {
         "ran_at": datetime.now(timezone.utc).isoformat(),
         "split": args.split, "sample": len(sample), "workers": args.workers,
+        "llm": bench_remote.LLM_LABEL,
         "summary": summary, "results": results,
     }
     fname = OUT_DIR / f"{args.split}_{int(time.time())}.json"
