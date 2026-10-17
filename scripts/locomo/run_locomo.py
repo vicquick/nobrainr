@@ -28,6 +28,11 @@ for p in ("/app/src", "/opt/nobrainr/src"):
     if Path(p).is_dir() and p not in sys.path:
         sys.path.insert(0, p)
 
+# Remote-only LLM guard shared by all benches (scripts/bench_remote.py;
+# copied next to the script dirs as /tmp/bench_remote.py in the container).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import bench_remote  # noqa: E402
+
 from nobrainr.db import queries  # noqa: E402
 from nobrainr.embeddings.ollama import embed_text  # noqa: E402
 from nobrainr.extraction.llm import ollama_chat  # noqa: E402
@@ -163,6 +168,7 @@ async def evaluate_one(sample_id: str, q: dict) -> dict:
 
 
 async def main():
+    bench_remote.enforce_remote_only()
     ap = argparse.ArgumentParser()
     ap.add_argument("--sample", type=int, default=30, help="total questions")
     ap.add_argument("--workers", type=int, default=1)
@@ -233,6 +239,7 @@ async def main():
     out = {
         "ran_at": datetime.now(timezone.utc).isoformat(),
         "sample": len(qs), "summary": summary, "results": results,
+        "llm": bench_remote.LLM_LABEL,
     }
     fn = OUT_DIR / f"locomo_{int(time.time())}.json"
     fn.write_text(json.dumps(out, indent=2, default=str))

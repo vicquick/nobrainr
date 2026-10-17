@@ -35,6 +35,11 @@ for p in ("/app/src", "/opt/nobrainr/src"):
     if Path(p).is_dir() and p not in sys.path:
         sys.path.insert(0, p)
 
+# Remote-only LLM guard shared by all benches (scripts/bench_remote.py;
+# copied next to the script dirs as /tmp/bench_remote.py in the container).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import bench_remote  # noqa: E402
+
 from nobrainr.db import queries  # noqa: E402
 from nobrainr.embeddings.ollama import embed_text  # noqa: E402
 
@@ -153,12 +158,14 @@ LIST B (top {k}):
     fn.write_text(json.dumps({
         "ran_at": datetime.now(timezone.utc).isoformat(),
         "n": n, "trust_on_win": pref_a, "trust_off_win": pref_b, "tie": tie,
+        "llm": bench_remote.LLM_LABEL,
         "errors": errors, "details": out,
     }, indent=2, default=str))
     print(f"wrote {fn}")
 
 
 async def main():
+    bench_remote.enforce_remote_only()
     ap = argparse.ArgumentParser()
     ap.add_argument("--golden", default=str(GOLDEN_FILE))
     ap.add_argument("--queries-txt", help="Plain queries.txt to use for self-eval mode (no ground truth)")
@@ -219,6 +226,7 @@ async def main():
     out = {
         "ran_at": datetime.now(timezone.utc).isoformat(),
         "n_queries": len(queries_list), "k": args.k,
+        "llm": bench_remote.LLM_LABEL,
         "runs": runs,
     }
     fn = OUT_DIR / f"golden_{int(time.time())}.json"
