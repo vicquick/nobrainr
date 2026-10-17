@@ -1642,26 +1642,12 @@ async def reranker_eval() -> dict:
     }
     try:
         async with pool.acquire() as conn:
-            # Two statements, two executes: a parameterized prepared
-            # statement cannot contain multiple commands — this single
-            # call raised PostgresSyntaxError on EVERY run since 07-21,
-            # so 19 reranker_eval results were silently never persisted
-            # (the except below ate it with only a log line).
+            # Own table (schema.py). This used to CREATE+INSERT into
+            # extraction_eval_runs, which schema.py defines with different
+            # columns (ran_at, candidate_model, ...) — the IF NOT EXISTS
+            # never fired and every insert hit UndefinedColumnError on run_at.
             await conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS extraction_eval_runs (
-                    id        uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-                    run_at    timestamptz DEFAULT now(),
-                    kind      text NOT NULL,
-                    metrics   jsonb NOT NULL
-                )
-                """,
-            )
-            await conn.execute(
-                """
-                INSERT INTO extraction_eval_runs (run_at, kind, metrics)
-                VALUES (now(), 'reranker_offline', $1::jsonb)
-                """,
+                "INSERT INTO reranker_eval_runs (metrics) VALUES ($1::jsonb)",
                 json.dumps(metrics),
             )
     except Exception:

@@ -578,6 +578,16 @@ CREATE TABLE IF NOT EXISTS extraction_eval_runs (
 CREATE INDEX IF NOT EXISTS idx_extraction_eval_runs_ran_at
     ON extraction_eval_runs (ran_at DESC);
 
+-- Reranker offline eval (recall@k + MRR per run). Own table: it used to
+-- INSERT into extraction_eval_runs with columns that table never had.
+CREATE TABLE IF NOT EXISTS reranker_eval_runs (
+    id       uuid DEFAULT uuidv7() PRIMARY KEY,
+    ran_at   timestamptz DEFAULT now(),
+    metrics  jsonb NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reranker_eval_runs_ran_at
+    ON reranker_eval_runs (ran_at DESC);
+
 -- ──────────────────────────────────────────────
 -- Drop unused legacy table
 -- ──────────────────────────────────────────────
