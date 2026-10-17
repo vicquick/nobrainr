@@ -53,7 +53,7 @@ JUDGE_SCHEMA = {
     "type": "object",
     "properties": {
         "verdict": {"type": "string", "enum": ["CORRECT", "INCORRECT"]},
-        "reason": {"type": "string"},
+        "reason": {"type": "string", "maxLength": 300},  # bounded, see run_lme
     },
     "required": ["verdict"],
 }
@@ -109,7 +109,8 @@ async def search_for_q(sample_id: str, question: str, k: int = 8) -> list:
     embedding = await embed_text(question)
     return await queries.search_memories(
         embedding=embedding, limit=k, threshold=0.15,
-        text_query=question, tags=["locomo", sample_id],
+        # tags is ANY-overlap: ["locomo", sample_id] matched every sample.
+        text_query=question, tags=[sample_id], source_machine="locomo",
     )
 
 
@@ -168,6 +169,7 @@ async def evaluate_one(sample_id: str, q: dict) -> dict:
 
 
 async def main():
+    bench_remote.require_scratch_db()
     bench_remote.enforce_remote_only()
     ap = argparse.ArgumentParser()
     ap.add_argument("--sample", type=int, default=30, help="total questions")

@@ -63,7 +63,9 @@ JUDGE_SCHEMA = {
     "type": "object",
     "properties": {
         "verdict": {"type": "string", "enum": ["CORRECT", "INCORRECT"]},
-        "reason": {"type": "string"},
+        # Bounded: an unbounded reason ran toward max_tokens=4096 and blew
+        # the 90s remote timeout on every retry (2026-10-17).
+        "reason": {"type": "string", "maxLength": 300},
     },
     "required": ["verdict"],
 }
@@ -126,7 +128,10 @@ async def search_for_q(q_id: str, question: str, k: int = 8) -> list:
         limit=k,
         threshold=0.15,
         text_query=question,
-        tags=["lme", q_id],
+        # tags is ANY-overlap: ["lme", q_id] matched every question's haystack.
+        # Filter on this question only, scoped to the bench's own rows.
+        tags=[q_id],
+        source_machine="lme",
     )
     return rows
 
@@ -169,7 +174,7 @@ async def evaluate_one(q: dict) -> dict:
             user=ANSWER_PROMPT.format(memories=memories_block, q=question),
             schema={
                 "type": "object",
-                "properties": {"answer": {"type": "string"}},
+                "properties": {"answer": {"type": "string", "maxLength": 600}},
                 "required": ["answer"],
             },
             timeout=180.0,
@@ -189,6 +194,7 @@ async def evaluate_one(q: dict) -> dict:
             system="You are a strict but fair benchmark judge.",
             user=JUDGE_PROMPT.format(q=question, gt=answer, cand=candidate),
             schema=JUDGE_SCHEMA,
+            temperature=0.0,
             timeout=120.0,
             num_ctx=2048,
             think=False,
@@ -223,6 +229,7 @@ async def cleanup_lme_memories():
 
 
 async def main():
+    bench_remote.require_scratch_db()
     bench_remote.enforce_remote_only()
     ap = argparse.ArgumentParser()
     ap.add_argument("--split", choices=["oracle", "s_cleaned"], default="oracle")

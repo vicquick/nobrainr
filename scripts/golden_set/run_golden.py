@@ -95,7 +95,7 @@ async def run_self_eval(queries_list: list, k: int) -> None:
         "type": "object",
         "properties": {
             "preferred": {"type": "string", "enum": ["A", "B", "TIE"]},
-            "reason": {"type": "string"},
+            "reason": {"type": "string", "maxLength": 300},  # bounded, see run_lme
         },
         "required": ["preferred"],
     }
