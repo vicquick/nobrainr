@@ -643,6 +643,11 @@ class Settings(BaseSettings):
     monitoring_email_enabled: bool = False
     monitoring_smtp_host: str = ""
     monitoring_smtp_port: int = 587
+    # Address to open the TCP connection to, when it differs from
+    # monitoring_smtp_host. Mailu submission is VPN-only: mail.example.org
+    # resolves to the blocked public IP, 10.0.0.1 is reachable. TLS SNI
+    # and cert verification still use monitoring_smtp_host. Empty = host.
+    monitoring_smtp_connect_host: str = ""
     monitoring_smtp_user: str = ""
     monitoring_smtp_password: str = ""
     monitoring_smtp_from: str = ""

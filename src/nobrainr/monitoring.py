@@ -5,6 +5,7 @@ import logging
 import shutil
 import smtplib
 import socket
+import ssl
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from html import escape
@@ -782,6 +783,28 @@ async def send_knowledge_digest() -> dict:
         return {"status": "error", "error": str(exc)}
 
 
+class _ConnectHostMixin:
+    """Open the TCP socket to ``connect_host`` while smtplib keeps
+    ``_host`` (the SMTP host name) for SNI + certificate checks — same
+    approach as host-a 3e75b645."""
+
+    connect_host: str = ""
+
+    def _get_socket(self, host, port, timeout):
+        return super()._get_socket(self.connect_host or host, port, timeout)
+
+
+class _RoutedSMTP(_ConnectHostMixin, smtplib.SMTP):
+    pass
+
+
+class _RoutedSMTP_SSL(_ConnectHostMixin, smtplib.SMTP_SSL):
+    pass
+
+
+_SMTP_TIMEOUT_S = 30
+
+
 def _send_smtp(subject: str, body: str) -> None:
     """Send an HTML email via SMTP (runs in thread executor).
 
@@ -789,6 +812,9 @@ def _send_smtp(subject: str, body: str) -> None:
     - 25: plain SMTP (no TLS)
     - 465: implicit TLS (SMTP_SSL)
     - 587: explicit TLS (SMTP + STARTTLS)
+
+    TLS verifies the certificate against monitoring_smtp_host even when
+    the socket goes to monitoring_smtp_connect_host.
     """
     msg = MIMEText(body, "html", "utf-8")
     msg["Subject"] = subject
@@ -800,19 +826,29 @@ def _send_smtp(subject: str, body: str) -> None:
     ]
 
     port = settings.monitoring_smtp_port
+    host = settings.monitoring_smtp_host
+    tls = ssl.create_default_context()
 
     if port == 465:
         # Implicit TLS
-        with smtplib.SMTP_SSL(settings.monitoring_smtp_host, port) as server:
+        server = _RoutedSMTP_SSL(context=tls, timeout=_SMTP_TIMEOUT_S)
+        server.connect_host = settings.monitoring_smtp_connect_host
+        server._host = host  # SNI + cert name; only __init__(host) sets it
+        server.connect(host, port)
+        with server:
             if settings.monitoring_smtp_user and settings.monitoring_smtp_password:
                 server.login(settings.monitoring_smtp_user, settings.monitoring_smtp_password)
             server.sendmail(msg["From"], recipients, msg.as_string())
     else:
         # Port 25 (plain) or 587 (STARTTLS)
-        with smtplib.SMTP(settings.monitoring_smtp_host, port) as server:
+        server = _RoutedSMTP(timeout=_SMTP_TIMEOUT_S)
+        server.connect_host = settings.monitoring_smtp_connect_host
+        server._host = host  # SNI + cert name; only __init__(host) sets it
+        server.connect(host, port)
+        with server:
             server.ehlo()
             if port != 25:
-                server.starttls()
+                server.starttls(context=tls)
                 server.ehlo()
             if settings.monitoring_smtp_user and settings.monitoring_smtp_password:
                 server.login(settings.monitoring_smtp_user, settings.monitoring_smtp_password)
