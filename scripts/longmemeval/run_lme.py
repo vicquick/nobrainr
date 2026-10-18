@@ -48,6 +48,16 @@ from nobrainr.extraction.llm import ollama_chat  # noqa: E402
 DATA_DIR = Path(os.environ.get("LME_DATA_DIR", "/opt/longmemeval/data"))
 OUT_DIR = Path(__file__).parent / "results"
 
+# Chars of each retrieved memory shown to the answer model. 0 = whole
+# memory (stored sessions are capped at 8000 at ingest). The old fixed
+# 600-char cut hid most of each session and held LME at ~20% (2026-10-18);
+# --mem-chars 600 reproduces the pre-2026-10-18 numbers.
+MEM_CHARS = 0
+
+
+def _clip(text: str) -> str:
+    return text[:MEM_CHARS] if MEM_CHARS else text
+
 ANSWER_PROMPT = """Answer the question concisely using ONLY the retrieved \
 memories below. If the memories don't contain enough information, say \
 "INSUFFICIENT". Do not make up facts. Reply with the answer only — no \
@@ -80,7 +90,7 @@ GROUND TRUTH: {gt}
 CANDIDATE: {cand}"""
 
 
-async def ingest_haystack(q_id: str, sessions: list) -> int:
+async def ingest_haystack(q_id: str, sessions: list, dates: list | None = None) -> int:
     """Fast ingest: embed + store, skip entity extraction.
 
     Benchmark data is throwaway — we're measuring retrieval, not building
@@ -91,6 +101,7 @@ async def ingest_haystack(q_id: str, sessions: list) -> int:
     the writer thread just inserts the row + builds the FTS index entry.
     """
     n = 0
+    dates = dates or []
     for sess_idx, sess in enumerate(sessions):
         if not sess:
             continue
@@ -98,6 +109,11 @@ async def ingest_haystack(q_id: str, sessions: list) -> int:
             f"{m.get('role', '?').upper()}: {m.get('content', '')}"
             for m in sess if isinstance(m, dict)
         )[:8000]
+        # Session date in the memory itself, as the official LME harness
+        # does — without it temporal / knowledge-update questions are
+        # unanswerable (2026-10-18).
+        if sess_idx < len(dates) and dates[sess_idx]:
+            text = f"[Session date: {dates[sess_idx]}]\n{text}"
         if not text.strip():
             continue
         try:
@@ -144,7 +160,7 @@ async def evaluate_one(q: dict) -> dict:
     cat = q["question_type"]
 
     t0 = time.monotonic()
-    n_ingested = await ingest_haystack(q_id, sessions)
+    n_ingested = await ingest_haystack(q_id, sessions, q.get("haystack_dates"))
     # Wait for the queue worker to drain — store_memory_with_extraction is sync
     # but extraction might still be running in the background. For LME we run
     # search synchronously; the small wait gives the embedding/dedup path room.
@@ -162,7 +178,7 @@ async def evaluate_one(q: dict) -> dict:
         }
 
     memories_block = "\n\n".join(
-        f"[{i+1}] {h.get('content', '')[:600]}" for i, h in enumerate(hits)
+        f"[{i+1}] {_clip(h.get('content', ''))}" for i, h in enumerate(hits)
     )
 
     t2 = time.monotonic()
@@ -171,7 +187,10 @@ async def evaluate_one(q: dict) -> dict:
         # Use plain text reply for the answer step.
         msg = await ollama_chat(
             system="You answer questions strictly from given memories.",
-            user=ANSWER_PROMPT.format(memories=memories_block, q=question),
+            user=ANSWER_PROMPT.format(
+                memories=memories_block,
+                q=f"{question}\n(Asked on {q['question_date']}.)" if q.get("question_date") else question,
+            ),
             schema={
                 "type": "object",
                 "properties": {"answer": {"type": "string", "maxLength": 600}},
@@ -235,9 +254,13 @@ async def main():
     ap.add_argument("--split", choices=["oracle", "s_cleaned"], default="oracle")
     ap.add_argument("--sample", type=int, default=30)
     ap.add_argument("--workers", type=int, default=2)
+    ap.add_argument("--mem-chars", type=int, default=0,
+                    help="chars per retrieved memory for the answer model (0 = whole)")
     ap.add_argument("--clean", action="store_true",
                     help="DELETE existing lme-tagged memories before run")
     args = ap.parse_args()
+    global MEM_CHARS
+    MEM_CHARS = args.mem_chars
 
     fname = "longmemeval_oracle.json" if args.split == "oracle" else "longmemeval_s_cleaned.json"
     with open(DATA_DIR / fname) as f:
@@ -294,6 +317,8 @@ async def main():
         "ran_at": datetime.now(timezone.utc).isoformat(),
         "split": args.split, "sample": len(sample), "workers": args.workers,
         "llm": bench_remote.LLM_LABEL,
+        "mem_chars": MEM_CHARS,
+        "session_dates": True,
         "summary": summary, "results": results,
     }
     fname = OUT_DIR / f"{args.split}_{int(time.time())}.json"
