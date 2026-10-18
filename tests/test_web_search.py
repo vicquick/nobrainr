@@ -13,6 +13,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import httpx
+import pytest
 
 from nobrainr.config import settings
 from nobrainr.mcp import server as mcp_server
@@ -28,6 +29,13 @@ def _unwrap(fn):
 
 
 web_search = _unwrap(mcp_server.web_search)
+
+
+@pytest.fixture(autouse=True)
+def _no_searxng():
+    """Brave-path tests: SearXNG off unless a test turns it on."""
+    with patch.object(settings, "searxng_url", ""):
+        yield
 
 
 def _brave_payload(results: list[dict]) -> dict:
@@ -153,20 +161,24 @@ async def test_quota_exhausted_blocks_before_brave():
     with (
         patch.object(settings, "brave_api_key", "k"),
         patch.object(settings, "brave_monthly_query_cap", 100),
-        patch.object(mcp_server, "_count_web_search_use", AsyncMock(return_value=101)),
+        patch.object(mcp_server, "_web_search_month_usage", AsyncMock(return_value=100)),
+        patch.object(mcp_server, "_count_web_search_use", AsyncMock()) as counter,
         patch.object(mcp_server, "_brave_search_request", AsyncMock()) as req,
     ):
         out = await web_search(query="q")
     assert out["error"] == "monthly web_search quota exhausted"
-    assert out["quota"] == {"used": 101, "cap": 100}
+    assert out["quota"] == {"used": 100, "cap": 100}
     assert "WebSearch" in out["hint"]
     req.assert_not_called()
+    # A blocked call is not a Brave call: the counter must not move.
+    counter.assert_not_called()
 
 
 async def test_quota_reported_in_success_response():
     with (
         patch.object(settings, "brave_api_key", "k"),
         patch.object(settings, "brave_monthly_query_cap", 100),
+        patch.object(mcp_server, "_web_search_month_usage", AsyncMock(return_value=6)),
         patch.object(mcp_server, "_count_web_search_use", AsyncMock(return_value=7)),
         patch.object(
             mcp_server, "_brave_search_request",
@@ -181,7 +193,7 @@ async def test_accounting_failure_never_blocks_search():
     with (
         patch.object(settings, "brave_api_key", "k"),
         patch.object(
-            mcp_server, "_count_web_search_use",
+            mcp_server, "_web_search_month_usage",
             AsyncMock(side_effect=RuntimeError("db down")),
         ),
         patch.object(
@@ -210,3 +222,40 @@ async def test_cap_zero_disables_block_but_counts():
         out = await web_search(query="q")
     assert "error" not in out
     counter.assert_awaited_once()
+
+
+# ──────────────────────────────────────────────
+# SearXNG primary: free, never counted
+# ──────────────────────────────────────────────
+
+
+async def test_searxng_hit_never_counts_or_calls_brave():
+    raw = [{"title": "T", "url": "https://e.org", "content": "c"}]
+    with (
+        patch.object(settings, "searxng_url", "http://searxng:8080"),
+        patch.object(settings, "brave_api_key", "k"),
+        patch.object(mcp_server, "_searxng_search_request", AsyncMock(return_value=raw)),
+        patch.object(mcp_server, "_web_search_month_usage", AsyncMock()) as usage,
+        patch.object(mcp_server, "_count_web_search_use", AsyncMock()) as counter,
+        patch.object(mcp_server, "_brave_search_request", AsyncMock()) as req,
+    ):
+        out = await web_search(query="q")
+    assert out["source"] == "searxng" and out["count"] == 1
+    usage.assert_not_called()
+    counter.assert_not_called()
+    req.assert_not_called()
+
+
+async def test_searxng_empty_falls_back_and_reports_state():
+    with (
+        patch.object(settings, "searxng_url", "http://searxng:8080"),
+        patch.object(settings, "brave_api_key", "k"),
+        patch.object(settings, "brave_monthly_query_cap", 100),
+        patch.object(mcp_server, "_searxng_search_request", AsyncMock(return_value=[])),
+        patch.object(mcp_server, "_web_search_month_usage", AsyncMock(return_value=100)),
+        patch.object(mcp_server, "_count_web_search_use", AsyncMock()) as counter,
+    ):
+        out = await web_search(query="q")
+    assert out["error"] == "monthly web_search quota exhausted"
+    assert out["searxng"] == "0 results"
+    counter.assert_not_called()
