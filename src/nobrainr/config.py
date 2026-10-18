@@ -96,6 +96,12 @@ class Settings(BaseSettings):
     # the next scheduler run. vic 2026-10-17: batch belongs on Hetzner, the
     # local 27b slot stays free, so production sets this False.
     llm_batch_local_fallback: bool = True
+    # With the fallback above off, still fall back when the GPU is idle:
+    # no render holds the host GPU lease and no gpu_yield model (live
+    # qwen3-8b) served a request within gpu_yield_recent_s. Costs a cold
+    # 27b load that evicts the 8b; vic 2026-10-18 accepted that. Hetzner
+    # stalls are queue/load related, so failing the item wasted the work.
+    llm_batch_local_fallback_when_idle: bool = True
     embedding_model: str = "qwen3-embedding-cpu"
     # Additional labels that refer to bit-identical vectors. The search
     # safeguard matches ANY of these so runtime-only tag drift (cpu vs gpu,
