@@ -20,6 +20,9 @@ _unhealthy_counts: dict[str, int] = {}
 # Track previously-seen containers to detect missing ones
 _previous_containers: set[str] | None = None
 
+# Consecutive SearXNG probes with zero results (alert fires once per outage)
+_searxng_dead_streak = 0
+
 
 
 async def check_docker_health(*, track_state: bool = True) -> dict:
@@ -285,6 +288,35 @@ async def check_pipeline_anomalies() -> list[str]:
     return warnings
 
 
+async def check_search_backend() -> list[str]:
+    """Probe SearXNG with one fixed query; warn when no engine answers.
+
+    Added 2026-10-18: every default general engine (ddg, startpage, brave,
+    google cse) was captcha/rate-suspended, SearXNG returned 0 results for
+    every query while its container stayed "healthy", and web_search fell
+    through to Brave until the monthly quota was gone.
+    """
+    if not settings.searxng_url:
+        return []
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(
+                f"{settings.searxng_url}/search",
+                params={"q": "wikipedia", "format": "json", "categories": "general"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        return [f"SearXNG probe failed: {type(e).__name__}: {e}"]
+    if data.get("results"):
+        return []
+    dead = ", ".join(f"{n} ({why})" for n, why in data.get("unresponsive_engines") or [])
+    return [f"SearXNG returned 0 results — web_search is burning Brave quota. "
+            f"Unresponsive engines: {dead or 'none reported'}"]
+
+
 async def monitor_health() -> dict:
     """Scheduler job entry point: check health, store anomalies as memories.
 
@@ -340,6 +372,26 @@ async def monitor_health() -> dict:
         anomalies.append(warning)
         logger.warning("Monitoring alert: %s", warning)
 
+    # Web-search backend: an outage drains the Brave quota within hours,
+    # so it alerts right away (2nd failed probe) instead of waiting for
+    # the daily digest.
+    global _searxng_dead_streak
+    search_warnings = await check_search_backend()
+    _searxng_dead_streak = _searxng_dead_streak + 1 if search_warnings else 0
+    for warning in search_warnings:
+        anomalies.append(warning)
+        logger.warning("Monitoring alert: %s", warning)
+    if _searxng_dead_streak == 2 and settings.monitoring_email_enabled \
+            and settings.monitoring_smtp_host and settings.monitoring_smtp_to:
+        machine = settings.source_machine or socket.gethostname()
+        try:
+            await asyncio.to_thread(
+                _send_smtp, f"[{machine}] web search down: SearXNG 0 results",
+                "<p>" + "<br>".join(escape(w) for w in search_warnings) + "</p>",
+            )
+        except Exception:
+            logger.exception("SearXNG alert email failed")
+
     # Anomalies go to logs and email digest only — not to the knowledge base.
     # System health metrics are operational noise, not knowledge worth recalling.
     if anomalies:
@@ -354,6 +406,7 @@ async def monitor_health() -> dict:
         "missing_containers": len(docker["missing"]),
         "oom_killed": len(docker["oom_killed"]),
         "resource_warnings": len(resources["warnings"]),
+        "searxng_ok": not search_warnings,
         "anomalies_found": len(anomalies),
         "anomalies_stored": stored_count,
     }
@@ -576,6 +629,7 @@ async def send_email_digest() -> dict:
 
     # Gather current resource snapshot for the email
     resources = await check_system_resources()
+    resources["warnings"] = resources.get("warnings", []) + await check_search_backend()
     docker = await check_docker_health(track_state=False)
 
     # Only send email when there are actual problems

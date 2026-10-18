@@ -2911,7 +2911,7 @@ async def _crawl4ai_screenshot(url: str) -> str | None:
 
 
 # ──────────────────────────────────────────────
-# Tool: web_search (Brave Search API)
+# Tool: web_search (SearXNG primary, Brave fallback)
 # ──────────────────────────────────────────────
 async def _searxng_search_request(params: dict) -> list[dict]:
     """Query the self-hosted SearXNG JSON API. Returns raw result dicts.
@@ -2953,6 +2953,18 @@ async def _brave_search_request(params: dict) -> dict:
         return resp.json()
 
 
+async def _web_search_month_usage() -> int:
+    """This month's Brave query count — read-only, no increment."""
+    from nobrainr.db.pool import get_pool
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT COALESCE((SELECT queries FROM web_search_usage "
+            "WHERE month = to_char(now(), 'YYYY-MM')), 0)"
+        ) or 0
+
+
 async def _count_web_search_use() -> int:
     """Increment and return this month's web_search query count."""
     from nobrainr.db.pool import get_pool
@@ -2978,7 +2990,7 @@ async def web_search(
     country: str | None = None,
     offset: int = 0,
 ) -> dict:
-    """Search the web via the Brave Search API (independent index, not a Google/Bing proxy).
+    """Search the web: self-hosted SearXNG first, Brave Search API as quota-counted fallback.
 
     Discovery tool — returns a ranked, TRANSIENT list of URLs + snippets.
     Results are never persisted (Brave storage-rights terms): to keep a
@@ -2998,7 +3010,9 @@ async def web_search(
 
     # SearXNG primary (2026-08-12): self-hosted, quota-free, anonymous.
     # Any failure or empty result falls through to Brave below.
+    searxng_state = "not configured"
     if settings.searxng_url:
+        searxng_state = "error"
         try:
             raw = await _searxng_search_request(
                 {"q": query, "freshness": freshness, "country": country,
@@ -3023,6 +3037,7 @@ async def web_search(
                     "source": "searxng",
                     "note": "transient SERP — persist sources via crawl_and_store, never this list",
                 }
+            searxng_state = "0 results"
         except Exception:
             logger.warning("searxng unavailable — falling back to Brave", exc_info=True)
 
@@ -3035,22 +3050,26 @@ async def web_search(
     # Monthly usage counter. The Brave dashboard is capped at the free
     # tier — past the budget the key just stops working, so fail HERE
     # with a clean, actionable error instead of Brave's 401/429.
-    # Accounting failures never block search: DB hiccup → search anyway.
+    # Only real Brave calls count: the cap is checked read-only first, so
+    # a blocked call costs nothing (2026-10-18: blocked calls kept
+    # incrementing, 1058/1000). Accounting failures never block search.
     used = None
+    cap = settings.brave_monthly_query_cap
     try:
+        if cap > 0:
+            used = await _web_search_month_usage()
+            if used >= cap:
+                return {
+                    "error": "monthly web_search quota exhausted",
+                    "quota": {"used": used, "cap": cap},
+                    "searxng": searxng_state,
+                    "hint": "fall back to the built-in WebSearch tool until next month",
+                }
         used = await _count_web_search_use()
     except Exception:
         logger.warning("web_search usage accounting failed", exc_info=True)
-    cap = settings.brave_monthly_query_cap
-    if used is not None and cap > 0:
-        if used > cap:
-            return {
-                "error": "monthly web_search quota exhausted",
-                "quota": {"used": used, "cap": cap},
-                "hint": "fall back to the built-in WebSearch tool until next month",
-            }
-        if used == int(cap * 0.8):
-            logger.warning("web_search at 80%% of monthly quota (%s/%s)", used, cap)
+    if used is not None and cap > 0 and used == int(cap * 0.8):
+        logger.warning("web_search at 80%% of monthly quota (%s/%s)", used, cap)
 
     params: dict = {"q": query, "count": max(1, min(count, 20))}
     if freshness:
