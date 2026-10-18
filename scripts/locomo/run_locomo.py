@@ -40,6 +40,16 @@ from nobrainr.extraction.llm import ollama_chat  # noqa: E402
 DATA_FILE = Path(os.environ.get("LOCOMO_FILE", "/tmp/locomo/locomo10.json"))
 OUT_DIR = Path(__file__).parent / "results"
 
+# Chars of each retrieved memory shown to the answer model. 0 = whole
+# memory (stored sessions are capped at 8000 at ingest). The old fixed
+# 600-char cut hid most of each session and held LME at ~20% (2026-10-18);
+# --mem-chars 600 reproduces the pre-2026-10-18 numbers.
+MEM_CHARS = 0
+
+
+def _clip(text: str) -> str:
+    return text[:MEM_CHARS] if MEM_CHARS else text
+
 ANSWER_PROMPT = """Answer the question concisely from the memories below.
 If the memories don't contain enough info, say "INSUFFICIENT".
 
@@ -77,6 +87,12 @@ def conversation_to_sessions(conv: dict) -> list[tuple[str, str]]:
                 f"{m.get('speaker', '?')}: {m.get('text', '') or m.get('clean_text', '')}"
                 for m in v if isinstance(m, dict)
             )[:8000]
+            # Session date in the memory itself (session_N_date_time) —
+            # without it every category-2 "when did ..." question was
+            # unanswerable: 0/14 on 2026-10-18.
+            when = conv.get(f"{k}_date_time")
+            if when and text.strip():
+                text = f"[Session date: {when}]\n{text}"
             if text.strip():
                 out.append((k, text))
     return out
@@ -127,7 +143,7 @@ async def evaluate_one(sample_id: str, q: dict) -> dict:
                 "t_search": round(t_search, 3)}
 
     memories_block = "\n\n".join(
-        f"[{i+1}] {h.get('content','')[:600]}" for i, h in enumerate(hits)
+        f"[{i+1}] {_clip(h.get('content',''))}" for i, h in enumerate(hits)
     )
 
     t1 = time.monotonic()
@@ -174,9 +190,13 @@ async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sample", type=int, default=30, help="total questions")
     ap.add_argument("--workers", type=int, default=1)
+    ap.add_argument("--mem-chars", type=int, default=0,
+                    help="chars per retrieved memory for the answer model (0 = whole)")
     ap.add_argument("--per-sample-q", type=int, default=10,
                     help="max questions per LoCoMo sample (some are 200+)")
     args = ap.parse_args()
+    global MEM_CHARS
+    MEM_CHARS = args.mem_chars
 
     with open(DATA_FILE) as f:
         data = json.load(f)
@@ -242,6 +262,8 @@ async def main():
         "ran_at": datetime.now(timezone.utc).isoformat(),
         "sample": len(qs), "summary": summary, "results": results,
         "llm": bench_remote.LLM_LABEL,
+        "mem_chars": MEM_CHARS,
+        "session_dates": True,
     }
     fn = OUT_DIR / f"locomo_{int(time.time())}.json"
     fn.write_text(json.dumps(out, indent=2, default=str))

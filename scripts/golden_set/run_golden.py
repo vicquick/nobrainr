@@ -11,8 +11,13 @@ Methodology:
   - Read /opt/nobrainr/scripts/golden_set/golden.jsonl
     Each line: {"q": "...", "expected_top3": ["mem_id_1", "mem_id_2", "mem_id_3"]}
   - Run search_memories two ways:
-      A) "trust-on"  — current behaviour (RRF + trust-score tie-break)
-      B) "trust-off" — RRF only, ignore trust_score
+      A) "trust-on"  — trust_floor post-filter, as memory_search and the
+         prompt hooks apply it (rows below TRUST_FLOOR dropped, list refilled
+         from a deeper fetch)
+      B) "trust-off" — plain hybrid search, no floor
+    The old ablation re-sorted the SAME rows by rrf_score; trust is only a
+    tie-break at exactly equal RRF, so both lists were identical and the
+    judge said TIE on 28-29/30 queries (2026-10-18).
   - Score nDCG@3 + MRR + top-1 hit rate for each ablation.
   - Print delta + write JSON.
 
@@ -44,6 +49,7 @@ from nobrainr.db import queries  # noqa: E402
 from nobrainr.embeddings.ollama import embed_text  # noqa: E402
 
 GOLDEN_FILE = Path(__file__).parent / "golden.jsonl"
+TRUST_FLOOR = 0.5  # enhance-prompt.sh hook value; 0.6 drops ~86% of memories (most sit at 0.5-0.6), lost 7:20 on 2026-10-18
 OUT_DIR = Path(__file__).parent / "results"
 
 
@@ -76,12 +82,15 @@ async def search(query: str, k: int = 10, trust_aware: bool = True) -> list:
     """
     embedding = await embed_text(query)
     rows = await queries.search_memories(
-        embedding=embedding, limit=k, threshold=0.15, text_query=query,
+        embedding=embedding, limit=k * 3 if trust_aware else k,
+        threshold=0.15, text_query=query,
     )
-    if not trust_aware:
-        # Re-sort by RRF score only (drop trust tie-break).
-        rows = sorted(rows, key=lambda r: r.get("rrf_score") or r.get("relevance", 0), reverse=True)
-    return rows
+    if trust_aware:
+        # Same post-filter as mcp memory_search(trust_floor=...): unscored
+        # rows pass, scored rows below the floor are dropped.
+        rows = [r for r in rows
+                if r.get("trust_score") is None or r["trust_score"] >= TRUST_FLOOR]
+    return rows[:k]
 
 
 async def run_self_eval(queries_list: list, k: int) -> None:
@@ -113,12 +122,25 @@ LIST A (top {k}):
 LIST B (top {k}):
 {b}"""
 
-    pref_a = pref_b = tie = errors = 0
+    import random
+    rng = random.Random(20261018)  # fixed seed: reruns place A/B identically
+    pref_a = pref_b = tie = errors = identical = 0
     out = []
     for item in queries_list:
         q = item["q"]
         rows_on = await search(q, k=k, trust_aware=True)
         rows_off = await search(q, k=k, trust_aware=False)
+        ids_on = [r.get("id") for r in rows_on]
+        ids_off = [r.get("id") for r in rows_off]
+        if ids_on == ids_off:
+            # The floor removed nothing — no judgement needed.
+            identical += 1
+            out.append({"q": q, "preferred": "IDENTICAL"})
+            print(f"  preferred=IDENTICAL  q={q[:60]}")
+            continue
+        # Randomize which list is shown first: an LLM judge has position bias.
+        on_first = rng.random() < 0.5
+        first, second = (rows_on, rows_off) if on_first else (rows_off, rows_on)
         # Render summaries — shorter than full content keeps the judge focused
         def render(rows):
             return "\n".join(
@@ -128,22 +150,25 @@ LIST B (top {k}):
         try:
             v = await ollama_chat(
                 system="You judge which retrieval result list is more relevant.",
-                user=PROMPT.format(q=q, k=k, a=render(rows_on), b=render(rows_off)),
+                user=PROMPT.format(q=q, k=k, a=render(first), b=render(second)),
                 schema=JUDGE_SCHEMA, timeout=60.0, num_ctx=4096, think=False,
                 caller_kind="scheduler",
             )
         except Exception as exc:
             errors += 1
             v = {"preferred": "TIE", "reason": f"err: {exc}"}
-        # Trust-on is randomized to A or B per query? Simpler: always A=trust-on.
-        result = v.get("preferred", "TIE")
+        # Map the judge's A/B back to trust-on (A) / trust-off (B).
+        shown = v.get("preferred", "TIE")
+        result = shown if shown == "TIE" or on_first else {"A": "B", "B": "A"}.get(shown, "TIE")
         if result == "A":
             pref_a += 1
         elif result == "B":
             pref_b += 1
         else:
             tie += 1
-        out.append({"q": q, "preferred": result, "reason": v.get("reason", "")[:160]})
+        out.append({"q": q, "preferred": result, "on_first": on_first,
+                    "dropped": len(set(ids_off) - set(ids_on)),
+                    "reason": v.get("reason", "")[:160]})
         print(f"  preferred={result}  q={q[:60]}")
 
     n = len(queries_list) or 1
@@ -151,6 +176,7 @@ LIST B (top {k}):
     print(f"  trust-on win:  {pref_a}/{n}  ({pref_a/n*100:.0f}%)")
     print(f"  trust-off win: {pref_b}/{n}  ({pref_b/n*100:.0f}%)")
     print(f"  tie:           {tie}/{n}  ({tie/n*100:.0f}%)")
+    print(f"  identical:     {identical}/{n}  (floor {TRUST_FLOOR} removed nothing)")
     print(f"  judge errors:  {errors}")
 
     OUT_DIR.mkdir(exist_ok=True)
@@ -158,6 +184,7 @@ LIST B (top {k}):
     fn.write_text(json.dumps({
         "ran_at": datetime.now(timezone.utc).isoformat(),
         "n": n, "trust_on_win": pref_a, "trust_off_win": pref_b, "tie": tie,
+        "identical": identical, "trust_floor": TRUST_FLOOR,
         "llm": bench_remote.LLM_LABEL,
         "errors": errors, "details": out,
     }, indent=2, default=str))
@@ -165,13 +192,17 @@ LIST B (top {k}):
 
 
 async def main():
+    global TRUST_FLOOR
     bench_remote.enforce_remote_only()
     ap = argparse.ArgumentParser()
     ap.add_argument("--golden", default=str(GOLDEN_FILE))
     ap.add_argument("--queries-txt", help="Plain queries.txt to use for self-eval mode (no ground truth)")
     ap.add_argument("--k", type=int, default=10)
+    ap.add_argument("--trust-floor", type=float, default=TRUST_FLOOR,
+                    help="trust_floor for the trust-on arm (0.5 = prompt hook)")
     ap.add_argument("--mode", choices=["ground-truth", "self-eval"], default="ground-truth")
     args = ap.parse_args()
+    TRUST_FLOOR = args.trust_floor
 
     queries_list: list = []
     if args.mode == "self-eval":

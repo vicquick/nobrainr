@@ -9,12 +9,14 @@ No local fallback, ever: a local chat call raises BenchAbort, a
 BaseException, so the scripts' per-item ``except Exception`` handlers
 cannot swallow it.
 
-Remote failures are graded. Some prompts hang reproducibly at Hetzner's
-gateway (2026-10-17: a 364-char judge prompt timed out on every retry,
-with or without schema, at any temperature, while every other call took
-~1s), so one stuck item is scored as that item's error (RemoteItemError,
-caught per item) — never re-routed locally. Only CONSECUTIVE_FAILS_ABORT
-failed calls in a row (remote really down) abort the run.
+Remote failures are graded. Hetzner's shared queue stalls some calls
+(gateway 504 / ReadTimeout); 2026-10-17 a judge prompt timed out on every
+retry seconds apart, yet answered in <6s the next day, and the night's 5
+failures were 5 different prompts — load, not content. So the retry waits
+RETRY_BACKOFF_S, and a call still stuck is scored as that item's error
+(RemoteItemError, caught per item) — never re-routed locally, so one run
+is one model. Only CONSECUTIVE_FAILS_ABORT failed calls in a row (remote
+really down) abort the run.
 
 Results carry ``llm`` = LLM_LABEL so they are never compared against older
 runs made with the local model.
@@ -26,6 +28,7 @@ import asyncio
 import sys
 
 REMOTE_RETRIES = 1
+RETRY_BACKOFF_S = 45
 CONSECUTIVE_FAILS_ABORT = 3
 
 
@@ -75,7 +78,8 @@ def enforce_remote_only() -> str:
                 last = exc
                 print(f"bench: remote attempt {attempt + 1} failed "
                       f"({type(exc).__name__}: {exc})", file=sys.stderr, flush=True)
-                await asyncio.sleep(10 * (attempt + 1))
+                if attempt < REMOTE_RETRIES:
+                    await asyncio.sleep(RETRY_BACKOFF_S)
         consecutive += 1
         if consecutive >= CONSECUTIVE_FAILS_ABORT:
             raise BenchAbort(
