@@ -322,6 +322,19 @@ def gpu_lease_held() -> bool:
         os.close(fd)
 
 
+async def _gpu_idle_for_batch() -> bool:
+    """May a failed remote batch call fall back to the local model?
+
+    Only with llm_batch_local_fallback_when_idle, no render holding the
+    lease, and no live gpu_yield model use recently. A lease taken after
+    this check is still honoured: the local path parks on it."""
+    return (
+        settings.llm_batch_local_fallback_when_idle
+        and not gpu_lease_held()
+        and not await _live_model_active()
+    )
+
+
 async def _wait_for_gpu_lease() -> None:
     """Park a scheduler call while the GPU lease is held. Unbounded on
     purpose: proceeding mid-render is exactly the incident; the job-level
@@ -914,6 +927,13 @@ async def ollama_chat(
             local_call.close()
             raise
         except Exception as exc:
+            if not settings.llm_batch_local_fallback and await _gpu_idle_for_batch():
+                logger.warning(
+                    "remote LLM unavailable (%s: %.120s) — GPU idle, "
+                    "falling back to local",
+                    type(exc).__name__, str(exc),
+                )
+                return await local_call
             if not settings.llm_batch_local_fallback:
                 local_call.close()
                 logger.warning(
