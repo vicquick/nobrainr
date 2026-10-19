@@ -48,6 +48,7 @@ import os
 import random
 import re
 import time
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -168,10 +169,9 @@ def _mark_live_call() -> None:
 _gpu_yield_last_busy_ts: float = 0.0
 
 # Only ever used against a model /running already reported resident, so a
-# timeout here is a genuine anomaly, not "model not loaded" — probing
-# /slots for a NON-resident model hangs with no response rather than
-# erroring (confirmed empirically), so we deliberately never probe /slots
-# for a model we haven't first confirmed is resident.
+# timeout here is a genuine anomaly, not "model not loaded". The probe hits
+# the upstream's own port, never llama-swap's /upstream/<model>/ (which
+# starts the model — see _poll_gpu_yield_once).
 _GPU_YIELD_PROBE_TIMEOUT_S = 3.0
 
 _gpu_yield_warned_at: float = 0.0
@@ -205,10 +205,31 @@ def _warn_gpu_yield_unavailable(exc: Exception) -> None:
     )
 
 
+def _direct_slots_url(proxy: str | None) -> str | None:
+    """llama-server's own /slots for a resident model, bypassing llama-swap.
+
+    /running reports each model's upstream as ``http://localhost:<port>``
+    (localhost inside the llama-swap container). The upstreams bind
+    0.0.0.0, so the same port answers on the llama-swap host name.
+    """
+    port = urlsplit(proxy or "").port
+    host = urlsplit(settings.llm_server_url).hostname
+    if not (port and host):
+        return None
+    return f"http://{host}:{port}/slots"
+
+
 async def _poll_gpu_yield_once() -> None:
     """One sampling pass: check residency first (cheap, always answers
     fast), then only probe /slots for yield models that are actually
-    loaded, and only count real usage, not heartbeats."""
+    loaded, and only count real usage, not heartbeats.
+
+    Never through llama-swap's /upstream/<model>/: that route STARTS the
+    model. A model evicted between /running and the probe (or listed while
+    still stopping) was reloaded by the probe itself — 2026-10-19 nobrainr
+    polled qwen3-8b back into the chat slot and pushed host-a's gemma out.
+    The upstream's own port refuses once the model is gone, loading nothing.
+    """
     global _gpu_yield_last_busy_ts
     if not settings.gpu_yield_models:
         return
@@ -217,17 +238,26 @@ async def _poll_gpu_yield_once() -> None:
         try:
             resp = await client.get(f"{settings.llm_server_url}/running")
             resp.raise_for_status()
-            resident = {m.get("model") for m in resp.json().get("running", [])}
+            resident = {
+                m.get("model"): m.get("proxy")
+                for m in resp.json().get("running", [])
+                if m.get("state", "ready") == "ready"
+            }
         except Exception as exc:
             _warn_gpu_yield_unavailable(exc)
             return
-        for model in yield_set & resident:
+        for model in yield_set & resident.keys():
+            url = _direct_slots_url(resident[model])
+            if url is None:
+                _warn_gpu_yield_unavailable(
+                    ValueError(f"no upstream port for {model}: {resident[model]!r}"))
+                continue
             try:
-                resp = await client.get(
-                    f"{settings.llm_server_url}/upstream/{model}/slots"
-                )
+                resp = await client.get(url)
                 resp.raise_for_status()
                 slots = resp.json()
+            except httpx.ConnectError:
+                continue  # evicted since /running: nothing to watch
             except Exception as exc:
                 _warn_gpu_yield_unavailable(exc)
                 continue
