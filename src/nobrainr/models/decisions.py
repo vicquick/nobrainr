@@ -44,7 +44,7 @@ class DecisionMetadata(BaseModel):
     scope: str = Field(
         description=(
             "Dotted path identifying the subsystem this decision applies to. "
-            "e.g. 'nobrainr/retrieval', 'host-a/gaeb-parser', 'infra/coolify'."
+            "e.g. 'nobrainr/retrieval', 'myapp/parser', 'infra/coolify'."
         ),
         min_length=2, max_length=120,
     )

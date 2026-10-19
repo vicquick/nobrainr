@@ -235,7 +235,7 @@ async def _poll_gpu_yield_once() -> None:
                 if not slot.get("is_processing"):
                     continue
                 # Probe filter (2026-08-15, carried over from the old
-                # /api/metrics fields): host-a's backend heartbeats
+                # /api/metrics fields): the main app's backend heartbeats
                 # qwen3-8b with 1-token requests every few seconds. A
                 # request this small proves the server is alive, not
                 # that a human is mid-conversation — only real usage
@@ -281,7 +281,7 @@ async def _live_model_active() -> bool:
 # Host-wide GPU lease (2026-10-17)
 # ──────────────────────────────────────────────
 # Render/FLUX jobs on this host take an exclusive flock on
-# settings.gpu_lease_path while they own the GPU (host-a gpu_leihe.py).
+# settings.gpu_lease_path while they own the GPU (other GPU users on the host).
 # Incident 2026-10-17 01:00: the night batch window sent a qwen3.8-27b load
 # into a running Cycles render -> 58/62 GB RAM, swap full, render reaped.
 # While the lease is held nobrainr must not cause any local chat-model load:
@@ -307,7 +307,7 @@ def gpu_lease_held() -> bool:
             _gpu_lease_warned_at = now
             logger.warning(
                 "GPU lease file %s unreadable (%s) — nobrainr will NOT yield "
-                "the GPU to renders. Is /opt/host-a-gpu mounted at /gpu?",
+                "the GPU to renders. Is the lease directory mounted at /gpu?",
                 path, exc,
             )
         return False

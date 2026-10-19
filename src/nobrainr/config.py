@@ -85,7 +85,7 @@ class Settings(BaseSettings):
     # Empty disables the window, so batch is always remote.
     #
     # The point: during the day the GPU belongs to people (OpenWebUI, the
-    # host-a wizard, live MCP calls) and batch should stay off it. At night
+    # the main app's assistant, live MCP calls) and batch should stay off it. At night
     # nobody holds the slot, and an idle GPU is wasted throughput — local
     # inference also costs nothing and leaks nothing, unlike the remote.
     # Live callers are unaffected either way; they are always local.
@@ -117,7 +117,7 @@ class Settings(BaseSettings):
     embedding_dimensions: int = 1024
 
     # GPU yield (2026-06-13). llama-swap runs one exclusive "chat" slot:
-    # qwen3-8b (live apps: host-a wizard, MCP tools) XOR qwen3.6-27b
+    # qwen3-8b (live apps: app assistant, MCP tools) XOR qwen3.6-27b
     # (scheduler: distill, extraction, scoring). A scheduler call while a
     # live app is mid-conversation on the 8b evicts it and costs two ~35s
     # swaps per exchange. Instead, scheduler calls poll llama-swap
@@ -140,7 +140,7 @@ class Settings(BaseSettings):
     contradiction_gate_sim_max: float = 0.78
     contradiction_gate_min_trust: float = 0.7
 
-    # 2026-07-23 — host-a-priority tuning. host-a's user-facing assistant
+    # 2026-07-23 — app-priority tuning. The main app's user-facing assistant
     # runs on qwen3-8b (GPU chat slot); its llama-swap TTL was raised to
     # 1800s so a chat session stays warm. recent_s must track that window:
     # at 600s a user pausing 10-30 min mid-session would lapse the park and
@@ -154,10 +154,10 @@ class Settings(BaseSettings):
     gpu_yield_recent_s: float = 1500.0
     gpu_yield_max_wait_s: float = 1800.0
     gpu_yield_poll_s: float = 15.0
-    # Host-wide GPU lease (host-a PR #1788, backend/services/gpu_leihe.py).
+    # Host-wide GPU lease, taken by other GPU users on the host (renders, benches).
     # Render/FLUX jobs hold an exclusive flock on this file while they own
     # the GPU; nobrainr only probes it with a non-blocking LOCK_SH and never
-    # takes it. Bind-mounted from /opt/host-a-gpu. Empty disables the check.
+    # takes it. Bind-mounted from a host directory. Empty disables the check.
     gpu_lease_path: str = "/gpu/gpu0.lock"
 
     # MCP Server
@@ -599,6 +599,15 @@ class Settings(BaseSettings):
     # Co-occurrence relationship inference
     cooccurrence_interval_hours: float = 2.0  # 2h — still aggressive but leaves room for facts
     cooccurrence_batch_size: int = 40
+    # Host-name aliases applied to imported ChatGPT sessions, JSON object
+    # {"old-or-transient-name": "canonical-machine"}. Deployment-specific,
+    # so set via NOBRAINR_MACHINE_ALIASES, never in code.
+    machine_aliases: dict[str, str] = {}
+    # Words marking a claim as about YOUR private infra (host names, own
+    # domains, internal services). external_verify stamps such claims
+    # unverifiable without a web search. JSON list via
+    # NOBRAINR_EXT_INTERNAL_TERMS; generic service names are built in.
+    ext_internal_terms: list[str] = []
     # GitHub incremental sync
     github_owner: str = ""  # GitHub username for sync (required for github_sync job)
     github_sync_interval_hours: float = 4.0  # 4h — catches active dev within a work session
@@ -650,8 +659,8 @@ class Settings(BaseSettings):
     monitoring_smtp_host: str = ""
     monitoring_smtp_port: int = 587
     # Address to open the TCP connection to, when it differs from
-    # monitoring_smtp_host. Mailu submission is VPN-only: mail.example.org
-    # resolves to the blocked public IP, 10.0.0.1 is reachable. TLS SNI
+    # monitoring_smtp_host. E.g. a VPN-only mail submission host: mail.example.org
+    # resolves to a blocked public IP, the VPN address is reachable. TLS SNI
     # and cert verification still use monitoring_smtp_host. Empty = host.
     monitoring_smtp_connect_host: str = ""
     monitoring_smtp_user: str = ""

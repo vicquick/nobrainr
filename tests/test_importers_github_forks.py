@@ -48,7 +48,7 @@ async def test_bulk_import_skips_forks_by_default():
         patch.object(importer, "_import_issues_prs", _noop),
     ):
         result = await importer.import_github(
-            "vicquick",
+            "octo-owner",
             include_commits=False,
             include_issues=False,
             include_code_structure=False,
@@ -79,7 +79,7 @@ async def test_bulk_import_include_forks_true_keeps_everything():
         patch.object(importer, "_import_issues_prs", _noop),
     ):
         result = await importer.import_github(
-            "vicquick",
+            "octo-owner",
             include_forks=True,
             include_commits=False,
             include_issues=False,
@@ -105,7 +105,7 @@ async def test_explicit_repos_list_bypasses_fork_filter():
         patch.object(importer, "_import_issues_prs", _noop),
     ):
         result = await importer.import_github(
-            "vicquick",
+            "octo-owner",
             repos=["QGIS"],  # explicit fork request
             include_commits=False,
             include_issues=False,
@@ -135,7 +135,7 @@ async def test_gh_repo_list_requests_isfork_field():
         patch.object(importer, "_import_code_structure", _noop),
         patch.object(importer, "_import_issues_prs", _noop),
     ):
-        await importer.import_github("vicquick")
+        await importer.import_github("octo-owner")
 
     # Find the 'repo list' call
     repo_list_call = None

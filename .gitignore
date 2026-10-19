@@ -23,3 +23,8 @@ node_modules/
 /*.png
 .playwright-mcp/
 graphify-out/
+
+# Real queries from a live deployment — private, kept local only
+scripts/golden_set/queries.txt
+scripts/golden_set/golden.jsonl
+scripts/golden_set/results/

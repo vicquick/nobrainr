@@ -1310,7 +1310,7 @@ async def api_memory_source(request: Request) -> JSONResponse:
     if source_type == "crawl" and source_ref:
         return JSONResponse({"kind": "web", "url": source_ref})
     if source_type == "github" and source_ref:
-        # Format like "github:vicquick/repo/path"
+        # Format like "github:owner/repo/path"
         gh_url = source_ref
         if source_ref.startswith("github:"):
             parts = source_ref[len("github:"):].split("/", 2)
@@ -1670,7 +1670,7 @@ async def api_chat(request: Request) -> StreamingResponse | JSONResponse:
 
 
 # ── LLM queue status ──────────────────────────────────────────────────────
-# Pollable by any frontend (host-a, gis-app, OpenWebUI) to show "you are Nth in
+# Pollable by any frontend (other apps, OpenWebUI) to show "you are Nth in
 # line" instead of an opaque spinner. Added 2026-09-06.
 #
 # Signals are aggregated from llama-swap because no single endpoint has them:

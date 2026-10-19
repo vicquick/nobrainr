@@ -71,7 +71,7 @@ mcp = FastMCP(
         "  Results include learnings, decisions, and all other memory types mixed together.\n"
         "- `decision_search` — DECISIONS ONLY (category='decision', status='active' by default).\n"
         "  Use BEFORE making an architectural or technical choice to see prior policy. Takes\n"
-        "  optional `scope` prefix ('nobrainr', 'host-a/gaeb-parser') and `status` filter.\n"
+        "  optional `scope` prefix ('nobrainr', 'myapp/parser') and `status` filter.\n"
         "  Results come back without the noise of free-form memories.\n"
         "- `memory_query` — structured filtering by tags, category, source.\n"
         "- `entity_search` / `entity_graph` — knowledge graph exploration.\n"
@@ -85,8 +85,8 @@ mcp = FastMCP(
         "so silent positive-only loops no longer inflate scores.\n\n"
         "## Best practices\n"
         "- Always tag memories well so they can be found later.\n"
-        "- CRITICAL: Set `source_machine` to YOUR machine (laptop-a/box-b/host-a/pc-a/etc.), NOT the server hostname. "
-        "The MCP server always runs on host-a but memories are created by agents on many machines. "
+        "- CRITICAL: Set `source_machine` to YOUR machine (laptop/workstation/server/etc.), NOT the server hostname. "
+        "The MCP server runs on one host but memories are created by agents on many machines. "
         "Wrong source_machine = broken recall by machine. When in doubt, check hostname or read CLAUDE.md.\n"
         "- Use canonical categories: architecture, debugging, deployment, infrastructure, patterns, "
         "tooling, security, frontend, backend, data, business, documentation, session-log, insight, decision.\n"
@@ -1945,7 +1945,7 @@ async def decision_store(
     category='learning' for observations/discoveries.
 
     Args:
-        scope: Dotted subsystem path — 'nobrainr/retrieval', 'host-a/gaeb-parser'.
+        scope: Dotted subsystem path — 'nobrainr/retrieval', 'myapp/parser'.
         decision: One-sentence imperative. 'Cap BGE reranker at 8 candidates'.
         rationale: Why this path — concrete reasons, not vibes.
         constraints: Hard limits that rule out alternatives. e.g. ['20GB VRAM'].
@@ -3705,7 +3705,7 @@ async def memory_import_github(
     for the knowledge graph. Requires the `gh` CLI to be installed and authenticated.
 
     Args:
-        owner: GitHub username or organization (default: "vicquick").
+        owner: GitHub username or organization (default: settings.github_owner).
         repos: Specific repo names to import (default: all repos). When set,
             forks in the list ARE imported regardless of include_forks.
         source_machine: Machine identifier for provenance.
@@ -4468,7 +4468,7 @@ async def agent_presence(
 
     Args:
         agent: Agent name (e.g. 'dev', 'infra', 'gis-field', or a session name).
-        machine: Host the agent runs on (e.g. 'box-b', 'host-a').
+        machine: Host the agent runs on (e.g. 'laptop', 'server').
         status: active | busy | idle | done.
         task: Optional one-line description of what you're working on.
     """
