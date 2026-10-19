@@ -633,7 +633,10 @@ class Settings(BaseSettings):
     # we can catch quality regressions before committing to a new one.
     extraction_eval_interval_hours: float = 168.0  # 7 days
     extraction_eval_sample_size: int = 10
-    extraction_eval_incumbent_model: str = "qwen3.5:35b"
+    # Label only: the incumbent side is the extraction already stored in the
+    # graph, never re-run. Names what wrote it (batch = Hetzner remote since
+    # 2026-10-17); "qwen3.5:35b" was stale and read like a local 8b alias.
+    extraction_eval_incumbent_model: str = "qwen3.8-27b-remote"
 
     # Auto-negative outcome logging (2026-04-18) — feedback loop was dead
     # because nothing ever wrote was_useful=false, so the importance adjuster
