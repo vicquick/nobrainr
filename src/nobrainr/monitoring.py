@@ -840,7 +840,7 @@ async def send_knowledge_digest() -> dict:
 class _ConnectHostMixin:
     """Open the TCP socket to ``connect_host`` while smtplib keeps
     ``_host`` (the SMTP host name) for SNI + certificate checks — same
-    approach as host-a 3e75b645."""
+    approach as the main app's mailer."""
 
     connect_host: str = ""
 

@@ -11,6 +11,7 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
+from nobrainr.config import settings
 from nobrainr.db import queries
 from nobrainr.db.pool import get_pool
 from nobrainr.embeddings.ollama import embed_text
@@ -18,25 +19,14 @@ from nobrainr.extraction.llm import ollama_chat
 
 logger = logging.getLogger("nobrainr.import.chatgpt")
 
-# Canonical machine name aliases — old/transient names → canonical
-_MACHINE_ALIASES: dict[str, str] = {
-    "laptop-a": "laptop-a",
-    "laptop-a": "laptop-a",
-    "laptop-a": "laptop-a",
-    "pc-a": "pc-a",
-    "pc-a": "pc-a",
-    "box-b": "box-b",
-    "box-b": "box-b",
-    "vps-a": "vps-a",
-    "vps": "vps-a",
-    "vps-a": "vps-a",
-}
+# Canonical machine name aliases (old/transient names → canonical) come
+# from settings.machine_aliases — deployment-specific, never in code.
 
 
 def _normalize_machine(name: str | None) -> str | None:
     if not name:
         return name
-    return _MACHINE_ALIASES.get(name, name)
+    return settings.machine_aliases.get(name, name)
 
 
 def _machine_for_source_type(source_type: str | None) -> str:

@@ -1,6 +1,7 @@
 """LLM-powered scheduler jobs for autonomous knowledge growth."""
 
 import asyncio
+import functools
 import logging
 import re
 import socket
@@ -2977,7 +2978,7 @@ PROBE_SCHEMA = {
 }
 
 _PROBE_SYSTEM = (
-    "You design verification probes for a knowledge base on host 'host-a' "
+    "You design verification probes for a self-hosted knowledge base "
     "(Ubuntu, Docker via Coolify, PostgreSQL 'nobrainr' db, services on "
     "<vpn-host>). Given memory notes stating CURRENT system facts, emit a "
     "probe that mechanically re-checks the claim:\n"
@@ -3693,20 +3694,28 @@ async def card_factcheck() -> dict:
 # external_verify_quota_ceiling, reserving the remainder for humans.
 # ──────────────────────────────────────────────
 
-# Live-fire lesson (2026-08-11, first run): a memory describing OUR
-# box-b's hook config slipped triage ("Claude Code hooks" pattern-
+# Live-fire lesson (2026-08-11, first run): a memory describing one of
+# our own servers' hook config slipped triage ("Claude Code hooks" pattern-
 # matched software docs) and the judge REFUTED it with a generic doc
 # quote — halving trust on a true memory. Claims scoped to the user's
 # own machines/infra are unverifiable by construction: the public web
 # cannot confirm or deny private state. Cheap regex catches them before
 # any LLM or quota is spent; the judge prompt is the backstop.
-_EXT_INTERNAL_RE = re.compile(
-    r"\b(box-b|laptop-a|box-b|host-a|example|nobrainr|agent-x"
-    r"|vps-a|pi-a|pi-a|pi-a|coolify-db|llama-swap"
-    r"|metamcp|crawl4ai)\b"
-    r"|\b10\.(?:10|0)\.\d{1,3}\.\d{1,3}\b",
-    re.IGNORECASE,
-)
+# Built-in: our own service names + private IPv4 ranges. Host names and
+# domains of the deployment come from settings.ext_internal_terms.
+_EXT_INTERNAL_BUILTIN = ("nobrainr", "coolify-db", "llama-swap", "metamcp", "crawl4ai")
+_EXT_PRIVATE_IP = (r"\b(?:10\.\d{1,3}|192\.168|172\.(?:1[6-9]|2\d|3[01]))"
+                   r"\.\d{1,3}\.\d{1,3}\b")
+
+
+@functools.lru_cache(maxsize=4)
+def _ext_internal_re(extra: tuple[str, ...] = ()) -> re.Pattern:
+    words = "|".join(re.escape(w) for w in (*_EXT_INTERNAL_BUILTIN, *extra) if w)
+    return re.compile(rf"\b(?:{words})\b|{_EXT_PRIVATE_IP}", re.IGNORECASE)
+
+
+def _is_internal_claim(text: str) -> bool:
+    return bool(_ext_internal_re(tuple(settings.ext_internal_terms)).search(text))
 
 _EXT_TRIAGE_SCHEMA = {
     "type": "object",
@@ -3837,7 +3846,7 @@ async def external_verify() -> dict:
         cl = by_idx.get(i)
         if cl is None:
             continue
-        internal_scope = bool(_EXT_INTERNAL_RE.search(row["text"]))
+        internal_scope = _is_internal_claim(row["text"])
         if internal_scope or not cl.get("checkable") or not (cl.get("query") or "").strip():
             # Never re-picked, never costs quota.
             async with pool.acquire() as conn:

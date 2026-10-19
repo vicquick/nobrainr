@@ -1,13 +1,13 @@
 # nobrainr Dashboard — React Port Plan
 
-> Status: **PROPOSED** · Author: fable-main (host-a) · Date: 2026-08-21
-> Decision owner: Alex. Nothing in this document is committed work until the
+> Status: **PROPOSED** · Author: agent session · Date: 2026-08-21
+> Decision owner: the maintainer. Nothing in this document is committed work until the
 > tracking issue's Wave 0 is approved.
 
 ## 0. Why (and why not)
 
 **For:**
-- **Stack alignment.** host-a is mid-port to React (`refactor/react-main`,
+- **Stack alignment.** the main app is mid-port to React (`refactor/react-main`,
   PORT_100 wave process). One frontend stack across products means shared
   habits, shared review instincts, and eventually shared components
   (theming, data-grid, panels).
@@ -63,7 +63,7 @@
 
 **Total: ~15 focused sessions of porting + ~5 of consolidation, QA and
 gates ≈ 20–30 sessions, 15–25 PRs.** Calendar: 1–2 weeks of supervised
-part-time work. This tracks the host-a port's observed per-wave velocity.
+part-time work. This tracks the main app port's observed per-wave velocity.
 
 ## 2. Pre-port consolidation (do FIRST — shrinks the surface)
 
@@ -84,7 +84,7 @@ the newest code in the repo.
 
 | concern | choice | rationale |
 |---|---|---|
-| build | Vite + React 19 + TypeScript | same tooling family as today; host-a parity |
+| build | Vite + React 19 + TypeScript | same tooling family as today; main-app parity |
 | routing | react-router v7 | file of routes, lazy chunks per view (same chunk strategy as now) |
 | server state | **TanStack Query** | replaces every hand-rolled poller; `refetchInterval` per view |
 | client state | zustand (2 tiny stores) | pinia equivalence without ceremony |

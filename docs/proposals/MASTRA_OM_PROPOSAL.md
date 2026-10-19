@@ -18,7 +18,7 @@ The mechanism:
    exchange and writes a single, dense observation (~50-100 tokens):
    *"User wants to migrate from Postgres 13 → 16. They've already drafted
    the pg_upgrade plan but are worried about the trigger O→D rename
-   issue. They mentioned this is for the host-a project."*
+   issue. They mentioned this is for their main project."*
 2. **Reflector agent** — runs periodically. Reads the observation log
    and consolidates: merges duplicates, lifts long-term facts to a
    stable "core" log, ages out noise.

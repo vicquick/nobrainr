@@ -69,7 +69,7 @@ class GraphCache:
 async def build_graph_cache() -> GraphCache:
     """Build a fresh CSR adjacency matrix from entities + entity_relations.
 
-    Roughly 60-200ms for a 50k-entity / 200k-edge graph on host-a's CPU.
+    Roughly 60-200ms for a 50k-entity / 200k-edge graph on a 14-core desktop CPU.
     Output is column-stochastic (each column sums to 1) so power iteration
     is the standard PageRank random walk.
     """
@@ -165,7 +165,7 @@ def ppr_scores(
     HippoRAG 2 default: alpha=0.85, n_iter=10. Returns top_k entities by
     PageRank score as a dict[entity_id_str, score].
 
-    Performance: ~50ms for 50k-entity / 200k-edge graph on host-a CPU.
+    Performance: ~50ms for 50k-entity / 200k-edge graph on a 14-core desktop CPU.
     """
     n = cache.n_entities
     if n == 0 or not seed_ids:

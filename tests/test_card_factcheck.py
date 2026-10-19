@@ -82,7 +82,7 @@ def _mock_pool():
 
 
 CARD = {"id": "00000000-0000-0000-0000-000000000001",
-        "subject_key": "host-a", "title": "host-a", "body": "..."}
+        "subject_key": "host-a", "title": "Host-a", "body": "..."}
 
 
 async def test_factcheck_probe_lane_no_llm_judge():
@@ -109,9 +109,9 @@ async def test_factcheck_probe_lane_no_llm_judge():
 
 
 async def test_factcheck_evidence_lane_supported():
-    claims_resp = {"claims": [{"claim": "server is GEX44", "checkable": True}]}
-    judge_resp = {"verdict": "supported", "reason": "newest note says GEX44"}
-    evidence = [{"summary": "s", "content": "GEX44 Hetzner", "updated_at": "2026-07-01"}]
+    claims_resp = {"claims": [{"claim": "server is box-a", "checkable": True}]}
+    judge_resp = {"verdict": "supported", "reason": "newest note says box-a"}
+    evidence = [{"summary": "s", "content": "box-a Hetzner", "updated_at": "2026-07-01"}]
     pool, conn = _mock_pool()
 
     with (

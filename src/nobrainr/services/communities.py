@@ -139,7 +139,7 @@ async def detect_communities(
     ]
 
     # Exclude high-degree hub entities before community detection.
-    # Hub entities (e.g. "host-a", "docker", "nobrainr") bridge otherwise-distinct
+    # Hub entities (e.g. "docker", "postgres", "nobrainr") bridge otherwise-distinct
     # domains and cause Leiden to merge unrelated communities into mega-clusters.
     # Threshold: entities connected to >150 distinct other entities are hubs.
     # They're re-assigned post-detection to the community of their most-connected
