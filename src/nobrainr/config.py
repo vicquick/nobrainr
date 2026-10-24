@@ -579,18 +579,16 @@ class Settings(BaseSettings):
     # search path — expected latency 10-30s.
     deep_recall_max_hops: int = 2          # total search rounds (1 = plain search)
     deep_recall_per_hop_limit: int = 8     # results fetched per hop
-    # Follow-up generation runs on the always-loaded CPU model
-    # (qwen3-8b-cpu via llama-swap), NOT the contended 27b: during the
-    # 2026-07-06 A/B every 27b follow-up call starved (76/76 ReadTimeouts
-    # at 12s under scheduler load) and the loop silently degraded to
-    # plain search. Query reformulation is an easy task; the CPU model
-    # answers in 10-20s regardless of GPU state.
-    deep_recall_followup_model: str = "qwen3-8b-cpu"
+    # Follow-up generation runs on the resident chat model, but only through
+    # llm.side_chat: local when a slot is free, else the remote. During the
+    # 2026-07-06 A/B every queued 27b follow-up starved (76/76 ReadTimeouts
+    # at 12s under scheduler load), so it never waits for a busy slot.
+    deep_recall_followup_model: str = "gemma-4-26b-a4b"
     # evidence_gather (LME-V2 AgentRunbook-C pattern, 2026-07-22): bounded
     # agentic loop with search + read-by-id + read-only SQL over the
     # memory substrate. LME-V2: agentic gathering 72.5% vs best RAG 48.5%.
     evidence_gather_max_steps: int = 5
-    evidence_gather_model: str = "qwen3-8b-cpu"  # 27b starves under load
+    evidence_gather_model: str = "gemma-4-26b-a4b"  # via side_chat, see above
     evidence_gather_sql_timeout_ms: int = 3000
     evidence_gather_sql_row_cap: int = 50
     deep_recall_followup_timeout_s: float = 25.0

@@ -278,6 +278,70 @@ async def _poll_gpu_yield_once() -> None:
                 break
 
 
+# At most one nobrainr side call holds a local slot at a time, so host-a
+# always keeps at least one of gemma's two.
+_side_slot_lock = asyncio.Lock()
+
+
+async def local_slot_free(model: str) -> bool:
+    """True when ``model`` is resident and one of its slots is idle.
+
+    Reads /running and the upstream's own /slots (never /upstream/<model>/,
+    which loads the model). Any error counts as busy.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=_GPU_YIELD_PROBE_TIMEOUT_S) as client:
+            resp = await client.get(f"{settings.llm_server_url}/running")
+            resp.raise_for_status()
+            proxy = next(
+                (m.get("proxy") for m in resp.json().get("running", [])
+                 if m.get("model") == model and m.get("state", "ready") == "ready"),
+                None,
+            )
+            url = _direct_slots_url(proxy)
+            if url is None:
+                return False
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return any(not s.get("is_processing") for s in resp.json())
+    except Exception:
+        return False
+
+
+async def side_chat(
+    system: str,
+    user: str,
+    schema: dict,
+    *,
+    model: str,
+    timeout: float,
+    temperature: float = 0.2,
+    think: bool = False,
+) -> dict:
+    """Live helper calls (deep_recall follow-ups, evidence_gather steps).
+
+    Local only when ``model`` already has a free slot and no other side
+    call holds one; otherwise the remote. host-a shares gemma's two slots
+    and must never queue behind nobrainr, and a non-resident model is never
+    loaded for this.
+    """
+    if not _remote_enabled():
+        return await ollama_chat(
+            system, user, schema, model=model, temperature=temperature,
+            timeout=timeout, caller_kind="live", think=think,
+        )
+    if not _side_slot_lock.locked() and await local_slot_free(model):
+        async with _side_slot_lock:
+            return await ollama_chat(
+                system, user, schema, model=model, temperature=temperature,
+                timeout=timeout, caller_kind="live", think=think,
+            )
+    return await asyncio.wait_for(
+        _remote_chat(system, user, schema, temperature=temperature, think=think),
+        timeout=timeout,
+    )
+
+
 async def gpu_yield_poll_loop() -> None:
     """Background task: keep _gpu_yield_last_busy_ts fresh forever.
     No-op loop when gpu_yield_models is empty. Started once at scheduler

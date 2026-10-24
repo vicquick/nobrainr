@@ -1200,7 +1200,7 @@ async def deep_recall(
     """
     import asyncio as _aio
 
-    from nobrainr.extraction.llm import ollama_chat
+    from nobrainr.extraction.llm import side_chat
     from nobrainr.services.reranker import rerank as _rerank
 
     hops = max_hops or settings.deep_recall_max_hops
@@ -1237,7 +1237,7 @@ async def deep_recall(
         )
         _force = hop + 1 < min_hops
         try:
-            verdict = await ollama_chat(
+            verdict = await side_chat(
                 system=(
                     "You check whether retrieved memory notes fully answer a "
                     "question. If something is missing, emit ONE follow-up "
@@ -1258,8 +1258,6 @@ async def deep_recall(
                 temperature=0.2,
                 model=settings.deep_recall_followup_model,
                 timeout=settings.deep_recall_followup_timeout_s,
-                caller_kind="live",
-                think=False,
             )
         except Exception:
             # GPU contended — return what hop 0 found rather than block.
@@ -1476,7 +1474,7 @@ async def evidence_gather(
         {"evidence": [...], "steps": [{action, detail}], "notes": str}
     """
     from nobrainr.db.pool import get_pool
-    from nobrainr.extraction.llm import ollama_chat
+    from nobrainr.extraction.llm import side_chat
     from nobrainr.services.reranker import rerank as _rerank
 
     steps_cap = min(max_steps or settings.evidence_gather_max_steps, 8)
@@ -1490,7 +1488,7 @@ async def evidence_gather(
 
     for _step in range(steps_cap):
         try:
-            decision = await ollama_chat(
+            decision = await side_chat(
                 system=_EVIDENCE_SYSTEM,
                 user=(
                     f"Question: {question}\n\nEvidence so far "
@@ -1505,8 +1503,6 @@ async def evidence_gather(
                 temperature=0.2,
                 model=settings.evidence_gather_model,
                 timeout=45,
-                caller_kind="live",
-                think=False,
             )
         except Exception:
             logger.exception("evidence_gather step LLM failed")
