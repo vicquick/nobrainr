@@ -1,5 +1,5 @@
 """side_chat (2026-10-24): nobrainr's live helper calls use gemma only when
-a slot is free and never take both, so host-a never queues behind them."""
+a slot is free and never take both, so the live app never queues behind them."""
 
 from __future__ import annotations
 

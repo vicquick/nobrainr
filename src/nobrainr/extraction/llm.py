@@ -227,7 +227,7 @@ async def _poll_gpu_yield_once() -> None:
     Never through llama-swap's /upstream/<model>/: that route STARTS the
     model. A model evicted between /running and the probe (or listed while
     still stopping) was reloaded by the probe itself — 2026-10-19 nobrainr
-    polled qwen3-8b back into the chat slot and pushed host-a's gemma out.
+    polled qwen3-8b back into the chat slot and pushed the live app's gemma out.
     The upstream's own port refuses once the model is gone, loading nothing.
     """
     global _gpu_yield_last_busy_ts
@@ -278,7 +278,7 @@ async def _poll_gpu_yield_once() -> None:
                 break
 
 
-# At most one nobrainr side call holds a local slot at a time, so host-a
+# At most one nobrainr side call holds a local slot at a time, so the live app
 # always keeps at least one of gemma's two.
 _side_slot_lock = asyncio.Lock()
 
@@ -321,7 +321,7 @@ async def side_chat(
     """Live helper calls (deep_recall follow-ups, evidence_gather steps).
 
     Local only when ``model`` already has a free slot and no other side
-    call holds one; otherwise the remote. host-a shares gemma's two slots
+    call holds one; otherwise the remote. The live app shares gemma's two slots
     and must never queue behind nobrainr, and a non-resident model is never
     loaded for this.
     """
