@@ -19,6 +19,7 @@ from nobrainr.db import queries
 from nobrainr.db import write_queue
 from nobrainr.embeddings.ollama import embed_text, embed_text_with_timeout, EmbedTimeout
 from nobrainr.events import subscribe
+from nobrainr.extraction.llm import _direct_slots_url
 
 log = logging.getLogger(__name__)
 
@@ -1731,10 +1732,13 @@ async def api_llm_queue(request: Request) -> JSONResponse:
                         "slots_total": None, "slots_busy": None}
 
                 # Embedding/rerank servers have no chat slots — skip the probe
-                # rather than emit misleading nulls for them.
-                if "embed" not in model and "rerank" not in model:
+                # rather than emit misleading nulls for them. The upstream's
+                # own port, never /upstream/<model>/ (that route loads the
+                # model; a model stopping between /running and here came back).
+                slots_url = _direct_slots_url(entry.get("proxy")) if state == "ready" else None
+                if slots_url and "embed" not in model and "rerank" not in model:
                     try:
-                        sr = await client.get(f"{base}/upstream/{model}/slots")
+                        sr = await client.get(slots_url)
                         if sr.status_code == 200:
                             slots = sr.json()
                             if isinstance(slots, list):
