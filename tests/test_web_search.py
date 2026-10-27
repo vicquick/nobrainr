@@ -34,7 +34,7 @@ web_search = _unwrap(mcp_server.web_search)
 @pytest.fixture(autouse=True)
 def _no_searxng():
     """Brave-path tests: SearXNG off unless a test turns it on."""
-    with patch.object(settings, "searxng_url", ""):
+    with patch.object(settings, "searxng_url", ""), patch.object(settings, "brave_daily_query_cap", 0):
         yield
 
 
@@ -246,16 +246,92 @@ async def test_searxng_hit_never_counts_or_calls_brave():
     req.assert_not_called()
 
 
-async def test_searxng_empty_falls_back_and_reports_state():
+async def test_searxng_empty_is_an_answer_never_brave():
+    """27.10.2026: empty SearXNG pages went to Brave and burned the month."""
+    with (
+        patch.object(settings, "searxng_url", "http://searxng:8080"),
+        patch.object(settings, "brave_api_key", "k"),
+        patch.object(mcp_server, "_searxng_search_request", AsyncMock(return_value=[])),
+        patch.object(mcp_server, "_web_search_month_usage", AsyncMock()) as usage,
+        patch.object(mcp_server, "_count_web_search_use", AsyncMock()) as counter,
+        patch.object(mcp_server, "_brave_search_request", AsyncMock()) as req,
+    ):
+        out = await web_search(query="q")
+    assert out["source"] == "searxng" and out["count"] == 0 and out["results"] == []
+    usage.assert_not_called()
+    counter.assert_not_called()
+    req.assert_not_called()
+
+
+async def test_searxng_error_falls_back_to_brave():
     with (
         patch.object(settings, "searxng_url", "http://searxng:8080"),
         patch.object(settings, "brave_api_key", "k"),
         patch.object(settings, "brave_monthly_query_cap", 100),
-        patch.object(mcp_server, "_searxng_search_request", AsyncMock(return_value=[])),
+        patch.object(mcp_server, "_searxng_search_request", AsyncMock(side_effect=httpx.ConnectError("x"))),
+        patch.object(mcp_server, "_web_search_month_usage", AsyncMock(return_value=3)),
+        patch.object(mcp_server, "_count_web_search_use", AsyncMock(return_value=4)) as counter,
+        patch.object(mcp_server, "_brave_search_request",
+                     AsyncMock(return_value=_brave_payload([{"title": "T", "url": "https://e.org"}]))),
+    ):
+        out = await web_search(query="q")
+    assert out["source"] == "brave" and out["count"] == 1
+    counter.assert_awaited_once()
+
+
+async def test_month_cap_reports_searxng_state_without_counting():
+    with (
+        patch.object(settings, "searxng_url", "http://searxng:8080"),
+        patch.object(settings, "brave_api_key", "k"),
+        patch.object(settings, "brave_monthly_query_cap", 100),
+        patch.object(mcp_server, "_searxng_search_request", AsyncMock(side_effect=httpx.ConnectError("x"))),
         patch.object(mcp_server, "_web_search_month_usage", AsyncMock(return_value=100)),
         patch.object(mcp_server, "_count_web_search_use", AsyncMock()) as counter,
     ):
         out = await web_search(query="q")
     assert out["error"] == "monthly web_search quota exhausted"
-    assert out["searxng"] == "0 results"
+    assert out["searxng"] == "error"
     counter.assert_not_called()
+
+
+async def test_day_cap_blocks_brave_before_any_call():
+    with (
+        patch.object(settings, "brave_api_key", "k"),
+        patch.object(settings, "brave_monthly_query_cap", 1000),
+        patch.object(settings, "brave_daily_query_cap", 40),
+        patch.object(mcp_server, "_web_search_month_usage", AsyncMock(return_value=100)),
+        patch.object(mcp_server, "_web_search_day_usage", AsyncMock(return_value=40)),
+        patch.object(mcp_server, "_count_web_search_use", AsyncMock()) as counter,
+        patch.object(mcp_server, "_brave_search_request", AsyncMock()) as req,
+    ):
+        out = await web_search(query="q")
+    assert out["error"] == "daily Brave cap reached"
+    assert out["quota"] == {"used_today": 40, "day_cap": 40}
+    counter.assert_not_called()
+    req.assert_not_called()
+
+
+async def test_day_cap_below_limit_lets_brave_through():
+    with (
+        patch.object(settings, "brave_api_key", "k"),
+        patch.object(settings, "brave_monthly_query_cap", 1000),
+        patch.object(settings, "brave_daily_query_cap", 40),
+        patch.object(mcp_server, "_web_search_month_usage", AsyncMock(return_value=100)),
+        patch.object(mcp_server, "_web_search_day_usage", AsyncMock(return_value=39)),
+        patch.object(mcp_server, "_count_web_search_use", AsyncMock(return_value=101)),
+        patch.object(mcp_server, "_brave_search_request", AsyncMock(return_value=_brave_payload([]))) as req,
+    ):
+        out = await web_search(query="q")
+    assert out["source"] == "brave"
+    req.assert_awaited_once()
+
+
+async def test_source_is_logged(caplog):
+    raw = [{"title": "T", "url": "https://e.org", "content": "c"}]
+    with (
+        caplog.at_level("INFO", logger=mcp_server.logger.name),
+        patch.object(settings, "searxng_url", "http://searxng:8080"),
+        patch.object(mcp_server, "_searxng_search_request", AsyncMock(return_value=raw)),
+    ):
+        await web_search(query="q")
+    assert "web_search source=searxng results=1" in caplog.text
