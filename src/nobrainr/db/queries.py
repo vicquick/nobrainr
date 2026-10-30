@@ -5242,3 +5242,100 @@ async def list_agent_presence(active_within_s: int = 300) -> list[dict]:
             active_within_s,
         )
         return [dict(r) for r in rows]
+
+
+async def fetch_agent_inbox(
+    agent: str,
+    *,
+    since: datetime | None = None,
+    thread_id: str | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    """Agent messages addressed to ``agent`` or 'all', newest first.
+
+    msg_wait only sees what arrives while someone listens; this is the
+    durable catch-up over the same agent-comm memories msg_send writes.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, summary, content, tags, created_at
+            FROM memories
+            WHERE category = 'agent-comm'
+              AND tags && $1::text[]
+              AND ($2::timestamptz IS NULL OR created_at > $2)
+              AND ($3::text IS NULL OR $3 = ANY(tags))
+            ORDER BY created_at DESC
+            LIMIT $4
+            """,
+            [f"to:{agent}", "to:all"],
+            since,
+            f"thread:{thread_id}" if thread_id else None,
+            limit,
+        )
+        return [dict(r) for r in rows]
+
+
+async def create_meeting(
+    question: str, moderator: str, participants: list[str], deadline_s: int,
+) -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO agent_meetings (question, moderator, participants, deadline)
+            VALUES ($1, $2, $3, now() + make_interval(secs => $4))
+            RETURNING *
+            """,
+            question, moderator[:80], [p[:80] for p in participants], deadline_s,
+        )
+        return dict(row)
+
+
+async def get_meeting(meeting_id: str) -> dict | None:
+    """Meeting row plus its answers (``answers``: list of dicts)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM agent_meetings WHERE id = $1::uuid", meeting_id,
+        )
+        if row is None:
+            return None
+        answers = await conn.fetch(
+            """
+            SELECT agent, answer, answered_at FROM agent_meeting_answers
+            WHERE meeting_id = $1::uuid ORDER BY answered_at
+            """,
+            meeting_id,
+        )
+        meeting = dict(row)
+        meeting["answers"] = [dict(a) for a in answers]
+        return meeting
+
+
+async def upsert_meeting_answer(meeting_id: str, agent: str, answer: str) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO agent_meeting_answers (meeting_id, agent, answer)
+            VALUES ($1::uuid, $2, $3)
+            ON CONFLICT (meeting_id, agent) DO UPDATE
+                SET answer = EXCLUDED.answer, answered_at = now()
+            """,
+            meeting_id, agent, answer,
+        )
+
+
+async def close_meeting(meeting_id: str, decision_ref: str | None) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE agent_meetings
+            SET status = 'closed', decision_ref = $2, closed_at = now()
+            WHERE id = $1::uuid
+            """,
+            meeting_id, decision_ref,
+        )

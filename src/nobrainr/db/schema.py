@@ -998,6 +998,30 @@ CREATE TABLE IF NOT EXISTS agent_presence (
     PRIMARY KEY (agent, machine)
 );
 
+-- Agent meetings v1-lite (2026-10-30): one question to 2-5 agents, blind
+-- answers revealed only once everyone answered or the deadline passed,
+-- moderator closes into decision_store. Answers live here, NOT in
+-- memories, so memory_search cannot unblind them before the reveal.
+CREATE TABLE IF NOT EXISTS agent_meetings (
+    id           uuid DEFAULT uuidv7() PRIMARY KEY,
+    question     text NOT NULL,
+    moderator    text NOT NULL,
+    participants text[] NOT NULL,
+    deadline     timestamptz NOT NULL,
+    status       text NOT NULL DEFAULT 'open',
+    decision_ref text,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    closed_at    timestamptz
+);
+
+CREATE TABLE IF NOT EXISTS agent_meeting_answers (
+    meeting_id  uuid NOT NULL REFERENCES agent_meetings(id) ON DELETE CASCADE,
+    agent       text NOT NULL,
+    answer      text NOT NULL,
+    answered_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (meeting_id, agent)
+);
+
 CREATE TABLE IF NOT EXISTS scheduler_runs (
     id            bigserial PRIMARY KEY,
     task_name     text        NOT NULL,
