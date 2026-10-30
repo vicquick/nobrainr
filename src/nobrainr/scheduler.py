@@ -218,6 +218,13 @@ MEMORY_WRITE_WORKER_ROW_TIMEOUT = 10 * 60
 # LLM call inside it), this still recovers orphans without needing a restart.
 STALE_PROCESSING_REAPER_INTERVAL = 5 * 60
 
+# Supervisor ceiling for one claimed row: the worst legitimate case is the
+# full GPU park plus the row budget. Past this the worker task is wedged
+# (the row timeout should have fired) and the reaper restarts it.
+MEMORY_WRITE_WORKER_STALL_S = (
+    settings.gpu_yield_max_wait_s + MEMORY_WRITE_WORKER_ROW_TIMEOUT + 5 * 60
+)
+
 
 class Scheduler:
     """Asyncio-based periodic task runner for memory maintenance jobs."""
@@ -232,6 +239,11 @@ class Scheduler:
         # drain". Keeping it independent means pause/resume only affects
         # background LLM maintenance jobs — queue writes keep flowing.
         self._write_queue_running = False
+        # The worker task and the row it holds, so the reaper can supervise
+        # it: skip that row when freeing orphans, restart a dead or wedged
+        # worker. _write_inflight is (queue_id, monotonic claim time).
+        self._write_worker_task: asyncio.Task | None = None
+        self._write_inflight: tuple[str, float] | None = None
         # Soft pause for LLM maintenance jobs. Set True by /api/scheduler/pause
         # to stop entity_merging/quality_scoring/etc without cancelling tasks
         # (avoids the 30s tear-down + re-setup ping of full stop/start, and
@@ -575,9 +587,8 @@ class Scheduler:
         # should drain on startup if there's a backlog from the previous
         # process. Shares the LLM semaphore with periodic jobs so it
         # never dogpiles the GPU.
-        self._tasks.append(
-            asyncio.create_task(self._memory_write_worker())
-        )
+        self._write_worker_task = asyncio.create_task(self._memory_write_worker())
+        self._tasks.append(self._write_worker_task)
 
         # Periodic orphan reaper. Defense-in-depth alongside the per-row
         # timeout inside the worker itself: if the worker's event loop
@@ -694,6 +705,7 @@ class Scheduler:
         # silently kill the queue worker. Pause should only affect the
         # background LLM maintenance jobs, not durable write processing.
         while self._write_queue_running:
+            self._write_inflight = None
             try:
                 row = await write_queue.claim_next_pending()
                 if row is None:
@@ -702,6 +714,7 @@ class Scheduler:
                     continue
 
                 queue_id = str(row["id"])
+                self._write_inflight = (queue_id, time.monotonic())
                 logger.info(
                     "memory_write_worker: claimed %s (attempt %d/%d)",
                     queue_id, row["attempts"], row["max_attempts"],
@@ -728,9 +741,21 @@ class Scheduler:
                         # any work having failed (56 rows, 2026-08-14). Waiting
                         # here first means the in-call park clears instantly
                         # and the 600s covers actual work only.
+                        #
+                        # Only park when the call will actually run on the
+                        # local GPU (2026-10-30). In split mode outside the
+                        # local batch window the write goes remote and never
+                        # touches the chat slot, yet the park held every
+                        # write up to 30 min after any live qwen3-8b use.
                         try:
-                            from nobrainr.extraction.llm import _wait_for_live_quiet
-                            await _wait_for_live_quiet("scheduler")
+                            from nobrainr.extraction.llm import (
+                                _split_prefers_remote, _wait_for_live_quiet,
+                            )
+                            if not (
+                                settings.llm_remote_mode == "split"
+                                and _split_prefers_remote("scheduler")
+                            ):
+                                await _wait_for_live_quiet("scheduler")
                         except Exception:
                             # Best-effort: a broken metrics endpoint must never
                             # block the queue; the in-call park remains as backup.
@@ -838,7 +863,12 @@ class Scheduler:
 
         while self._running:
             try:
-                n = await write_queue.reset_stale_processing(stale_minutes=10)
+                self._supervise_write_worker()
+                inflight = self._write_inflight
+                n = await write_queue.reset_stale_processing(
+                    stale_minutes=10,
+                    exclude_ids=[inflight[0]] if inflight else None,
+                )
                 if n > 0:
                     logger.warning(
                         "stale_processing_reaper: freed %d orphan row(s) "
@@ -849,6 +879,33 @@ class Scheduler:
             except Exception:
                 logger.exception("stale_processing_reaper: tick failed")
             await asyncio.sleep(STALE_PROCESSING_REAPER_INTERVAL)
+
+    def _supervise_write_worker(self) -> None:
+        """Restart the write worker if its task died or holds one row too long.
+
+        The worker's own loop survives ordinary exceptions; this covers the
+        task ending anyway and a claim older than MEMORY_WRITE_WORKER_STALL_S,
+        where the per-row timeout evidently did not fire. The cancelled
+        worker's row stays 'processing'; the new worker's startup reset
+        returns it to pending.
+        """
+        if not self._write_queue_running:
+            return
+        task = self._write_worker_task
+        reason = None
+        if task is None or task.done():
+            reason = "worker task ended"
+        elif self._write_inflight is not None:
+            held = time.monotonic() - self._write_inflight[1]
+            if held > MEMORY_WRITE_WORKER_STALL_S:
+                reason = f"row {self._write_inflight[0]} held {held:.0f}s"
+                task.cancel()
+        if reason is None:
+            return
+        logger.error("memory_write_worker supervisor: %s — restarting worker", reason)
+        self._write_inflight = None
+        self._write_worker_task = asyncio.create_task(self._memory_write_worker())
+        self._tasks.append(self._write_worker_task)
 
     async def _run_periodic_llm(
         self, name: str, job, interval_seconds: float, initial_delay: float,
