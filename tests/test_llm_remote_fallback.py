@@ -350,6 +350,15 @@ def test_night_window_uses_configured_timezone(monkeypatch, utc_hour, expect_nig
     assert llm_mod._in_night_window(utc_time) is expect_night
 
 
+def test_night_window_disabled_on_unknown_timezone(monkeypatch):
+    """A typo'd night_window_tz must disable the window, not raise —
+    malformed config should cost throughput, never correctness, same as
+    every other malformed-spec path in this module."""
+    monkeypatch.setattr(settings, "night_window", "02-06")
+    monkeypatch.setattr(settings, "night_window_tz", "Europe/Bärlin")
+    assert llm_mod._in_night_window() is False
+
+
 def test_split_keeps_batch_local_during_night_window(monkeypatch, remote_on):
     """At night the GPU is idle — batch should use it instead of the remote."""
     monkeypatch.setattr(settings, "llm_remote_mode", "split")

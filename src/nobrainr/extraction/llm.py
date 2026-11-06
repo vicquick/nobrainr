@@ -656,9 +656,16 @@ def _in_night_window(now: _dt.datetime | None = None) -> bool:
     before use; a naive ``now`` is trusted as already being the right
     local hour.
     """
-    from zoneinfo import ZoneInfo
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-    tz = ZoneInfo(settings.night_window_tz)
+    try:
+        tz = ZoneInfo(settings.night_window_tz)
+    except (ZoneInfoNotFoundError, ValueError):
+        logger.warning(
+            "night_window_tz=%r is not a known timezone — ignoring the window",
+            settings.night_window_tz,
+        )
+        return False
     if now is None:
         now = _dt.datetime.now(tz)
     elif now.tzinfo is not None:
