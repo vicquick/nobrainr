@@ -298,6 +298,31 @@ def test_local_batch_window_boundaries(monkeypatch, window, hour, expect_local):
     assert llm_mod._in_local_batch_window(when) is expect_local
 
 
+@pytest.mark.parametrize(
+    "window,hour,expect_night",
+    [
+        ("02-06", 2, True),     # window start, inclusive
+        ("02-06", 5, True),     # last hour inside
+        ("02-06", 6, False),    # window end, exclusive
+        ("02-06", 1, False),    # just before
+        ("02-06", 12, False),   # daytime
+        ("23-07", 0, True),     # wraps midnight
+        ("", 3, False),         # disabled (default — night_window unset)
+    ],
+)
+def test_night_window_boundaries(monkeypatch, window, hour, expect_night):
+    """fact_extraction/key_expansion's bigger-batch/shorter-interval night
+    rate (ceo decision 2026-11-06, W18 backlog follow-up) is independent of
+    llm_local_batch_hours — it's about job cadence, not which LLM leg a
+    call takes. Reuses the same HH-HH parser, so boundary behavior mirrors
+    test_local_batch_window_boundaries above."""
+    import datetime as dt
+
+    monkeypatch.setattr(settings, "night_window", window)
+    when = dt.datetime(2026, 11, 6, hour, 30)
+    assert llm_mod._in_night_window(when) is expect_night
+
+
 def test_split_keeps_batch_local_during_night_window(monkeypatch, remote_on):
     """At night the GPU is idle — batch should use it instead of the remote."""
     monkeypatch.setattr(settings, "llm_remote_mode", "split")

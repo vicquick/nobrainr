@@ -606,34 +606,50 @@ async def _remote_rate_gate() -> None:
         await asyncio.sleep(wait)
 
 
-def _in_local_batch_window(now: _dt.datetime | None = None) -> bool:
-    """True when split mode should keep batch work on the local GPU.
+def _in_hour_window(spec: str, now: _dt.datetime | None = None) -> bool:
+    """True when ``now`` (server local time) falls inside an "HH-HH" window.
 
-    Window is ``settings.llm_local_batch_hours`` as "HH-HH" in server local
-    time and may wrap midnight ("23-07"). A malformed value disables the
-    window rather than failing the call — an unparseable config should cost
-    throughput, never correctness.
+    May wrap midnight ("23-07"). A malformed value disables the window
+    rather than failing the call — an unparseable config should cost
+    throughput, never correctness. Shared by every HH-HH-windowed setting
+    (``llm_local_batch_hours``, ``night_window``, ...).
     """
-    spec = (settings.llm_local_batch_hours or "").strip()
+    spec = (spec or "").strip()
     if not spec:
         return False
     try:
         start_raw, end_raw = spec.split("-", 1)
         start, end = int(start_raw), int(end_raw)
     except ValueError:
-        logger.warning(
-            "llm_local_batch_hours=%r is not 'HH-HH' — ignoring the window", spec
-        )
+        logger.warning("hour window %r is not 'HH-HH' — ignoring the window", spec)
         return False
     if not (0 <= start <= 23 and 0 <= end <= 23) or start == end:
-        logger.warning(
-            "llm_local_batch_hours=%r is not a usable range — ignoring", spec
-        )
+        logger.warning("hour window %r is not a usable range — ignoring", spec)
         return False
     hour = (now or _dt.datetime.now()).hour
     if start < end:
         return start <= hour < end
     return hour >= start or hour < end  # wraps midnight
+
+
+def _in_local_batch_window(now: _dt.datetime | None = None) -> bool:
+    """True when split mode should keep batch work on the local GPU.
+
+    Window is ``settings.llm_local_batch_hours`` as "HH-HH" in server local
+    time and may wrap midnight ("23-07").
+    """
+    return _in_hour_window(settings.llm_local_batch_hours, now)
+
+
+def _in_night_window(now: _dt.datetime | None = None) -> bool:
+    """True inside ``settings.night_window`` ("HH-HH", server local time).
+
+    Used by jobs that run a bigger batch / shorter interval only at night
+    (fact_extraction, key_expansion) — see ceo decision 2026-11-06, W18
+    backlog follow-up. Independent of ``llm_local_batch_hours``: this is
+    about job cadence, not which LLM leg (local/remote) a call takes.
+    """
+    return _in_hour_window(settings.night_window, now)
 
 
 def _split_prefers_remote(caller_kind: str) -> bool:
