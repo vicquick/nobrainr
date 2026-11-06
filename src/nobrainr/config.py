@@ -421,6 +421,14 @@ class Settings(BaseSettings):
     # get their turn. Total throughput similar since the fairness yield
     # sleeps only 5s between batches when backlog exists.
     fact_extraction_batch_size: int = 200
+    # Off-peak window overrides: bigger batch + shorter interval only
+    # inside settings.night_window ("HH-HH", settings.night_window_tz) —
+    # daytime values above stay untouched outside the window. Defaults
+    # equal the daytime values, so leaving night_window unset is a no-op.
+    night_window: str = ""
+    night_window_tz: str = "Europe/Berlin"
+    fact_extraction_batch_size_night: int = 200
+    fact_extraction_interval_hours_night: float = 0.05
     # Memory decay
     decay_interval_hours: float = 24.0
     decay_batch_size: int = 50
@@ -440,6 +448,9 @@ class Settings(BaseSettings):
     # Fact-augmented key expansion (LongMemEval pattern)
     key_expansion_interval_hours: float = 0.5
     key_expansion_batch_size: int = 30
+    # Night-window overrides — see night_window / fact_extraction_*_night above.
+    key_expansion_batch_size_night: int = 30
+    key_expansion_interval_hours_night: float = 0.5
     # Knowledge crawl
     knowledge_crawl_enabled: bool = True
     knowledge_crawl_interval_hours: float = 3.0
