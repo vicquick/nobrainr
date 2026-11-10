@@ -108,6 +108,15 @@ def test_unknown_api_path_is_a_json_404():
         assert c.post("/api/auch/nicht", json={}).status_code == 404
 
 
+def test_wrong_method_on_a_known_path_stays_a_405():
+    with _client() as c:
+        a = c.get("/api/chat")
+        assert a.status_code == 405
+        assert a.json() == {"error": "Method GET not allowed", "allowed": ["POST"]}
+        assert a.headers["allow"] == "POST"
+        assert c.delete("/api/stats").status_code == 405
+
+
 def test_unexpected_error_is_a_json_500_without_details(monkeypatch):
     from nobrainr.dashboard import api
 

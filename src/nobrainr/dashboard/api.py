@@ -3280,7 +3280,22 @@ async def api_index(request: Request) -> JSONResponse:
 
 
 async def api_not_found(request: Request) -> JSONResponse:
-    """Unknown /api path: a JSON 404 like every other error here (it used to fall through to the MCP app's plain-text 404)."""
+    """Unknown /api path: a JSON 404 like every other error here (it used to fall through to the MCP app's plain-text 404).
+
+    This route catches everything nothing else took, so a known path asked
+    with the wrong method lands here too; that stays a 405 with the methods
+    that do exist.
+    """
+    from starlette.routing import Match
+
+    erlaubt: set[str] = set()
+    for route in api_routes:
+        if route.path != _UNBEKANNT_PFAD and route.matches(request.scope)[0] == Match.PARTIAL:
+            erlaubt |= (route.methods or set()) - {"HEAD"}
+    if erlaubt:
+        methoden = sorted(erlaubt)
+        return JSONResponse({"error": f"Method {request.method} not allowed", "allowed": methoden},
+                            status_code=405, headers={"Allow": ", ".join(methoden)})
     return JSONResponse({"error": f"No such route: {request.url.path}", "index": "/api"}, status_code=404)
 
 
