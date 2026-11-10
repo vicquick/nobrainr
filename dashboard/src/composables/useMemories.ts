@@ -23,6 +23,9 @@ export function useMemories() {
   const machines = ref<string[]>([])
   const tags = ref<{ tag: string; cnt: number }[]>([])
   const lastParams = ref<Record<string, string | number>>({})
+  // True while full-text matches are on screen and the full search (embedding,
+  // fusion, reranker) is still running; its answer replaces them.
+  const refining = ref(false)
 
   // Two things used to go wrong here (measured 2026-11-10):
   // - the view's onMounted sets the filters from the URL (which fires the
@@ -40,6 +43,24 @@ export function useMemories() {
     loading.value = true
     lastParams.value = p
     const nr = ++folge
+    refining.value = false
+    let offen = true
+    if (p.q) {
+      // A text search takes 1-3s, up to 11s on a busy GPU. The text index
+      // answers the same question in well under a second: show that list at
+      // once, let the full answer replace it. A backend without the preview
+      // route answers 404 and nothing changes.
+      api
+        .get<Memory[]>('/api/search/preview', { params: { ...p, limit: PAGE_SIZE } })
+        .then(({ data }) => {
+          if (nr !== folge || !offen || !Array.isArray(data) || data.length === 0) return
+          memories.value = data
+          hasMore.value = false
+          loading.value = false
+          refining.value = true
+        })
+        .catch(() => {})
+    }
     const promise: Promise<void> = api
       .get<Memory[]>('/api/memories', { params: { ...p, limit: PAGE_SIZE, offset: 0 } })
       .then(({ data }) => {
@@ -48,7 +69,11 @@ export function useMemories() {
         hasMore.value = data.length === PAGE_SIZE
       })
       .finally(() => {
-        if (nr === folge) loading.value = false
+        offen = false
+        if (nr === folge) {
+          loading.value = false
+          refining.value = false
+        }
         if (laufend && laufend.promise === promise) laufend = null
       })
     laufend = { key, promise }
@@ -134,6 +159,7 @@ export function useMemories() {
     selectedEntities,
     selectedFacts,
     loading,
+    refining,
     loadingMore,
     hasMore,
     detailLoading,
