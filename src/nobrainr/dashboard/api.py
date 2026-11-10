@@ -41,6 +41,46 @@ def _valid_uuid(value: str) -> bool:
         return False
 
 
+class BadParam(ValueError):
+    """A query parameter that cannot be read. Answered as 400 {"error": ...}."""
+
+
+def _int_param(request: Request, name: str, default: int, *, lo: int | None = None, hi: int | None = None) -> int:
+    """Whole-number query parameter, clamped to [lo, hi]. Garbage is a 400, not a 500."""
+    roh = request.query_params.get(name)
+    if roh is None or roh.strip() == "":
+        wert = default
+    else:
+        try:
+            wert = int(roh)
+        except ValueError:
+            raise BadParam(f"Invalid {name}: expected a whole number") from None
+    if lo is not None:
+        wert = max(lo, wert)
+    if hi is not None:
+        wert = min(hi, wert)
+    return wert
+
+
+def _float_param(request: Request, name: str, default: float, *, lo: float | None = None, hi: float | None = None) -> float:
+    """Numeric query parameter, clamped to [lo, hi]. Garbage (and NaN) is a 400."""
+    roh = request.query_params.get(name)
+    if roh is None or roh.strip() == "":
+        wert = default
+    else:
+        try:
+            wert = float(roh)
+        except ValueError:
+            raise BadParam(f"Invalid {name}: expected a number") from None
+        if wert != wert:  # NaN compares unequal to itself
+            raise BadParam(f"Invalid {name}: expected a number")
+    if lo is not None:
+        wert = max(lo, wert)
+    if hi is not None:
+        wert = min(hi, wert)
+    return wert
+
+
 async def _log_auto_negative_outcomes(
     results: list[dict], trace_id: str, query: str,
 ) -> None:
@@ -703,8 +743,8 @@ async def api_timeline(request: Request) -> JSONResponse:
     """
     category = request.query_params.get("category") or None
     source_machine = request.query_params.get("source_machine") or None
-    limit = min(int(request.query_params.get("limit", "100")), 500)
-    offset = max(int(request.query_params.get("offset", "0")), 0)
+    limit = _int_param(request, "limit", 100, hi=500)
+    offset = _int_param(request, "offset", 0, lo=0)
     include_queue = request.query_params.get("include_queue") in {"1", "true", "yes"}
 
     memories = await queries.get_timeline_memories(
@@ -954,7 +994,7 @@ async def api_smart_recall(request: Request) -> JSONResponse:
     q = request.query_params.get("q", "").strip()
     if not q:
         return JSONResponse([])
-    limit = min(int(request.query_params.get("limit", "5")), 20)
+    limit = _int_param(request, "limit", 5, hi=20)
     try:
         embedding = await embed_text(q)
     except Exception:
@@ -983,10 +1023,10 @@ async def api_brief(request: Request) -> JSONResponse:
     q = request.query_params.get("q", "").strip()
     if not q:
         return JSONResponse({"cards": [], "memories": []})
-    n_cards = min(int(request.query_params.get("cards", "2")), 5)
-    n_mem = min(int(request.query_params.get("memories", "5")), 12)
-    trust_floor = float(request.query_params.get("trust_floor", "0.6"))
-    min_accuracy = float(request.query_params.get("min_accuracy", "0.5"))
+    n_cards = _int_param(request, "cards", 2, hi=5)
+    n_mem = _int_param(request, "memories", 5, hi=12)
+    trust_floor = _float_param(request, "trust_floor", 0.6)
+    min_accuracy = _float_param(request, "min_accuracy", 0.5)
 
     from nobrainr.db.pool import get_pool
     pool = await get_pool()
@@ -1251,7 +1291,7 @@ async def api_library_search(request: Request) -> JSONResponse:
     if not q:
         return JSONResponse({"hits": []})
     ref = request.query_params.get("ref", "").strip()
-    limit = min(int(request.query_params.get("limit", "8")), 20)
+    limit = _int_param(request, "limit", 8, hi=20)
 
     try:
         embedding = await embed_text(q)
@@ -2208,8 +2248,7 @@ async def api_galaxy(request: Request) -> JSONResponse:
 
     cache_ttl = 1800  # 30 minutes
     force = request.query_params.get("refresh", "").lower() == "true"
-    limit = int(request.query_params.get("limit", "10000"))
-    limit = min(limit, 50000)
+    limit = _int_param(request, "limit", 10000, hi=50000)
 
     if not force and os.path.exists(_GALAXY_CACHE_PATH):
         age = _time.time() - os.path.getmtime(_GALAXY_CACHE_PATH)
@@ -3199,3 +3238,86 @@ api_routes = [
     Route("/api/commonplace/search", api_commonplace_search),
     Route("/api/commonplace/{community_id}/memories", api_commonplace_memories),
 ]
+
+
+# --- API basics: health, index, uniform errors --------------------------------
+
+
+async def api_health(request: Request) -> JSONResponse:
+    """Liveness: is the process up and does the database answer?
+
+    One ``SELECT 1`` with a 2s limit — no counts, no locks. Made for polling
+    (dashboard connection check, container healthcheck, monitors); the
+    detailed signals are at /api/health/detailed. 503 when the database
+    does not answer.
+    """
+    from nobrainr.db.pool import get_pool
+
+    db = False
+    try:
+        pool = await asyncio.wait_for(get_pool(), timeout=2)
+        async with pool.acquire(timeout=2) as conn:
+            db = await conn.fetchval("SELECT 1", timeout=2) == 1
+    except Exception:
+        log.warning("health: database did not answer", exc_info=True)
+    return JSONResponse({"status": "ok" if db else "degraded", "db": db}, status_code=200 if db else 503)
+
+
+async def api_index(request: Request) -> JSONResponse:
+    """Every route of this API: path, methods, one-line description."""
+    eintraege = []
+    for route in api_routes:
+        if route.path in (_UNBEKANNT_PFAD, "/api/"):
+            continue
+        doc = (getattr(route.endpoint, "__doc__", None) or "").strip()
+        eintraege.append({
+            "path": route.path,
+            "methods": sorted((route.methods or set()) - {"HEAD"}),
+            "summary": doc.split("\n", 1)[0].strip(),
+        })
+    eintraege.sort(key=lambda e: (e["path"], e["methods"]))
+    return JSONResponse({"count": len(eintraege), "routes": eintraege})
+
+
+async def api_not_found(request: Request) -> JSONResponse:
+    """Unknown /api path: a JSON 404 like every other error here (it used to fall through to the MCP app's plain-text 404)."""
+    return JSONResponse({"error": f"No such route: {request.url.path}", "index": "/api"}, status_code=404)
+
+
+def _mit_json_fehlern(route: Route) -> Route:
+    """Same route, but its failures are JSON.
+
+    A bad parameter (BadParam) is a 400 with the reason. Anything unexpected
+    is logged with its traceback and answered as 500 {"error": ...}; it used
+    to be Starlette's plain-text "Internal Server Error", on which the
+    dashboard's ``response.json()`` threw a second, unrelated error.
+    Streaming answers are untouched: only what is raised before the response
+    object exists passes through here.
+    """
+    endpoint = route.endpoint
+
+    async def sicher(request: Request):
+        try:
+            return await endpoint(request)
+        except BadParam as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Unhandled error in %s %s", request.method, request.url.path)
+            return JSONResponse({"error": "Internal server error"}, status_code=500)
+
+    sicher.__name__ = getattr(endpoint, "__name__", "endpoint")
+    sicher.__doc__ = endpoint.__doc__
+    return Route(route.path, sicher, methods=sorted(route.methods) if route.methods else None, name=route.name)
+
+
+_UNBEKANNT_PFAD = "/api/{rest:path}"
+api_routes += [
+    Route("/api/health", api_health),
+    Route("/api", api_index),
+    Route("/api/", api_index),  # the dashboard's nginx only proxies paths under /api/
+]
+api_routes = [_mit_json_fehlern(r) for r in api_routes]
+# Last, so it only sees what nothing above matched.
+api_routes.append(Route(_UNBEKANNT_PFAD, api_not_found, methods=["GET", "POST", "PUT", "PATCH", "DELETE"]))
