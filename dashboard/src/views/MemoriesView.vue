@@ -113,6 +113,9 @@
             <div v-for="n in 6" :key="n" class="card-skeleton" />
           </template>
           <template v-else-if="memories.length">
+            <p v-if="refining" class="refining-note">
+              <Dotty /> <span>matches by the letter — weighing them by meaning</span>
+            </p>
             <div class="memories-stagger cp-stagger" style="display:contents">
               <MemoryCard
                 v-for="(m, i) in memories"
@@ -195,6 +198,7 @@ const {
   selectedEntities,
   selectedFacts,
   loading,
+  refining,
   loadingMore,
   hasMore,
   detailLoading,
@@ -725,6 +729,11 @@ onMounted(async () => {
 }
 .dotty { letter-spacing: 0.5em; color: var(--cp-gold-soft); }
 .loading-text { font-size: 13px; margin: 8px 0 0; letter-spacing: 0.05em; }
+.refining-note {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 0 10px; font-size: 12px; font-style: italic; letter-spacing: 0.04em;
+  font-family: Georgia, serif; color: var(--cp-ink-mute);
+}
 
 /* PAGE (right) — body scrolls on mobile, internal scroll on desktop */
 .florilegium-page-right {

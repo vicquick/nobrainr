@@ -39,11 +39,14 @@ def _json(antwort) -> object:
 
 def test_recall_uses_the_indexed_fts_expression():
     from nobrainr.dashboard import api
+    from nobrainr.db import queries
 
-    quelle = inspect.getsource(api.api_recall)
+    assert "queries.fts_memories(" in inspect.getsource(api.api_recall)
     ausdruck = ("to_tsvector('simple', nb_unaccent(content || ' ' || COALESCE(search_keys, '') "
                 "|| ' ' || COALESCE(fts_context, '')))")
-    assert quelle.count(ausdruck) == 2, "WHERE and ts_rank must both use the index expression"
+    assert queries._FTS_AUSDRUCK == ausdruck, "must be written exactly like idx_memories_content_fts"
+    quelle = inspect.getsource(queries.fts_memories)
+    assert quelle.count("{_FTS_AUSDRUCK}") == 2, "WHERE and ts_rank must both use the index expression"
     assert "plainto_tsquery('simple', nb_unaccent($1))" in quelle
     assert "'english'" not in quelle, "to_tsvector('english', content) has no index -> sequential scan"
 

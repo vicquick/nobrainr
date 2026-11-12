@@ -1075,50 +1075,70 @@ async def api_scheduler_task_runs(request: Request) -> JSONResponse:
 async def api_recall(request: Request) -> JSONResponse:
     """Fast text-only memory search (PostgreSQL full-text, no embedding call).
 
-    The predicate is written exactly like ``idx_memories_content_fts`` (and
-    like the FTS branch of ``queries.search_memories``): 'simple' config over
-    the unaccented content plus search keys and FTS context. Until 2026-11-09
-    this used the English text-search config on the bare content, which no index covers — every
-    call was a parallel sequential scan over all memories (10-15s on 147k rows).
-    All words must match (``plainto_tsquery``), as in the main search.
+    Until 2026-11-09 this used the English text-search config on the bare
+    content, which no index covers — every call was a sequential scan over all
+    memories (10-15s on 147k rows). It now runs ``queries.fts_memories``: the
+    predicate ``idx_memories_content_fts`` covers, all words must match, and
+    frequent words are ranked on a capped candidate set (see there).
+    Superseded, expired and cold memories are no longer returned.
     """
     q = request.query_params.get("q", "").strip()
     if not q:
         return JSONResponse([])
 
-    limit = min(int(request.query_params.get("limit", "5")), 100)
+    try:
+        limit = max(1, min(int(request.query_params.get("limit", "5")), 100))
+    except ValueError:
+        return JSONResponse({"error": "Invalid limit"}, status_code=400)
 
-    from nobrainr.db.pool import get_pool
+    results = await queries.fts_memories(q, limit=limit)
+    # Track access on recalled memories
+    if results:
+        from nobrainr.db.pool import get_pool
 
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT id, content, summary, source_type, source_machine, tags, category,
-                   confidence, metadata, created_at, updated_at, importance, stability,
-                   quality_score,
-                   ts_rank(
-                       to_tsvector('simple', nb_unaccent(content || ' ' || COALESCE(search_keys, '') || ' ' || COALESCE(fts_context, ''))),
-                       plainto_tsquery('simple', nb_unaccent($1))
-                   ) AS rank
-            FROM memories
-            WHERE to_tsvector('simple', nb_unaccent(content || ' ' || COALESCE(search_keys, '') || ' ' || COALESCE(fts_context, '')))
-                  @@ plainto_tsquery('simple', nb_unaccent($1))
-            ORDER BY rank DESC, importance DESC
-            LIMIT $2
-            """,
-            q,
-            limit,
-        )
-        results = [queries._row_to_dict(row) for row in rows]
-        # Track access on recalled memories
-        if results:
-            result_ids = [UUID(r["id"]) for r in results]
+        pool = await get_pool()
+        async with pool.acquire() as conn:
             await conn.execute(
                 "UPDATE memories SET last_accessed_at = now(), access_count = access_count + 1 WHERE id = ANY($1)",
-                result_ids,
+                [UUID(r["id"]) for r in results],
             )
-        return JSONResponse(results)
+    return JSONResponse(results)
+
+
+async def api_search_preview(request: Request) -> JSONResponse:
+    """Full-text results for the dashboard to show while the full search runs.
+
+    /api/memories?q= embeds the query, fuses five branches and reranks: 1-3s
+    on a quiet GPU, up to the 11s budget on a busy one. This answers the same
+    question from the text index alone, with the same filters, so the list is
+    on screen at once and the full answer replaces it when it arrives.
+
+    A preview is not a search: no access tracking, no trace id, no
+    auto-negative outcomes — nothing here may become training signal.
+    """
+    q = request.query_params.get("q", "").strip()
+    if not q:
+        return JSONResponse([])
+    category = request.query_params.get("category") or None
+    source_machine = request.query_params.get("source_machine") or None
+    tags_param = request.query_params.get("tags", "").strip()
+    tags = [t.strip() for t in tags_param.split(",") if t.strip()] if tags_param else None
+    try:
+        limit = max(1, min(int(request.query_params.get("limit", "50")), 200))
+    except ValueError:
+        return JSONResponse({"error": "Invalid limit"}, status_code=400)
+
+    memories = await queries.fts_memories(
+        q, limit=limit, tags=tags, category=category, source_machine=source_machine,
+    )
+    min_quality_param = request.query_params.get("min_quality", "").strip()
+    if min_quality_param:
+        try:
+            min_quality = max(0.0, min(1.0, float(min_quality_param)))
+            memories = [m for m in memories if (m.get("quality_score") or 0) >= min_quality]
+        except ValueError:
+            pass
+    return JSONResponse(memories)
 
 
 async def api_smart_recall(request: Request) -> JSONResponse:
@@ -3381,6 +3401,7 @@ api_routes = [
     Route("/api/scheduler/resume", api_scheduler_resume, methods=["POST"]),
     Route("/api/scheduler/task/{task_name}", api_scheduler_task_runs, methods=["GET"]),
     Route("/api/recall", api_recall),
+    Route("/api/search/preview", api_search_preview),
     Route("/api/smart-recall", api_smart_recall),
     Route("/api/brief", api_brief),
     Route("/api/library", api_library),
