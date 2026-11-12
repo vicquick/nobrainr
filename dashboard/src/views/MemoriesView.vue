@@ -92,7 +92,7 @@
                 @click="toggleTag(t.tag)"
               >
                 {{ t.tag }}
-                <em class="tag-facet-cnt">{{ t.cnt }}</em>
+                <em v-if="t.cnt !== null" class="tag-facet-cnt">{{ t.cnt }}</em>
               </button>
               <button
                 v-if="tags.length > TAG_FACET_LIMIT && !showAllTags"
@@ -113,6 +113,9 @@
             <div v-for="n in 6" :key="n" class="card-skeleton" />
           </template>
           <template v-else-if="memories.length">
+            <p v-if="refining" class="refining-note">
+              <Dotty /> <span>matches by the letter — weighing them by meaning</span>
+            </p>
             <div class="memories-stagger cp-stagger" style="display:contents">
               <MemoryCard
                 v-for="(m, i) in memories"
@@ -195,6 +198,7 @@ const {
   selectedEntities,
   selectedFacts,
   loading,
+  refining,
   loadingMore,
   hasMore,
   detailLoading,
@@ -240,7 +244,14 @@ const tagFacets = computed(() => {
   // Always pin currently-active tags to the top so a user can't lose
   // their selected facet behind a scroll. Then fill with the remaining
   // top-N by count up to TAG_FACET_LIMIT (or all tags when expanded).
-  const active = tags.value.filter(t => tagsFilter.value.has(t.tag))
+  // The tag list is only the most used tags now; a tag that is active via
+  // the URL (?tags=…) may not be in it. Such a tag still gets its chip, so
+  // the filter stays visible and can be switched off — without a count.
+  const bekannt = new Set(tags.value.map(t => t.tag))
+  const active: { tag: string; cnt: number | null }[] = [
+    ...tags.value.filter(t => tagsFilter.value.has(t.tag)),
+    ...Array.from(tagsFilter.value).filter(t => !bekannt.has(t)).map(tag => ({ tag, cnt: null })),
+  ]
   const inactive = tags.value.filter(t => !tagsFilter.value.has(t.tag))
   const limit = showAllTags.value ? tags.value.length : TAG_FACET_LIMIT
   const inactiveSlots = Math.max(0, limit - active.length)
@@ -718,6 +729,11 @@ onMounted(async () => {
 }
 .dotty { letter-spacing: 0.5em; color: var(--cp-gold-soft); }
 .loading-text { font-size: 13px; margin: 8px 0 0; letter-spacing: 0.05em; }
+.refining-note {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 0 10px; font-size: 12px; font-style: italic; letter-spacing: 0.04em;
+  font-family: Georgia, serif; color: var(--cp-ink-mute);
+}
 
 /* PAGE (right) — body scrolls on mobile, internal scroll on desktop */
 .florilegium-page-right {

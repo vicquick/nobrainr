@@ -837,7 +837,13 @@ async def fact_extraction() -> dict:
     from nobrainr.embeddings.ollama import embed_text
 
     pool = await get_pool()
-    batch_size = settings.fact_extraction_batch_size
+    from nobrainr.extraction.llm import _in_night_window
+
+    batch_size = (
+        settings.fact_extraction_batch_size_night
+        if _in_night_window()
+        else settings.fact_extraction_batch_size
+    )
 
     # Find memories without facts
     async with pool.acquire() as conn:
@@ -1470,8 +1476,15 @@ async def key_expansion() -> dict:
     from more query angles — directly addresses the ~30% recall miss rate
     from single-query retrieval.
     """
+    from nobrainr.extraction.llm import _in_night_window
+
     model = settings.scheduler_llm_model
     pool = await get_pool()
+    batch_size = (
+        settings.key_expansion_batch_size_night
+        if _in_night_window()
+        else settings.key_expansion_batch_size
+    )
 
     async with pool.acquire() as conn:
         batch = await conn.fetch(
@@ -1484,7 +1497,7 @@ async def key_expansion() -> dict:
             ORDER BY importance DESC, created_at DESC
             LIMIT $1
             """,
-            settings.key_expansion_batch_size,
+            batch_size,
         )
 
     if not batch:

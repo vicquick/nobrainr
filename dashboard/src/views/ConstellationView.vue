@@ -840,11 +840,24 @@ onUnmounted(() => { destroyed = true; teardown() })
 }
 .folio-link:hover { color: #e2bd7a; }
 
+/* Phone: the title, the stats line and the seek box used to share the top
+   corner and overlap, with no backdrop against the bright star field. The
+   plate becomes a shaded band across the top, the actions get finger-sized
+   hit areas, and the seek box moves to the bottom edge (left of the chat
+   button), with the folio above it. */
 @media (max-width: 640px) {
-  .plate { left: 16px; top: 14px; }
-  .seek { top: 14px; right: 16px; }
-  .seek-input { width: 130px; }
-  .forces { left: 16px; width: 216px; }
-  .folio { left: 16px; right: 16px; max-width: none; }
+  .plate {
+    left: 0; right: 0; top: 0; padding: 12px 16px 26px;
+    background: linear-gradient(rgba(10, 8, 5, 0.94), rgba(10, 8, 5, 0.88) 80%, rgba(10, 8, 5, 0));
+  }
+  .plate-title { font-size: 21px; margin-bottom: 2px; }
+  .plate-stats { font-size: 12.5px; line-height: 1.2; }
+  .plate-act { display: inline-block; padding: 9px 3px; }
+  .sep { margin: 0 4px; }
+  .tier-opt { margin-right: 4px; }
+  .seek { top: auto; bottom: 18px; left: 16px; right: 84px; }
+  .seek-input { width: 100%; padding: 10px 12px; font-size: 14px; }
+  .forces { left: 16px; top: 132px; width: min(248px, calc(100vw - 32px)); }
+  .folio { left: 16px; right: 16px; bottom: 72px; max-width: none; }
 }
 </style>
