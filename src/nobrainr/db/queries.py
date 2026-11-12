@@ -3859,11 +3859,28 @@ async def get_categories() -> list[str]:
         return [r["category"] for r in rows]
 
 
-async def get_all_tags() -> list[dict]:
+async def get_all_tags(limit: int | None = None, q: str | None = None) -> list[dict]:
+    """Tags with their usage count, most used first.
+
+    ``limit`` caps the list (None = all), ``q`` keeps tags containing that text
+    (case-insensitive; ``%`` and ``_`` are matched literally).
+    """
+    muster = None
+    if q:
+        muster = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT unnest(tags) as tag, count(*) as cnt FROM memories GROUP BY tag ORDER BY cnt DESC"
+            """
+            SELECT tag, count(*) AS cnt
+            FROM (SELECT unnest(tags) AS tag FROM memories) t
+            WHERE $1::text IS NULL OR tag ILIKE $1
+            GROUP BY tag
+            ORDER BY cnt DESC, tag
+            LIMIT $2
+            """,
+            muster,
+            limit,
         )
         return [dict(r) for r in rows]
 

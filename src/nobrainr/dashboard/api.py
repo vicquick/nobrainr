@@ -98,6 +98,32 @@ async def _log_auto_negative_outcomes(
 
 
 _GRAPH_CACHE_PATH = "/app/graph_cache/graph.json"
+_graph_erneuerung: asyncio.Task | None = None
+
+
+def _datei_bytes(pfad: str) -> bytes:
+    with open(pfad, "rb") as f:
+        return f.read()
+
+
+def _graph_im_hintergrund_erneuern() -> None:
+    """Recompute the graph layout without making a request wait for it.
+
+    At most one refresh at a time; a failure leaves the old cache in place.
+    """
+    global _graph_erneuerung
+    if _graph_erneuerung is not None and not _graph_erneuerung.done():
+        return
+
+    async def _lauf() -> None:
+        try:
+            scope = {"type": "http", "method": "GET", "path": "/api/graph",
+                     "query_string": b"refresh=true", "headers": []}
+            await api_graph(Request(scope))
+        except Exception:
+            log.warning("Background graph refresh failed; keeping the old cache", exc_info=True)
+
+    _graph_erneuerung = asyncio.create_task(_lauf())
 
 
 async def api_graph(request: Request) -> JSONResponse:
@@ -106,19 +132,25 @@ async def api_graph(request: Request) -> JSONResponse:
     import os
     import time as _time
 
-    # Serve from cache if available and not stale (max 24h)
+    # Serve from cache whenever there is one. A cache older than 24h is still
+    # served — the layout takes about a minute to compute (measured 60s on
+    # 2026-11-09) and the dashboard used to sit on a blank graph for that
+    # long. The refresh then runs in the background (stale-while-revalidate,
+    # same idea as /api/galaxy). The file is sent as bytes: parsing 12 MB of
+    # JSON just to serialise it again cost ~0.5s of event-loop time per call.
     force_refresh = request.query_params.get("refresh", "").lower() == "true"
     if not force_refresh and os.path.exists(_GRAPH_CACHE_PATH):
         cache_age = _time.time() - os.path.getmtime(_GRAPH_CACHE_PATH)
-        if cache_age < 86400:  # 24 hours max
-            try:
-                with open(_GRAPH_CACHE_PATH, "r") as f:
-                    import json
-                    cached = json.load(f)
-                log.info("Serving graph from cache (%.0fs old, %d nodes)", cache_age, len(cached.get("nodes", [])))
-                return JSONResponse(cached)
-            except Exception:
-                pass  # cache corrupt, fall through to recompute
+        try:
+            roh = await asyncio.to_thread(_datei_bytes, _GRAPH_CACHE_PATH)
+            if roh[:1] == b"{" and roh.rstrip()[-1:] == b"}":
+                if cache_age >= 86400:
+                    _graph_im_hintergrund_erneuern()
+                log.info("Serving graph from cache (%.0fs old, %d bytes)", cache_age, len(roh))
+                return Response(content=roh, media_type="application/json",
+                                headers={"X-Cache-Age": str(int(cache_age))})
+        except Exception:
+            pass  # cache unreadable, fall through to recompute
 
     log.info("Computing graph layout (no cache or refresh requested)...")
     t0 = _time.monotonic()
@@ -212,7 +244,6 @@ async def api_graph(request: Request) -> JSONResponse:
     # CPU work that blocks for 10+ minutes on the full graph — push them off
     # the event loop so the ASGI worker can keep serving requests during
     # startup warmup and manual refreshes.
-    import asyncio
     from nobrainr.layout import compute_graph_layout
 
     layout = await asyncio.to_thread(
@@ -528,6 +559,39 @@ async def api_graph_communities(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+# Time budgets for the interactive dashboard search. The embedding and the
+# reranker share one GPU with the scheduler and the chat model; measured on
+# 2026-11-09 the same query took 3s and then 49s. A person typing into a
+# search box is better served by the fused vector+FTS order now than by the
+# reranked order in a minute, so both steps give up after a few seconds:
+# no embedding -> FTS only, no rerank -> keep the RRF order.
+_SUCHE_EMBED_BUDGET_S = 5.0
+_SUCHE_RERANK_BUDGET_S = 6.0
+_SUCHE_RERANK_KOPF = 20  # only the head of the list is worth a cross-encoder pass
+
+
+async def _rerank_im_budget(q: str, memories: list[dict], limit: int) -> list[dict]:
+    """Rerank the first ``_SUCHE_RERANK_KOPF`` results within the time budget.
+
+    The tail keeps its order behind the reranked head. On timeout or error the
+    list comes back unchanged.
+    """
+    from nobrainr.services.reranker import rerank
+
+    kopf, rest = memories[:_SUCHE_RERANK_KOPF], memories[_SUCHE_RERANK_KOPF:]
+    try:
+        kopf = await asyncio.wait_for(
+            rerank(q, kopf, limit=min(limit, len(kopf))), timeout=_SUCHE_RERANK_BUDGET_S
+        )
+    except TimeoutError:
+        log.warning("Reranker exceeded %.0fs in dashboard search; returning fused order", _SUCHE_RERANK_BUDGET_S)
+        return memories
+    except Exception:
+        log.exception("Reranker failed in dashboard search; returning unranked")
+        return memories
+    return (kopf + rest)[:limit]
+
+
 async def api_memories(request: Request) -> JSONResponse:
     """Search/list memories."""
     q = request.query_params.get("q", "").strip()
@@ -554,7 +618,7 @@ async def api_memories(request: Request) -> JSONResponse:
         # fall back to FTS-only rather than blocking the UI for 50s+.
         embedding: list[float] | None = None
         try:
-            embedding = await embed_text_with_timeout(q, timeout_s=15.0)
+            embedding = await embed_text_with_timeout(q, timeout_s=_SUCHE_EMBED_BUDGET_S)
         except EmbedTimeout:
             log.warning("embed_text timed out for dashboard search — using FTS fallback")
         except Exception:
@@ -584,11 +648,7 @@ async def api_memories(request: Request) -> JSONResponse:
         if min_quality is not None:
             memories = [m for m in memories if (m.get("quality_score") or 0) >= min_quality]
         if memories and settings.reranker_enabled and embedding is not None:
-            try:
-                from nobrainr.services.reranker import rerank
-                memories = await rerank(q, memories, limit=limit)
-            except Exception:
-                log.exception("Reranker failed in dashboard search; returning unranked")
+            memories = await _rerank_im_budget(q, memories, limit)
 
         # Attach trace fields so feedback can close the loop. Caller posts
         # back search_trace_id + search_rank when marking a result useful or
@@ -750,11 +810,32 @@ async def api_node_detail(request: Request) -> JSONResponse:
     })
 
 
+# /api/stats runs ~15 count queries (1.8-2.3s measured on 2026-11-09) and is
+# polled by the container healthcheck, status lines and every open dashboard
+# (151 calls/hour). The numbers do not change meaningfully within half a
+# minute, so one computation serves all callers in that window.
+_STATS_TTL_S = 30.0
+_stats_cache: dict = {"ts": 0.0, "data": None}
+_stats_lock = asyncio.Lock()
+
+
 async def api_stats(request: Request) -> JSONResponse:
-    """Dashboard statistics including feedback and event counts."""
-    stats = await queries.get_stats()
-    feedback_stats = await queries.get_feedback_stats()
-    stats.update(feedback_stats)
+    """Dashboard statistics including feedback and event counts.
+
+    Cached for ``_STATS_TTL_S`` seconds; ``?refresh=true`` bypasses the cache.
+    """
+    frisch = request.query_params.get("refresh", "").lower() == "true"
+    if not frisch and _stats_cache["data"] is not None and time.monotonic() - _stats_cache["ts"] < _STATS_TTL_S:
+        return JSONResponse(_stats_cache["data"])
+    async with _stats_lock:
+        # A second caller that waited for the lock finds the fresh value.
+        if not frisch and _stats_cache["data"] is not None and time.monotonic() - _stats_cache["ts"] < _STATS_TTL_S:
+            return JSONResponse(_stats_cache["data"])
+        stats = await queries.get_stats()
+        feedback_stats = await queries.get_feedback_stats()
+        stats.update(feedback_stats)
+        _stats_cache["data"] = stats
+        _stats_cache["ts"] = time.monotonic()
     return JSONResponse(stats)
 
 
@@ -908,7 +989,12 @@ async def api_scheduler_task_runs(request: Request) -> JSONResponse:
 async def api_recall(request: Request) -> JSONResponse:
     """Fast text-only memory search (PostgreSQL full-text, no embedding call).
 
-    Uses OR semantics so any matching word returns results, ranked by relevance.
+    The predicate is written exactly like ``idx_memories_content_fts`` (and
+    like the FTS branch of ``queries.search_memories``): 'simple' config over
+    the unaccented content plus search keys and FTS context. Until 2026-11-09
+    this used the English text-search config on the bare content, which no index covers — every
+    call was a parallel sequential scan over all memories (10-15s on 147k rows).
+    All words must match (``plainto_tsquery``), as in the main search.
     """
     q = request.query_params.get("q", "").strip()
     if not q:
@@ -925,9 +1011,13 @@ async def api_recall(request: Request) -> JSONResponse:
             SELECT id, content, summary, source_type, source_machine, tags, category,
                    confidence, metadata, created_at, updated_at, importance, stability,
                    quality_score,
-                   ts_rank(to_tsvector('english', content), websearch_to_tsquery('english', $1)) AS rank
+                   ts_rank(
+                       to_tsvector('simple', nb_unaccent(content || ' ' || COALESCE(search_keys, '') || ' ' || COALESCE(fts_context, ''))),
+                       plainto_tsquery('simple', nb_unaccent($1))
+                   ) AS rank
             FROM memories
-            WHERE to_tsvector('english', content) @@ websearch_to_tsquery('english', $1)
+            WHERE to_tsvector('simple', nb_unaccent(content || ' ' || COALESCE(search_keys, '') || ' ' || COALESCE(fts_context, '')))
+                  @@ plainto_tsquery('simple', nb_unaccent($1))
             ORDER BY rank DESC, importance DESC
             LIMIT $2
             """,
@@ -1578,9 +1668,35 @@ async def api_categories(request: Request) -> JSONResponse:
     return JSONResponse(categories)
 
 
+# The full tag list is ~1.4 MB (every per-message routing tag counts as a tag)
+# and took 1-4s; a filter dropdown needs the common ones and a way to find the
+# rest. Default: the 2000 most used. ``q`` searches all tags by substring,
+# ``limit=0`` returns everything (old behaviour).
+_TAGS_STANDARD = 2000
+_TAGS_TTL_S = 60.0
+_tags_cache: dict = {}
+
+
 async def api_tags(request: Request) -> JSONResponse:
-    """Unique tags for filter dropdowns."""
-    tags = await queries.get_all_tags()
+    """Tags with usage counts for filter dropdowns, most used first.
+
+    Query params: ``limit`` (default 2000, 0 = all), ``q`` (substring search).
+    """
+    q = request.query_params.get("q", "").strip() or None
+    try:
+        limit = int(request.query_params.get("limit", str(_TAGS_STANDARD)))
+    except ValueError:
+        return JSONResponse({"error": "Invalid limit"}, status_code=400)
+    limit = None if limit <= 0 else min(limit, 50000)
+
+    schluessel = (q, limit)
+    treffer = _tags_cache.get(schluessel)
+    if treffer is not None and time.monotonic() - treffer[0] < _TAGS_TTL_S:
+        return JSONResponse(treffer[1])
+    tags = await queries.get_all_tags(limit=limit, q=q)
+    if len(_tags_cache) > 64:
+        _tags_cache.clear()
+    _tags_cache[schluessel] = (time.monotonic(), tags)
     return JSONResponse(tags)
 
 
