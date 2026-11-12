@@ -298,6 +298,67 @@ def test_local_batch_window_boundaries(monkeypatch, window, hour, expect_local):
     assert llm_mod._in_local_batch_window(when) is expect_local
 
 
+@pytest.mark.parametrize(
+    "window,hour,expect_night",
+    [
+        ("02-06", 2, True),     # window start, inclusive
+        ("02-06", 5, True),     # last hour inside
+        ("02-06", 6, False),    # window end, exclusive
+        ("02-06", 1, False),    # just before
+        ("02-06", 12, False),   # daytime
+        ("23-07", 0, True),     # wraps midnight
+        ("", 3, False),         # disabled (default — night_window unset)
+    ],
+)
+def test_night_window_boundaries(monkeypatch, window, hour, expect_night):
+    """Off-peak batch/interval boost is independent of llm_local_batch_hours
+    — it's about job cadence, not which LLM leg a call takes. Reuses the
+    same HH-HH parser, so boundary behavior mirrors
+    test_local_batch_window_boundaries above. ``when`` here is passed in
+    explicitly (bypassing the timezone conversion), so this table only
+    exercises the HH-HH parsing/boundary logic, not the tz handling —
+    see test_night_window_uses_configured_timezone for that."""
+    import datetime as dt
+
+    monkeypatch.setattr(settings, "night_window", window)
+    when = dt.datetime(2026, 11, 6, hour, 30)
+    assert llm_mod._in_night_window(when) is expect_night
+
+
+@pytest.mark.parametrize(
+    "utc_hour,expect_night",
+    [
+        (1, True),   # 01:30 UTC = 02:30 Berlin (winter, no DST) — inside "02-06"
+        (0, False),  # 00:30 UTC = 01:30 Berlin — just before the window
+        (4, True),   # 04:30 UTC = 05:30 Berlin — last hour inside
+        (5, False),  # 05:30 UTC = 06:30 Berlin — past the window
+    ],
+)
+def test_night_window_uses_configured_timezone(monkeypatch, utc_hour, expect_night):
+    """_in_night_window must localize to settings.night_window_tz, not
+    whatever timezone a passed-in ``now`` happens to carry — a container
+    running UTC must still land its window on Europe/Berlin wall-clock
+    hours. A tz-aware ``now`` (as real code gets from datetime.now(UTC) on
+    a UTC-configured container) is converted before the HH-HH check."""
+    from zoneinfo import ZoneInfo
+    import datetime as dt
+
+    monkeypatch.setattr(settings, "night_window", "02-06")
+    monkeypatch.setattr(settings, "night_window_tz", "Europe/Berlin")
+
+    utc_time = dt.datetime(2026, 11, 6, utc_hour, 30, tzinfo=ZoneInfo("UTC"))
+    assert llm_mod._in_night_window(utc_time) is expect_night
+
+
+def test_night_window_disabled_on_unknown_timezone(monkeypatch):
+    """A typo'd night_window_tz must disable the window, not raise —
+    malformed config should cost throughput, never correctness, same as
+    every other malformed-spec path in this module."""
+    monkeypatch.setattr(settings, "night_window", "02-06")
+    monkeypatch.setattr(settings, "night_window_tz", "Europe/Bärlin")
+    assert llm_mod._in_night_window() is False
+
+
 def test_split_keeps_batch_local_during_night_window(monkeypatch, remote_on):
     """At night the GPU is idle — batch should use it instead of the remote."""
     monkeypatch.setattr(settings, "llm_remote_mode", "split")

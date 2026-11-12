@@ -226,6 +226,21 @@ MEMORY_WRITE_WORKER_STALL_S = (
 )
 
 
+def _key_expansion_interval_seconds() -> float:
+    """Shorter interval inside settings.night_window — re-evaluated every
+    cycle by _run_periodic_llm, unlike the fixed-at-registration interval
+    every other LLM job uses.
+    """
+    from nobrainr.extraction.llm import _in_night_window
+
+    hours = (
+        settings.key_expansion_interval_hours_night
+        if _in_night_window()
+        else settings.key_expansion_interval_hours
+    )
+    return hours * 3600
+
+
 class Scheduler:
     """Asyncio-based periodic task runner for memory maintenance jobs."""
 
@@ -529,7 +544,7 @@ class Scheduler:
             ("quality_scoring", scheduler_jobs.quality_scoring,
              settings.quality_scoring_interval_hours * 3600),
             ("key_expansion", scheduler_jobs.key_expansion,
-             settings.key_expansion_interval_hours * 3600),
+             _key_expansion_interval_seconds),
             ("entity_web_research", scheduler_jobs.entity_web_research,
              settings.entity_research_interval_hours * 3600),
             ("freshness_recrawl", scheduler_jobs.freshness_recrawl,
@@ -908,9 +923,15 @@ class Scheduler:
         self._tasks.append(self._write_worker_task)
 
     async def _run_periodic_llm(
-        self, name: str, job, interval_seconds: float, initial_delay: float,
+        self, name: str, job, interval_seconds, initial_delay: float,
     ) -> None:
-        """Run an LLM job periodically with semaphore, timeout, and staggered start."""
+        """Run an LLM job periodically with semaphore, timeout, and staggered start.
+
+        ``interval_seconds`` is normally a fixed float, captured once at
+        registration. Pass a zero-arg callable instead when the interval
+        must change at runtime (e.g. a shorter night-window interval) —
+        it's called fresh every cycle rather than captured once.
+        """
         await asyncio.sleep(initial_delay)
         while self._running:
             # Soft-pause: when /api/scheduler/pause is called we skip
@@ -939,7 +960,9 @@ class Scheduler:
             # Fairness yield: after releasing semaphore, give other jobs a chance
             # to acquire it before this job's next sleep→acquire cycle
             await asyncio.sleep(5)
-            await asyncio.sleep(interval_seconds)
+            await asyncio.sleep(
+                interval_seconds() if callable(interval_seconds) else interval_seconds
+            )
 
     async def _run_extraction_loop(self) -> None:
         """Dedicated extraction loop that runs continuously while backlog exists.
@@ -950,8 +973,8 @@ class Scheduler:
         sleep when the queue is empty.
         """
         from nobrainr import scheduler_jobs
+        from nobrainr.extraction.llm import _in_night_window
         await asyncio.sleep(LLM_JOB_DELAYS.get("fact_extraction", 60))
-        idle_interval = settings.fact_extraction_interval_hours * 3600
         job_timeout = LLM_JOB_TIMEOUT_OVERRIDES.get("fact_extraction", LLM_JOB_TIMEOUT)
         while self._running:
             if self._llm_jobs_paused:
@@ -991,6 +1014,11 @@ class Scheduler:
                 logger.debug("fact_extraction: %d pending, looping immediately", pending)
                 # No interval sleep — grab semaphore again ASAP
             else:
+                idle_interval = (
+                    settings.fact_extraction_interval_hours_night
+                    if _in_night_window()
+                    else settings.fact_extraction_interval_hours
+                ) * 3600
                 logger.info("fact_extraction: backlog clear, sleeping %.0fs", idle_interval)
                 await asyncio.sleep(idle_interval)
 

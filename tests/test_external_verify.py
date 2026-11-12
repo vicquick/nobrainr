@@ -135,3 +135,25 @@ def test_machine_aliases_come_from_settings():
     with patch.object(settings, "machine_aliases", {"old-pc": "laptop"}):
         assert chatgpt._normalize_machine("old-pc") == "laptop"
     assert chatgpt._normalize_machine("old-pc") == "old-pc"
+
+
+async def test_searxng_empty_is_unverifiable_never_brave():
+    """27.10.2026: an empty SearXNG answer sent every claim to Brave."""
+    rows = [{"id": "m1", "text": "The Python requests library is deprecated"}]
+    pool, conn = _mock_pool(rows)
+    triage = {"claims": [{"i": 0, "checkable": True, "query": "python requests deprecated"}]}
+    brave = AsyncMock()
+    with (
+        patch.object(scheduler_jobs, "_ext_month_usage", AsyncMock(return_value=0)),
+        patch.object(scheduler_jobs, "get_pool", AsyncMock(return_value=pool)),
+        patch.object(scheduler_jobs, "_yield_to_live_requests", AsyncMock()),
+        patch.object(scheduler_jobs, "ollama_chat", AsyncMock(side_effect=[triage])),
+        patch("nobrainr.mcp.server._searxng_search_request", AsyncMock(return_value=[])),
+        patch("nobrainr.mcp.server._brave_search_request", brave),
+        patch("nobrainr.mcp.server._count_web_search_use", AsyncMock()) as counter,
+    ):
+        out = await scheduler_jobs.external_verify()
+    assert out["searched"] == 1
+    assert out["unverifiable"] >= 1
+    brave.assert_not_called()
+    counter.assert_not_called()
