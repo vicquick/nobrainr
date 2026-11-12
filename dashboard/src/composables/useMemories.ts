@@ -23,19 +23,61 @@ export function useMemories() {
   const machines = ref<string[]>([])
   const tags = ref<{ tag: string; cnt: number }[]>([])
   const lastParams = ref<Record<string, string | number>>({})
+  // True while full-text matches are on screen and the full search (embedding,
+  // fusion, reranker) is still running; its answer replaces them.
+  const refining = ref(false)
 
-  async function fetchMemories(params?: Record<string, string | number>) {
+  // Two things used to go wrong here (measured 2026-11-10):
+  // - the view's onMounted sets the filters from the URL (which fires the
+  //   filter watcher) and then searches itself: two identical requests.
+  //   Callers with the same parameters now share the request in flight.
+  // - a slow answer for an older query could arrive after a newer one and
+  //   overwrite its results. Only the most recent request may write.
+  let laufend: { key: string; promise: Promise<void> } | null = null
+  let folge = 0
+
+  function fetchMemories(params?: Record<string, string | number>): Promise<void> {
+    const p = params || {}
+    const key = JSON.stringify(p)
+    if (laufend && laufend.key === key) return laufend.promise
     loading.value = true
-    lastParams.value = params || {}
-    try {
-      const { data } = await api.get<Memory[]>('/api/memories', {
-        params: { ...params, limit: PAGE_SIZE, offset: 0 },
-      })
-      memories.value = data
-      hasMore.value = data.length === PAGE_SIZE
-    } finally {
-      loading.value = false
+    lastParams.value = p
+    const nr = ++folge
+    refining.value = false
+    let offen = true
+    if (p.q) {
+      // A text search takes 1-3s, up to 11s on a busy GPU. The text index
+      // answers the same question in well under a second: show that list at
+      // once, let the full answer replace it. A backend without the preview
+      // route answers 404 and nothing changes.
+      api
+        .get<Memory[]>('/api/search/preview', { params: { ...p, limit: PAGE_SIZE } })
+        .then(({ data }) => {
+          if (nr !== folge || !offen || !Array.isArray(data) || data.length === 0) return
+          memories.value = data
+          hasMore.value = false
+          loading.value = false
+          refining.value = true
+        })
+        .catch(() => {})
     }
+    const promise: Promise<void> = api
+      .get<Memory[]>('/api/memories', { params: { ...p, limit: PAGE_SIZE, offset: 0 } })
+      .then(({ data }) => {
+        if (nr !== folge) return
+        memories.value = data
+        hasMore.value = data.length === PAGE_SIZE
+      })
+      .finally(() => {
+        offen = false
+        if (nr === folge) {
+          loading.value = false
+          refining.value = false
+        }
+        if (laufend && laufend.promise === promise) laufend = null
+      })
+    laufend = { key, promise }
+    return promise
   }
 
   async function loadMore() {
@@ -91,9 +133,17 @@ export function useMemories() {
     categories.value = data
   }
 
+  // The facet row shows the most used tags (and "more" expands it). The full
+  // list is ~1.4 MB of mostly single-use routing tags and rendering it as
+  // chips is thousands of DOM nodes — ask for the head of the list only.
+  // (Older backends ignore `limit` and still answer with everything.)
+  const TAG_LIST_LIMIT = 300
+
   async function fetchTags() {
-    const { data } = await api.get<{ tag: string; cnt: number }[]>('/api/tags')
-    tags.value = data
+    const { data } = await api.get<{ tag: string; cnt: number }[]>('/api/tags', {
+      params: { limit: TAG_LIST_LIMIT },
+    })
+    tags.value = data.slice(0, TAG_LIST_LIMIT)
   }
 
   function fetchMachines() {
@@ -109,6 +159,7 @@ export function useMemories() {
     selectedEntities,
     selectedFacts,
     loading,
+    refining,
     loadingMore,
     hasMore,
     detailLoading,

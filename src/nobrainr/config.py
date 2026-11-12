@@ -189,7 +189,8 @@ class Settings(BaseSettings):
     # Brave primary again.
     searxng_url: str = "http://searxng-vd9auo3n7y2e8dcp9tlxcjju:8080"
 
-    # Brave Search API (web discovery FALLBACK when SearXNG errors/empty)
+    # Brave Search API (web discovery FALLBACK when SearXNG errors — an
+    # empty SearXNG result is an answer, not a reason to spend quota)
     brave_api_key: str = ""
     brave_search_url: str = "https://api.search.brave.com/res/v1/web/search"
     # Monthly query budget mirroring the Brave dashboard free-tier cap
@@ -198,6 +199,10 @@ class Settings(BaseSettings):
     # (usage is still counted for visibility). Only Brave calls count —
     # SearXNG queries are free and uncounted.
     brave_monthly_query_cap: int = 1000
+    # Hard per-day ceiling on Brave calls (web_search + external_verify),
+    # so one busy agent cannot burn the month in a morning (2026-10-27:
+    # ~150 queries in 40 min while SearXNG was healthy). 0 = no day cap.
+    brave_daily_query_cap: int = 40
 
     # Speaches (OpenAI-compatible whisper API)
     speaches_url: str = "http://speaches:8000"
@@ -421,6 +426,14 @@ class Settings(BaseSettings):
     # get their turn. Total throughput similar since the fairness yield
     # sleeps only 5s between batches when backlog exists.
     fact_extraction_batch_size: int = 200
+    # Off-peak window overrides: bigger batch + shorter interval only
+    # inside settings.night_window ("HH-HH", settings.night_window_tz) —
+    # daytime values above stay untouched outside the window. Defaults
+    # equal the daytime values, so leaving night_window unset is a no-op.
+    night_window: str = ""
+    night_window_tz: str = "Europe/Berlin"
+    fact_extraction_batch_size_night: int = 200
+    fact_extraction_interval_hours_night: float = 0.05
     # Memory decay
     decay_interval_hours: float = 24.0
     decay_batch_size: int = 50
@@ -440,6 +453,9 @@ class Settings(BaseSettings):
     # Fact-augmented key expansion (LongMemEval pattern)
     key_expansion_interval_hours: float = 0.5
     key_expansion_batch_size: int = 30
+    # Night-window overrides — see night_window / fact_extraction_*_night above.
+    key_expansion_batch_size_night: int = 30
+    key_expansion_interval_hours_night: float = 0.5
     # Knowledge crawl
     knowledge_crawl_enabled: bool = True
     knowledge_crawl_interval_hours: float = 3.0

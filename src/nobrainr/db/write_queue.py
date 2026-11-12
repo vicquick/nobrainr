@@ -350,7 +350,9 @@ async def enqueue_document_chunks(
     }
 
 
-async def reset_stale_processing(stale_minutes: int = 10) -> int:
+async def reset_stale_processing(
+    stale_minutes: int = 10, exclude_ids: list[str] | None = None,
+) -> int:
     """Reset orphan 'processing' rows whose worker died mid-task.
 
     When the nobrainr container is killed (Coolify redeploy, OOM, manual
@@ -376,6 +378,12 @@ async def reset_stale_processing(stale_minutes: int = 10) -> int:
     future multi-worker deployments; too lax would leave orphans sitting
     across container lifecycles. 10 minutes is the current compromise.
 
+    ``exclude_ids`` names rows a live worker still holds. The periodic
+    reaper passes the worker's in-flight row so a long GPU park is not
+    mistaken for an orphan (2026-10-30: row reset at 12 min while the
+    worker was still parked on it, then stored by that same worker at
+    19 min — a second worker would have processed it twice).
+
     Returns the number of rows reset.
     """
     pool = await get_pool()
@@ -388,8 +396,10 @@ async def reset_stale_processing(stale_minutes: int = 10) -> int:
             WHERE status = 'processing'
               AND started_at IS NOT NULL
               AND started_at < now() - ($1 || ' minutes')::interval
+              AND NOT (id::text = ANY($2::text[]))
             """,
             str(stale_minutes),
+            list(exclude_ids or []),
         )
     try:
         n = int(result.split()[-1])

@@ -376,6 +376,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { RouterLink } from 'vue-router'
 import api from '@/api/client'
+import { useStatsStore } from '@/stores/stats'
 import type { Stats } from '@/types'
 import Dotty from '@/components/Dotty.vue'
 
@@ -519,9 +520,19 @@ async function fetchHealth() {
   } catch { /* transient — next tick will retry */ }
 }
 
+// Stats come through the shared store: the first call joins the request the
+// store already started when it was created (this view used to ask a second
+// time), every poll after that forces a fresh one and keeps the store current
+// for the other views.
+const statsStore = useStatsStore()
+let ersterStatsAbruf = true
+
 async function fetchStats() {
   try {
-    const { data } = await api.get<Stats>('/api/stats')
+    await statsStore.fetchStats({ force: !ersterStatsAbruf })
+    ersterStatsAbruf = false
+    const data = statsStore.stats
+    if (!data) return
     const prevDone = lastDone.value
     const delta = prevDone !== null ? data.extraction_done - prevDone : 0
     lastDone.value = data.extraction_done

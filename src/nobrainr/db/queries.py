@@ -378,6 +378,59 @@ def _build_filter_clause(
     return clause, params, idx
 
 
+_FTS_AUSDRUCK = ("to_tsvector('simple', nb_unaccent(content || ' ' || COALESCE(search_keys, '') "
+                 "|| ' ' || COALESCE(fts_context, '')))")
+
+
+async def fts_memories(
+    text_query: str,
+    *,
+    limit: int = 50,
+    tags: list[str] | None = None,
+    category: str | None = None,
+    source_machine: str | None = None,
+) -> list[dict]:
+    """Full-text matches only: no embedding, no reranker, no graph branches.
+
+    For callers that must answer at once (the dashboard's search preview, the
+    command palette, hooks). Same predicate as ``idx_memories_content_fts``.
+
+    ``ts_rank`` has to rebuild the tsvector of every row it ranks — the index
+    stores it, the table does not. Ranking every match of a frequent word took
+    seconds (measured 2026-11-10: "bimavo", 34,193 matches, 5.1s; "der" 5.7s;
+    "docker" 1.0s). So the matches are first cut to the most important, most
+    recent ``candidates`` rows — that sort needs no tsvector — and only those
+    are ranked: 0.5s / 0.46s / 0.38s for the same words. A query with fewer
+    matches than ``candidates`` is ranked exactly as before.
+    """
+    candidates = max(limit * 4, 300)
+    extra, fparams, _ = _build_filter_clause(4, tags, category, None, source_machine)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT id, content, summary, source_type, source_machine, tags, category,
+                   confidence, metadata, created_at, updated_at, importance, stability,
+                   access_count, last_accessed_at, quality_score, embedding_model, tier, trust_score,
+                   verified_at, superseded_by, claim_kind,
+                   ts_rank({_FTS_AUSDRUCK}, plainto_tsquery('simple', nb_unaccent($1))) AS rank
+            FROM (
+                SELECT *
+                FROM memories
+                WHERE {_FTS_AUSDRUCK} @@ plainto_tsquery('simple', nb_unaccent($1))
+                  AND tier < 3 AND superseded_by IS NULL AND (valid_to IS NULL OR valid_to > now())
+                  {extra}
+                ORDER BY importance DESC, created_at DESC
+                LIMIT $3
+            ) AS kandidaten
+            ORDER BY rank DESC, importance DESC
+            LIMIT $2
+            """,
+            text_query, limit, candidates, *fparams,
+        )
+    return [_row_to_dict(row) for row in rows]
+
+
 async def _hybrid_search_rrf(
     pool,
     embedding,
@@ -3859,11 +3912,28 @@ async def get_categories() -> list[str]:
         return [r["category"] for r in rows]
 
 
-async def get_all_tags() -> list[dict]:
+async def get_all_tags(limit: int | None = None, q: str | None = None) -> list[dict]:
+    """Tags with their usage count, most used first.
+
+    ``limit`` caps the list (None = all), ``q`` keeps tags containing that text
+    (case-insensitive; ``%`` and ``_`` are matched literally).
+    """
+    muster = None
+    if q:
+        muster = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT unnest(tags) as tag, count(*) as cnt FROM memories GROUP BY tag ORDER BY cnt DESC"
+            """
+            SELECT tag, count(*) AS cnt
+            FROM (SELECT unnest(tags) AS tag FROM memories) t
+            WHERE $1::text IS NULL OR tag ILIKE $1
+            GROUP BY tag
+            ORDER BY cnt DESC, tag
+            LIMIT $2
+            """,
+            muster,
+            limit,
         )
         return [dict(r) for r in rows]
 
@@ -5242,3 +5312,100 @@ async def list_agent_presence(active_within_s: int = 300) -> list[dict]:
             active_within_s,
         )
         return [dict(r) for r in rows]
+
+
+async def fetch_agent_inbox(
+    agent: str,
+    *,
+    since: datetime | None = None,
+    thread_id: str | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    """Agent messages addressed to ``agent`` or 'all', newest first.
+
+    msg_wait only sees what arrives while someone listens; this is the
+    durable catch-up over the same agent-comm memories msg_send writes.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, summary, content, tags, created_at
+            FROM memories
+            WHERE category = 'agent-comm'
+              AND tags && $1::text[]
+              AND ($2::timestamptz IS NULL OR created_at > $2)
+              AND ($3::text IS NULL OR $3 = ANY(tags))
+            ORDER BY created_at DESC
+            LIMIT $4
+            """,
+            [f"to:{agent}", "to:all"],
+            since,
+            f"thread:{thread_id}" if thread_id else None,
+            limit,
+        )
+        return [dict(r) for r in rows]
+
+
+async def create_meeting(
+    question: str, moderator: str, participants: list[str], deadline_s: int,
+) -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO agent_meetings (question, moderator, participants, deadline)
+            VALUES ($1, $2, $3, now() + make_interval(secs => $4))
+            RETURNING *
+            """,
+            question, moderator[:80], [p[:80] for p in participants], deadline_s,
+        )
+        return dict(row)
+
+
+async def get_meeting(meeting_id: str) -> dict | None:
+    """Meeting row plus its answers (``answers``: list of dicts)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM agent_meetings WHERE id = $1::uuid", meeting_id,
+        )
+        if row is None:
+            return None
+        answers = await conn.fetch(
+            """
+            SELECT agent, answer, answered_at FROM agent_meeting_answers
+            WHERE meeting_id = $1::uuid ORDER BY answered_at
+            """,
+            meeting_id,
+        )
+        meeting = dict(row)
+        meeting["answers"] = [dict(a) for a in answers]
+        return meeting
+
+
+async def upsert_meeting_answer(meeting_id: str, agent: str, answer: str) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO agent_meeting_answers (meeting_id, agent, answer)
+            VALUES ($1::uuid, $2, $3)
+            ON CONFLICT (meeting_id, agent) DO UPDATE
+                SET answer = EXCLUDED.answer, answered_at = now()
+            """,
+            meeting_id, agent, answer,
+        )
+
+
+async def close_meeting(meeting_id: str, decision_ref: str | None) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE agent_meetings
+            SET status = 'closed', decision_ref = $2, closed_at = now()
+            WHERE id = $1::uuid
+            """,
+            meeting_id, decision_ref,
+        )

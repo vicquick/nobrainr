@@ -609,3 +609,136 @@ async def test_worker_failure_path_calls_mark_failed_with_retry():
     fail_kwargs = mark_failed_mock.await_args.kwargs
     assert "llama-server down" in fail_kwargs["error"]
     assert fail_kwargs["retry"] is True
+
+
+# ──────────────────────────────────────────────
+# Worker park routing + supervisor (2026-10-30)
+# ──────────────────────────────────────────────
+
+
+def _worker_row(content: str = "x") -> dict:
+    return {
+        "id": uuid4(), "content": content, "summary": None, "tags": None,
+        "category": None, "source_type": "manual", "source_machine": None,
+        "source_ref": None, "confidence": 1.0, "metadata": None,
+        "skip_dedup": False, "contextual_prefix": None, "attempts": 0,
+        "max_attempts": 3, "enqueued_at": _now_utc(),
+    }
+
+
+async def _run_one_row(scheduler, *, remote_mode: str, prefers_remote: bool):
+    scheduler._write_queue_running = True
+
+    async def _stop(*args, **kwargs):
+        scheduler._write_queue_running = False
+        return False
+
+    park_mock = AsyncMock()
+    with (
+        patch("nobrainr.db.write_queue.claim_next_pending",
+              AsyncMock(side_effect=[_worker_row(), None])),
+        patch("nobrainr.db.write_queue.mark_done", AsyncMock()),
+        patch("nobrainr.db.write_queue.mark_failed", AsyncMock()),
+        patch("nobrainr.db.write_queue.wait_for_pending", AsyncMock(side_effect=_stop)),
+        patch("nobrainr.db.write_queue.reset_stale_processing", AsyncMock(return_value=0)),
+        patch("nobrainr.services.memory.store_memory_with_extraction",
+              AsyncMock(return_value={"status": "stored", "id": "m"})),
+        patch("nobrainr.extraction.llm._wait_for_live_quiet", park_mock),
+        patch("nobrainr.extraction.llm._split_prefers_remote",
+              MagicMock(return_value=prefers_remote)),
+        patch("nobrainr.scheduler.settings.llm_remote_mode", remote_mode),
+    ):
+        await asyncio.wait_for(scheduler._memory_write_worker(), timeout=5.0)
+    return park_mock
+
+
+async def test_worker_skips_gpu_park_when_write_goes_remote():
+    """Split mode, batch → remote: no park for the local chat slot."""
+    from nobrainr.scheduler import Scheduler
+
+    park = await _run_one_row(Scheduler(), remote_mode="split", prefers_remote=True)
+    park.assert_not_awaited()
+
+
+async def test_worker_parks_when_write_runs_locally():
+    """Split mode in the local batch window, and fallback mode, still park."""
+    from nobrainr.scheduler import Scheduler
+
+    park = await _run_one_row(Scheduler(), remote_mode="split", prefers_remote=False)
+    park.assert_awaited_once_with("scheduler")
+    park = await _run_one_row(Scheduler(), remote_mode="fallback", prefers_remote=True)
+    park.assert_awaited_once_with("scheduler")
+
+
+async def test_reaper_excludes_inflight_row():
+    """The periodic reaper never frees the row the live worker holds."""
+    from nobrainr import scheduler as sched_mod
+
+    scheduler = sched_mod.Scheduler()
+    scheduler._running = True
+    scheduler._write_inflight = ("held-id", sched_mod.time.monotonic())
+    reset_mock = AsyncMock(return_value=0)
+
+    async def _stop_after_tick(_s):
+        if reset_mock.await_count:
+            scheduler._running = False
+
+    with (
+        patch("nobrainr.db.write_queue.reset_stale_processing", reset_mock),
+        patch.object(sched_mod.asyncio, "sleep", AsyncMock(side_effect=_stop_after_tick)),
+    ):
+        await scheduler._stale_processing_reaper()
+
+    assert reset_mock.await_args.kwargs["exclude_ids"] == ["held-id"]
+
+
+async def test_supervisor_restarts_dead_worker():
+    from nobrainr.scheduler import Scheduler
+
+    scheduler = Scheduler()
+    scheduler._write_queue_running = True
+    dead = asyncio.create_task(asyncio.sleep(0))
+    await dead
+    scheduler._write_worker_task = dead
+
+    with patch.object(Scheduler, "_memory_write_worker", AsyncMock()):
+        scheduler._supervise_write_worker()
+        new = scheduler._write_worker_task
+        assert new is not dead
+        await new
+    assert new in scheduler._tasks
+
+
+async def test_supervisor_cancels_wedged_worker():
+    from nobrainr import scheduler as sched_mod
+
+    scheduler = sched_mod.Scheduler()
+    scheduler._write_queue_running = True
+    wedged = asyncio.create_task(asyncio.sleep(3600))
+    scheduler._write_worker_task = wedged
+    scheduler._write_inflight = (
+        "stuck-id",
+        sched_mod.time.monotonic() - sched_mod.MEMORY_WRITE_WORKER_STALL_S - 1,
+    )
+
+    with patch.object(sched_mod.Scheduler, "_memory_write_worker", AsyncMock()):
+        scheduler._supervise_write_worker()
+        await scheduler._write_worker_task
+    with pytest.raises(asyncio.CancelledError):
+        await wedged
+    assert scheduler._write_inflight is None
+
+
+async def test_supervisor_leaves_healthy_worker_alone():
+    from nobrainr import scheduler as sched_mod
+
+    scheduler = sched_mod.Scheduler()
+    scheduler._write_queue_running = True
+    busy = asyncio.create_task(asyncio.sleep(3600))
+    scheduler._write_worker_task = busy
+    scheduler._write_inflight = ("ok-id", sched_mod.time.monotonic() - 1200)
+
+    scheduler._supervise_write_worker()
+    assert scheduler._write_worker_task is busy
+    assert not busy.cancelled()
+    busy.cancel()

@@ -2961,12 +2961,34 @@ async def _web_search_month_usage() -> int:
         ) or 0
 
 
-async def _count_web_search_use() -> int:
-    """Increment and return this month's web_search query count."""
+async def _web_search_day_usage() -> int:
+    """Today's Brave query count — read-only. Same table as the month
+    counter, keyed 'YYYY-MM-DD' (the month reads match 'YYYY-MM' exactly,
+    so day rows never mix into them)."""
     from nobrainr.db.pool import get_pool
 
     pool = await get_pool()
     async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT COALESCE((SELECT queries FROM web_search_usage "
+            "WHERE month = to_char(now(), 'YYYY-MM-DD')), 0)"
+        ) or 0
+
+
+async def _count_web_search_use() -> int:
+    """Increment this month's AND today's Brave count; return the month's."""
+    from nobrainr.db.pool import get_pool
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO web_search_usage (month, queries)
+            VALUES (to_char(now(), 'YYYY-MM-DD'), 1)
+            ON CONFLICT (month) DO UPDATE
+                SET queries = web_search_usage.queries + 1
+            """
+        )
         return await conn.fetchval(
             """
             INSERT INTO web_search_usage (month, queries)
@@ -2976,6 +2998,26 @@ async def _count_web_search_use() -> int:
             RETURNING queries
             """
         )
+
+
+async def brave_budget_block() -> dict | None:
+    """None when a Brave call is allowed, else the reason (day/month cap).
+
+    Shared by web_search and external_verify — both spend the same quota.
+    Read-only: a blocked call costs nothing."""
+    month_cap = settings.brave_monthly_query_cap
+    day_cap = settings.brave_daily_query_cap
+    if month_cap > 0:
+        used = await _web_search_month_usage()
+        if used >= month_cap:
+            return {"error": "monthly web_search quota exhausted",
+                    "quota": {"used": used, "cap": month_cap}}
+    if day_cap > 0:
+        used = await _web_search_day_usage()
+        if used >= day_cap:
+            return {"error": "daily Brave cap reached",
+                    "quota": {"used_today": used, "day_cap": day_cap}}
+    return None
 
 
 @mcp.tool()
@@ -3005,7 +3047,9 @@ async def web_search(
     import httpx
 
     # SearXNG primary (2026-08-12): self-hosted, quota-free, anonymous.
-    # Any failure or empty result falls through to Brave below.
+    # Only a SearXNG FAILURE falls through to Brave. An empty result is a
+    # real answer: on 27.10.2026 empty SearXNG pages sent ~150 queries to
+    # Brave in 40 minutes and used up the month (1058/1000).
     searxng_state = "not configured"
     if settings.searxng_url:
         searxng_state = "error"
@@ -3026,6 +3070,7 @@ async def web_search(
                         "age": r.get("publishedDate"),
                         "language": None,
                     })
+                logger.info("web_search source=searxng results=%d", len(results))
                 return {
                     "query": query,
                     "count": len(results),
@@ -3033,7 +3078,14 @@ async def web_search(
                     "source": "searxng",
                     "note": "transient SERP — persist sources via crawl_and_store, never this list",
                 }
-            searxng_state = "0 results"
+            logger.info("web_search source=searxng results=0")
+            return {
+                "query": query,
+                "count": 0,
+                "results": [],
+                "source": "searxng",
+                "note": "no results — rephrase the query; Brave is only used when SearXNG fails",
+            }
         except Exception:
             logger.warning("searxng unavailable — falling back to Brave", exc_info=True)
 
@@ -3052,15 +3104,14 @@ async def web_search(
     used = None
     cap = settings.brave_monthly_query_cap
     try:
-        if cap > 0:
-            used = await _web_search_month_usage()
-            if used >= cap:
-                return {
-                    "error": "monthly web_search quota exhausted",
-                    "quota": {"used": used, "cap": cap},
-                    "searxng": searxng_state,
-                    "hint": "fall back to the built-in WebSearch tool until next month",
-                }
+        block = await brave_budget_block()
+        if block:
+            logger.warning("web_search source=none brave blocked: %s", block["error"])
+            return {
+                **block,
+                "searxng": searxng_state,
+                "hint": "fall back to the built-in WebSearch tool",
+            }
         used = await _count_web_search_use()
     except Exception:
         logger.warning("web_search usage accounting failed", exc_info=True)
@@ -3101,6 +3152,7 @@ async def web_search(
             }
         )
 
+    logger.info("web_search source=brave results=%d searxng=%s", len(results), searxng_state)
     out = {
         "query": query,
         "count": len(results),
@@ -4494,34 +4546,54 @@ async def agents_active(window_s: int = 300) -> list[dict]:
 
 @mcp.tool()
 async def msg_send(
-    to: str,
+    to: str | list[str],
     subject: str,
     body: str,
     from_agent: str,
     machine: str | None = None,
+    thread_id: str | None = None,
+    reply_to: str | None = None,
 ) -> dict:
-    """Send a near-instant message to another agent (or 'all').
+    """Send a near-instant message to one or more agents (or 'all').
 
     The message is stored as a durable agent-comm memory on the FAST LANE
     (visible in <1s; entity extraction deferred) and pushed via
     pg_notify — an agent blocked in msg_wait receives it immediately.
+    Missed it? msg_inbox catches up.
 
     Args:
-        to: Target agent name, or 'all' for a fleet broadcast.
+        to: Target agent name, a list of names, or 'all' for a broadcast.
         subject: One-line subject.
         body: Message body (markdown fine).
         from_agent: Sender agent name.
         machine: Sender machine (defaults to unspecified).
+        thread_id: Groups messages into a thread (msg_inbox can filter on
+            it). Defaults to reply_to when replying.
+        reply_to: memory_id of the message this answers.
     """
     import json as _json
 
     from nobrainr.db.pool import get_pool
     from nobrainr.services.memory import store_memory_with_extraction
 
+    recipients = [to] if isinstance(to, str) else list(dict.fromkeys(to))
+    if not recipients:
+        return {"error": "to must name at least one agent"}
+    thread_id = thread_id or reply_to
+    to_label = ", ".join(recipients)
+    tags = ["agent-msg", f"from:{from_agent}"] + [f"to:{r}" for r in recipients]
+    header = f"**To:** {to_label}\n**From:** {from_agent}\n"
+    if thread_id:
+        tags.append(f"thread:{thread_id}")
+        header += f"**Thread:** {thread_id}\n"
+    if reply_to:
+        tags.append(f"reply-to:{reply_to}")
+        header += f"**Reply to:** {reply_to}\n"
+
     result = await store_memory_with_extraction(
-        content=f"**To:** {to}\n**From:** {from_agent}\n**Subject:** {subject}\n\n{body}",
-        summary=f"[{from_agent}→{to}] {subject}"[:200],
-        tags=["agent-msg", f"to:{to}", f"from:{from_agent}"],
+        content=f"{header}**Subject:** {subject}\n\n{body}",
+        summary=f"[{from_agent}→{to_label}] {subject}"[:200],
+        tags=tags,
         category="agent-comm",
         source_type="agent",
         source_machine=machine or from_agent,
@@ -4531,13 +4603,17 @@ async def msg_send(
     )
     memory_id = result.get("memory_id") or result.get("id")
     payload = _json.dumps({
-        "to": to, "from": from_agent, "subject": subject[:200],
+        "to": recipients, "from": from_agent, "subject": subject[:200],
         "body": body[:2000], "memory_id": str(memory_id),
+        "thread_id": thread_id,
     })
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("SELECT pg_notify($1, $2)", _AGENT_MSG_CHANNEL, payload)
-    return {"sent": True, "to": to, "memory_id": str(memory_id)}
+    return {
+        "sent": True, "to": recipients, "memory_id": str(memory_id),
+        "thread_id": thread_id,
+    }
 
 
 @mcp.tool()
@@ -4569,7 +4645,9 @@ async def msg_wait(agent: str, timeout_s: int = 45) -> dict:
             msg = _json.loads(payload)
         except Exception:
             return
-        if msg.get("to") in (agent, "all"):
+        to = msg.get("to")
+        recipients = to if isinstance(to, list) else [to]
+        if any(r in (agent, "all") for r in recipients):
             queue.put_nowait(msg)
 
     # Dedicated connection (NOT from the pool): LISTEN holds it for the
@@ -4588,3 +4666,280 @@ async def msg_wait(agent: str, timeout_s: int = 45) -> dict:
         except Exception:
             pass
         await conn.close()
+
+
+@mcp.tool()
+async def msg_inbox(
+    agent: str,
+    since: str | None = None,
+    thread_id: str | None = None,
+    limit: int = 20,
+) -> dict:
+    """Messages addressed to this agent (or 'all'), newest first.
+
+    msg_wait only catches what arrives while you are waiting; call this at
+    session start or after a break to catch up.
+
+    Args:
+        agent: This agent's name.
+        since: ISO timestamp — only messages after it (e.g. your last check).
+        thread_id: Only this thread (a meeting's thread is 'meeting:<id>').
+        limit: Max messages (1-100, default 20).
+    """
+    from datetime import datetime as _dt
+
+    since_ts = None
+    if since:
+        try:
+            since_ts = _dt.fromisoformat(since.replace("Z", "+00:00"))
+        except ValueError:
+            return {"error": f"since is not an ISO timestamp: {since!r}"}
+    rows = await queries.fetch_agent_inbox(
+        agent, since=since_ts, thread_id=thread_id, limit=max(1, min(limit, 100)),
+    )
+    messages = []
+    for r in rows:
+        tags = r["tags"] or []
+        pick = lambda prefix: next(  # noqa: E731
+            (t[len(prefix):] for t in tags if t.startswith(prefix)), None,
+        )
+        messages.append({
+            "memory_id": str(r["id"]),
+            "summary": r["summary"],
+            "from": pick("from:"),
+            "thread_id": pick("thread:"),
+            "reply_to": pick("reply-to:"),
+            "created_at": r["created_at"].isoformat(),
+            "content": (r["content"] or "")[:4000],
+        })
+    return {"agent": agent, "count": len(messages), "messages": messages}
+
+
+# ──────────────────────────────────────────────
+# Agent meetings v1-lite (2026-10-30). One question, 2-5 participants,
+# BLIND first answers: nobody sees another answer until all answered or
+# the deadline passed (conformity is the main failure mode of agent
+# debate — /root/ops/plaene/agenten-besprechung-2026-10-30.md). Blinding
+# is enforced server-side in meeting_status. The moderator closes into
+# decision_store with every position as an alternative and named dissent.
+# ──────────────────────────────────────────────
+
+_MEETING_MIN_PARTICIPANTS = 2
+_MEETING_MAX_PARTICIPANTS = 5
+
+
+def _meeting_revealed(meeting: dict, now=None) -> bool:
+    """Answers become visible once closed, everyone answered, or deadline passed."""
+    from datetime import datetime as _dt, timezone as _tz
+
+    if meeting["status"] == "closed":
+        return True
+    answered = {a["agent"] for a in meeting.get("answers", [])}
+    if set(meeting["participants"]) <= answered:
+        return True
+    return (now or _dt.now(_tz.utc)) >= meeting["deadline"]
+
+
+def _meeting_view(meeting: dict, viewer: str) -> dict:
+    """What `viewer` may see: others' answers only after the reveal."""
+    revealed = _meeting_revealed(meeting)
+    answers = meeting.get("answers", [])
+    view = {
+        "meeting_id": str(meeting["id"]),
+        "question": meeting["question"],
+        "moderator": meeting["moderator"],
+        "participants": list(meeting["participants"]),
+        "deadline": meeting["deadline"].isoformat(),
+        "status": meeting["status"],
+        "answered": [a["agent"] for a in answers],
+        "revealed": revealed,
+        "decision_ref": meeting.get("decision_ref"),
+    }
+    if revealed:
+        view["answers"] = [
+            {"agent": a["agent"], "answer": a["answer"],
+             "answered_at": a["answered_at"].isoformat()}
+            for a in answers
+        ]
+    else:
+        own = next((a for a in answers if a["agent"] == viewer), None)
+        view["own_answer"] = own["answer"] if own else None
+    return view
+
+
+@mcp.tool()
+async def ask_many(
+    question: str,
+    participants: list[str],
+    from_agent: str,
+    deadline_s: int = 1800,
+    machine: str | None = None,
+) -> dict:
+    """Open a meeting: ask 2-5 agents one question, collect BLIND answers.
+
+    Each participant gets a message (thread 'meeting:<id>') and answers with
+    meeting_answer. Nobody sees other answers until all answered or the
+    deadline passed; then meeting_status shows all of them. You, the
+    moderator, close it with meeting_close, which stores the decision.
+    Use for cross-role decisions, not routine questions.
+
+    Args:
+        question: The question, with the constraints everyone should weigh.
+        participants: 2-5 agent names (not including yourself unless you answer too).
+        from_agent: Your agent name — you become the moderator.
+        deadline_s: Seconds until answers are revealed regardless (60-86400, default 1800).
+        machine: Your machine.
+    """
+    people = list(dict.fromkeys(p.strip() for p in participants if p and p.strip()))
+    if not _MEETING_MIN_PARTICIPANTS <= len(people) <= _MEETING_MAX_PARTICIPANTS:
+        return {"error": (
+            f"participants must be {_MEETING_MIN_PARTICIPANTS}-"
+            f"{_MEETING_MAX_PARTICIPANTS} distinct agents, got {len(people)}"
+        )}
+    if not question.strip():
+        return {"error": "question is empty"}
+    deadline_s = max(60, min(deadline_s, 86400))
+    meeting = await queries.create_meeting(question.strip(), from_agent, people, deadline_s)
+    meeting_id = str(meeting["id"])
+    await msg_send(
+        to=people,
+        subject=f"[Meeting] {question.strip()[:120]}",
+        body=(
+            f"{question.strip()}\n\n---\n"
+            f"Moderator: {from_agent} · Participants: {', '.join(people)} · "
+            f"Deadline: {meeting['deadline'].isoformat()}\n"
+            f"Answer: meeting_answer(meeting_id=\"{meeting_id}\", agent=<you>, answer=...). "
+            "Answer independently — the other answers stay hidden until everyone "
+            "has answered or the deadline passes. Disagreement on facts: bring a "
+            "measurement or a source."
+        ),
+        from_agent=from_agent,
+        machine=machine,
+        thread_id=f"meeting:{meeting_id}",
+    )
+    return {
+        "meeting_id": meeting_id,
+        "thread_id": f"meeting:{meeting_id}",
+        "participants": people,
+        "deadline": meeting["deadline"].isoformat(),
+    }
+
+
+@mcp.tool()
+async def meeting_answer(meeting_id: str, agent: str, answer: str) -> dict:
+    """Give (or revise) your blind answer to a meeting question.
+
+    Allowed until the reveal. When the last participant answers, the
+    moderator is notified that the answers are visible.
+
+    Args:
+        meeting_id: From the meeting message.
+        agent: Your agent name (must be a participant).
+        answer: Your position + reasoning.
+    """
+    meeting = await queries.get_meeting(meeting_id)
+    if meeting is None:
+        return {"error": f"meeting {meeting_id} not found"}
+    if agent not in meeting["participants"]:
+        return {"error": f"{agent} is not a participant of this meeting"}
+    if _meeting_revealed(meeting):
+        return {"error": "answers are already revealed — no more changes"}
+    if not answer.strip():
+        return {"error": "answer is empty"}
+    await queries.upsert_meeting_answer(meeting_id, agent, answer.strip())
+    meeting = await queries.get_meeting(meeting_id)
+    revealed = _meeting_revealed(meeting)
+    if revealed:
+        await msg_send(
+            to=meeting["moderator"],
+            subject=f"[Meeting] all answered: {meeting['question'][:100]}",
+            body=(
+                f"All {len(meeting['participants'])} answers are in. "
+                f"meeting_status(meeting_id=\"{meeting_id}\", agent=...) shows them; "
+                "close with meeting_close."
+            ),
+            from_agent="nobrainr",
+            thread_id=f"meeting:{meeting_id}",
+        )
+    return {"recorded": True, "revealed": revealed}
+
+
+@mcp.tool()
+async def meeting_status(meeting_id: str, agent: str) -> dict:
+    """State of a meeting. Others' answers appear only after the reveal.
+
+    Args:
+        meeting_id: The meeting.
+        agent: Your agent name (before the reveal you see only your own answer).
+    """
+    meeting = await queries.get_meeting(meeting_id)
+    if meeting is None:
+        return {"error": f"meeting {meeting_id} not found"}
+    return _meeting_view(meeting, agent)
+
+
+@mcp.tool()
+async def meeting_close(
+    meeting_id: str,
+    moderator: str,
+    scope: str,
+    decision: str,
+    rationale: str,
+    dissent: list[str] | None = None,
+    source_machine: str | None = None,
+) -> dict:
+    """Close a revealed meeting and record the decision via decision_store.
+
+    Every participant's position becomes an alternative in the record;
+    dissent names who disagreed and why. Participants get a closing
+    message in the thread.
+
+    Args:
+        meeting_id: The meeting.
+        moderator: Must be the agent that opened it.
+        scope: Decision scope, e.g. 'bimavo/assistant'.
+        decision: One-sentence decision.
+        rationale: Why, referring to the positions.
+        dissent: e.g. ['recht: keeps rejecting X because Y'].
+        source_machine: Your machine.
+    """
+    meeting = await queries.get_meeting(meeting_id)
+    if meeting is None:
+        return {"error": f"meeting {meeting_id} not found"}
+    if moderator != meeting["moderator"]:
+        return {"error": f"only the moderator ({meeting['moderator']}) can close"}
+    if meeting["status"] == "closed":
+        return {"error": "meeting is already closed", "decision_ref": meeting.get("decision_ref")}
+    if not _meeting_revealed(meeting):
+        return {"error": "answers not revealed yet — wait for all answers or the deadline"}
+
+    positions = [f"{a['agent']}: {a['answer'][:500]}" for a in meeting["answers"]]
+    missing = [p for p in meeting["participants"] if p not in {a["agent"] for a in meeting["answers"]}]
+    constraints = [f"Question: {meeting['question'][:500]}"]
+    if missing:
+        constraints.append("No answer from: " + ", ".join(missing))
+    stored = await decision_store(
+        scope=scope,
+        decision=decision,
+        rationale=rationale + (
+            "\n\nDissent:\n" + "\n".join(f"- {d}" for d in dissent) if dissent else ""
+        ),
+        constraints=constraints,
+        alternatives_rejected=positions,
+        tags=["meeting", f"meeting:{meeting_id}"],
+        source_machine=source_machine,
+    )
+    if "error" in stored:
+        return stored
+    decision_ref = stored.get("queue_id")
+    await queries.close_meeting(meeting_id, decision_ref)
+    await msg_send(
+        to=list(meeting["participants"]),
+        subject=f"[Meeting] decided: {decision[:120]}",
+        body=f"{decision}\n\n{rationale}" + (
+            "\n\nDissent recorded:\n" + "\n".join(f"- {d}" for d in dissent) if dissent else ""
+        ),
+        from_agent=moderator,
+        thread_id=f"meeting:{meeting_id}",
+    )
+    return {"closed": True, "decision_ref": decision_ref}
