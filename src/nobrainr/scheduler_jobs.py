@@ -3803,6 +3803,7 @@ async def external_verify() -> dict:
     from nobrainr.mcp.server import (
         _brave_search_request,
         _count_web_search_use,
+        brave_budget_block,
         _sanitize_crawled_text,
         _searxng_search_request,
     )
@@ -3875,17 +3876,25 @@ async def external_verify() -> dict:
             continue
 
         urls: list[str] = []
+        searxng_ok = False
         if settings.searxng_url:
             try:
                 raw = await _searxng_search_request({"q": cl["query"]})
                 urls = [r.get("url") for r in raw if r.get("url")][:3]
                 out["searched"] += 1
+                searxng_ok = True
             except Exception:
                 logger.warning("external_verify: searxng failed, trying Brave")
+        if not urls and searxng_ok:
+            # SearXNG answered with nothing: that IS the search result.
+            # Brave is for an outage, not for a second opinion (27.10.2026).
+            out["unverifiable"] += 1
+            continue
         if not urls:
             # Brave fallback — the only path that spends quota. Ceiling
             # re-checked per claim: interactive use shares the pool.
-            if await _ext_month_usage() >= settings.external_verify_quota_ceiling:
+            if (await _ext_month_usage() >= settings.external_verify_quota_ceiling
+                    or await brave_budget_block()):
                 out["skipped_quota"] = 1
                 continue
             try:

@@ -2961,12 +2961,34 @@ async def _web_search_month_usage() -> int:
         ) or 0
 
 
-async def _count_web_search_use() -> int:
-    """Increment and return this month's web_search query count."""
+async def _web_search_day_usage() -> int:
+    """Today's Brave query count — read-only. Same table as the month
+    counter, keyed 'YYYY-MM-DD' (the month reads match 'YYYY-MM' exactly,
+    so day rows never mix into them)."""
     from nobrainr.db.pool import get_pool
 
     pool = await get_pool()
     async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT COALESCE((SELECT queries FROM web_search_usage "
+            "WHERE month = to_char(now(), 'YYYY-MM-DD')), 0)"
+        ) or 0
+
+
+async def _count_web_search_use() -> int:
+    """Increment this month's AND today's Brave count; return the month's."""
+    from nobrainr.db.pool import get_pool
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO web_search_usage (month, queries)
+            VALUES (to_char(now(), 'YYYY-MM-DD'), 1)
+            ON CONFLICT (month) DO UPDATE
+                SET queries = web_search_usage.queries + 1
+            """
+        )
         return await conn.fetchval(
             """
             INSERT INTO web_search_usage (month, queries)
@@ -2976,6 +2998,26 @@ async def _count_web_search_use() -> int:
             RETURNING queries
             """
         )
+
+
+async def brave_budget_block() -> dict | None:
+    """None when a Brave call is allowed, else the reason (day/month cap).
+
+    Shared by web_search and external_verify — both spend the same quota.
+    Read-only: a blocked call costs nothing."""
+    month_cap = settings.brave_monthly_query_cap
+    day_cap = settings.brave_daily_query_cap
+    if month_cap > 0:
+        used = await _web_search_month_usage()
+        if used >= month_cap:
+            return {"error": "monthly web_search quota exhausted",
+                    "quota": {"used": used, "cap": month_cap}}
+    if day_cap > 0:
+        used = await _web_search_day_usage()
+        if used >= day_cap:
+            return {"error": "daily Brave cap reached",
+                    "quota": {"used_today": used, "day_cap": day_cap}}
+    return None
 
 
 @mcp.tool()
@@ -3005,7 +3047,9 @@ async def web_search(
     import httpx
 
     # SearXNG primary (2026-08-12): self-hosted, quota-free, anonymous.
-    # Any failure or empty result falls through to Brave below.
+    # Only a SearXNG FAILURE falls through to Brave. An empty result is a
+    # real answer: on 27.10.2026 empty SearXNG pages sent ~150 queries to
+    # Brave in 40 minutes and used up the month (1058/1000).
     searxng_state = "not configured"
     if settings.searxng_url:
         searxng_state = "error"
@@ -3026,6 +3070,7 @@ async def web_search(
                         "age": r.get("publishedDate"),
                         "language": None,
                     })
+                logger.info("web_search source=searxng results=%d", len(results))
                 return {
                     "query": query,
                     "count": len(results),
@@ -3033,7 +3078,14 @@ async def web_search(
                     "source": "searxng",
                     "note": "transient SERP — persist sources via crawl_and_store, never this list",
                 }
-            searxng_state = "0 results"
+            logger.info("web_search source=searxng results=0")
+            return {
+                "query": query,
+                "count": 0,
+                "results": [],
+                "source": "searxng",
+                "note": "no results — rephrase the query; Brave is only used when SearXNG fails",
+            }
         except Exception:
             logger.warning("searxng unavailable — falling back to Brave", exc_info=True)
 
@@ -3052,15 +3104,14 @@ async def web_search(
     used = None
     cap = settings.brave_monthly_query_cap
     try:
-        if cap > 0:
-            used = await _web_search_month_usage()
-            if used >= cap:
-                return {
-                    "error": "monthly web_search quota exhausted",
-                    "quota": {"used": used, "cap": cap},
-                    "searxng": searxng_state,
-                    "hint": "fall back to the built-in WebSearch tool until next month",
-                }
+        block = await brave_budget_block()
+        if block:
+            logger.warning("web_search source=none brave blocked: %s", block["error"])
+            return {
+                **block,
+                "searxng": searxng_state,
+                "hint": "fall back to the built-in WebSearch tool",
+            }
         used = await _count_web_search_use()
     except Exception:
         logger.warning("web_search usage accounting failed", exc_info=True)
@@ -3101,6 +3152,7 @@ async def web_search(
             }
         )
 
+    logger.info("web_search source=brave results=%d searxng=%s", len(results), searxng_state)
     out = {
         "query": query,
         "count": len(results),
