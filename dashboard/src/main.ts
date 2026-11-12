@@ -10,6 +10,7 @@ import { watchConnection } from '@/api/connection-watch'
 import '@mdi/font/css/materialdesignicons.css'
 import '@/styles/tokens.css'
 import '@/styles/motion.css'
+import '@/styles/tap-targets.css'
 
 const pinia = createPinia()
 const app = createApp(App).use(vuetify).use(router).use(pinia).directive('reveal', reveal)

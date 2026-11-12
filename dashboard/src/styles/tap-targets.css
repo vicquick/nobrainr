@@ -1,0 +1,36 @@
+/* Tap targets at phone width: every control at least 44 x 44 px (WCAG 2.5.5).
+   Desktop is untouched. Only properties the components do not set themselves
+   (min-width/min-height, align-content), so nothing here fights a scoped rule. */
+@media (max-width: 600px) {
+  .panel-toggle,
+  .chat-toggle,
+  .codex-fab,
+  .retry-btn,
+  .inquiry-go,
+  .conn-act,
+  .folio-button,
+  .folio-pill,
+  .tag-facet,
+  .brand-mark {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  /* These two are inline-flex with align-items: baseline; a taller box would
+     leave the text at the top. Centre the line, keep the baseline alignment. */
+  .tag-facet,
+  .brand-mark {
+    flex-wrap: wrap;
+    align-content: center;
+  }
+  .folio-select,
+  .folio-input,
+  .folio-slider,
+  .inquiry-input,
+  .v-field__input {
+    min-height: 44px;
+  }
+  .bar-row.clickable,
+  .v-list--nav .v-list-item--link {
+    min-height: 44px;
+  }
+}
