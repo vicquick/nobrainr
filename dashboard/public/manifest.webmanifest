@@ -1,0 +1,28 @@
+{
+  "name": "nobrainr · commonplace book",
+  "short_name": "nobrainr",
+  "description": "Collective agent memory — memories, entities and the graph between them.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0e0b06",
+  "theme_color": "#0e0b06",
+  "icons": [
+    {
+      "src": "/favicon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/favicon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "/favicon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

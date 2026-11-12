@@ -41,6 +41,46 @@ def _valid_uuid(value: str) -> bool:
         return False
 
 
+class BadParam(ValueError):
+    """A query parameter that cannot be read. Answered as 400 {"error": ...}."""
+
+
+def _int_param(request: Request, name: str, default: int, *, lo: int | None = None, hi: int | None = None) -> int:
+    """Whole-number query parameter, clamped to [lo, hi]. Garbage is a 400, not a 500."""
+    roh = request.query_params.get(name)
+    if roh is None or roh.strip() == "":
+        wert = default
+    else:
+        try:
+            wert = int(roh)
+        except ValueError:
+            raise BadParam(f"Invalid {name}: expected a whole number") from None
+    if lo is not None:
+        wert = max(lo, wert)
+    if hi is not None:
+        wert = min(hi, wert)
+    return wert
+
+
+def _float_param(request: Request, name: str, default: float, *, lo: float | None = None, hi: float | None = None) -> float:
+    """Numeric query parameter, clamped to [lo, hi]. Garbage (and NaN) is a 400."""
+    roh = request.query_params.get(name)
+    if roh is None or roh.strip() == "":
+        wert = default
+    else:
+        try:
+            wert = float(roh)
+        except ValueError:
+            raise BadParam(f"Invalid {name}: expected a number") from None
+        if wert != wert:  # NaN compares unequal to itself
+            raise BadParam(f"Invalid {name}: expected a number")
+    if lo is not None:
+        wert = max(lo, wert)
+    if hi is not None:
+        wert = min(hi, wert)
+    return wert
+
+
 async def _log_auto_negative_outcomes(
     results: list[dict], trace_id: str, query: str,
 ) -> None:
@@ -98,6 +138,115 @@ async def _log_auto_negative_outcomes(
 
 
 _GRAPH_CACHE_PATH = "/app/graph_cache/graph.json"
+_graph_erneuerung: asyncio.Task | None = None
+
+
+def _datei_bytes(pfad: str) -> bytes:
+    with open(pfad, "rb") as f:
+        return f.read()
+
+
+_GRAPH_KOMPAKT_FORMAT = "compact-1"
+
+
+def graph_kompakt(data: dict) -> dict:
+    """The graph as parallel arrays instead of one object per node and edge.
+
+    Measured 2026-11-10 on 3,498 nodes / 63,167 edges: the object form is
+    12.4 MB (2.9 MB gzipped), 8.6 MB of it the three UUIDs every edge carries.
+    Here an edge is two node indexes, an index into ``edge_labels`` and a
+    confidence. The dashboard never reads the edge id, so it is dropped; edges
+    whose endpoint is not among the nodes are dropped too (the client skipped
+    them anyway). Coordinates keep one decimal — the layout spans thousands.
+    """
+    nodes = [n["data"] for n in data.get("nodes", [])]
+    index = {n["id"]: i for i, n in enumerate(nodes)}
+    labels: dict[str, int] = {}
+    source: list[int] = []
+    target: list[int] = []
+    label: list[int] = []
+    confidence: list[float | None] = []
+    for edge in data.get("edges", []):
+        d = edge["data"]
+        s, t = index.get(d.get("source")), index.get(d.get("target"))
+        if s is None or t is None:
+            continue
+        source.append(s)
+        target.append(t)
+        label.append(labels.setdefault(d.get("label") or "", len(labels)))
+        c = d.get("confidence")
+        confidence.append(round(c, 2) if isinstance(c, (int, float)) else None)
+
+    def spalte(feld: str, standard=None) -> list:
+        return [n.get(feld, standard) for n in nodes]
+
+    def koordinate(feld: str) -> list[float]:
+        return [round(float(n.get(feld) or 0.0), 1) for n in nodes]
+
+    return {
+        "format": _GRAPH_KOMPAKT_FORMAT,
+        "nodes": {
+            "id": spalte("id"),
+            "label": spalte("label"),
+            "type": spalte("type"),
+            "description": spalte("description"),
+            "mention_count": spalte("mention_count", 0),
+            "x": koordinate("x"),
+            "y": koordinate("y"),
+            "community": spalte("community", -1),
+        },
+        "edges": {"source": source, "target": target, "label": label, "confidence": confidence},
+        "edge_labels": list(labels),
+    }
+
+
+def _graph_kompakt_bytes(pfad: str) -> bytes:
+    """Compact form of the cached graph, kept in a file beside the cache.
+
+    Rebuilt when the cache is newer than it; written to a temp file first so
+    a reader never sees half a file.
+    """
+    import os
+
+    kompakt = pfad + ".compact"
+    try:
+        if os.path.getmtime(kompakt) >= os.path.getmtime(pfad):
+            roh = _datei_bytes(kompakt)
+            if roh[:1] == b"{" and roh.rstrip()[-1:] == b"}":
+                return roh
+    except OSError:
+        pass
+    with open(pfad, "rb") as f:
+        data = json.load(f)
+    roh = json.dumps(graph_kompakt(data), separators=(",", ":"), ensure_ascii=False).encode()
+    try:
+        tmp = f"{kompakt}.{os.getpid()}.tmp"
+        with open(tmp, "wb") as f:
+            f.write(roh)
+        os.replace(tmp, kompakt)
+    except OSError:
+        log.warning("Could not write %s; serving the compact graph uncached", kompakt, exc_info=True)
+    return roh
+
+
+def _graph_im_hintergrund_erneuern() -> None:
+    """Recompute the graph layout without making a request wait for it.
+
+    At most one refresh at a time; a failure leaves the old cache in place.
+    """
+    global _graph_erneuerung
+    if _graph_erneuerung is not None and not _graph_erneuerung.done():
+        return
+
+    async def _lauf() -> None:
+        try:
+            scope = {"type": "http", "method": "GET", "path": "/api/graph",
+                     "query_string": b"refresh=true", "headers": []}
+            await api_graph(Request(scope))
+        except Exception:
+            log.warning("Background graph refresh failed; keeping the old cache", exc_info=True)
+
+    _graph_erneuerung = asyncio.create_task(_lauf())
 
 
 async def api_graph(request: Request) -> JSONResponse:
@@ -106,19 +255,28 @@ async def api_graph(request: Request) -> JSONResponse:
     import os
     import time as _time
 
-    # Serve from cache if available and not stale (max 24h)
+    # Serve from cache whenever there is one. A cache older than 24h is still
+    # served — the layout takes about a minute to compute (measured 60s on
+    # 2026-11-09) and the dashboard used to sit on a blank graph for that
+    # long. The refresh then runs in the background (stale-while-revalidate,
+    # same idea as /api/galaxy). The file is sent as bytes: parsing 12 MB of
+    # JSON just to serialise it again cost ~0.5s of event-loop time per call.
     force_refresh = request.query_params.get("refresh", "").lower() == "true"
+    # ?format=compact: parallel arrays, about a seventh of the size (see
+    # graph_kompakt). The object form stays the default for other callers.
+    kompakt = request.query_params.get("format", "").lower() == "compact"
     if not force_refresh and os.path.exists(_GRAPH_CACHE_PATH):
         cache_age = _time.time() - os.path.getmtime(_GRAPH_CACHE_PATH)
-        if cache_age < 86400:  # 24 hours max
-            try:
-                with open(_GRAPH_CACHE_PATH, "r") as f:
-                    import json
-                    cached = json.load(f)
-                log.info("Serving graph from cache (%.0fs old, %d nodes)", cache_age, len(cached.get("nodes", [])))
-                return JSONResponse(cached)
-            except Exception:
-                pass  # cache corrupt, fall through to recompute
+        try:
+            roh = await asyncio.to_thread(_graph_kompakt_bytes if kompakt else _datei_bytes, _GRAPH_CACHE_PATH)
+            if roh[:1] == b"{" and roh.rstrip()[-1:] == b"}":
+                if cache_age >= 86400:
+                    _graph_im_hintergrund_erneuern()
+                log.info("Serving graph from cache (%.0fs old, %d bytes)", cache_age, len(roh))
+                return Response(content=roh, media_type="application/json",
+                                headers={"X-Cache-Age": str(int(cache_age))})
+        except Exception:
+            pass  # cache unreadable, fall through to recompute
 
     log.info("Computing graph layout (no cache or refresh requested)...")
     t0 = _time.monotonic()
@@ -212,7 +370,6 @@ async def api_graph(request: Request) -> JSONResponse:
     # CPU work that blocks for 10+ minutes on the full graph — push them off
     # the event loop so the ASGI worker can keep serving requests during
     # startup warmup and manual refreshes.
-    import asyncio
     from nobrainr.layout import compute_graph_layout
 
     layout = await asyncio.to_thread(
@@ -243,7 +400,7 @@ async def api_graph(request: Request) -> JSONResponse:
     except Exception:
         log.warning("Failed to save graph cache", exc_info=True)
 
-    return JSONResponse(data)
+    return JSONResponse(graph_kompakt(data) if kompakt else data)
 
 
 _COMMUNITY_CACHE_PATH = "/app/graph_cache/communities.json"
@@ -528,6 +685,39 @@ async def api_graph_communities(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+# Time budgets for the interactive dashboard search. The embedding and the
+# reranker share one GPU with the scheduler and the chat model; measured on
+# 2026-11-09 the same query took 3s and then 49s. A person typing into a
+# search box is better served by the fused vector+FTS order now than by the
+# reranked order in a minute, so both steps give up after a few seconds:
+# no embedding -> FTS only, no rerank -> keep the RRF order.
+_SUCHE_EMBED_BUDGET_S = 5.0
+_SUCHE_RERANK_BUDGET_S = 6.0
+_SUCHE_RERANK_KOPF = 20  # only the head of the list is worth a cross-encoder pass
+
+
+async def _rerank_im_budget(q: str, memories: list[dict], limit: int) -> list[dict]:
+    """Rerank the first ``_SUCHE_RERANK_KOPF`` results within the time budget.
+
+    The tail keeps its order behind the reranked head. On timeout or error the
+    list comes back unchanged.
+    """
+    from nobrainr.services.reranker import rerank
+
+    kopf, rest = memories[:_SUCHE_RERANK_KOPF], memories[_SUCHE_RERANK_KOPF:]
+    try:
+        kopf = await asyncio.wait_for(
+            rerank(q, kopf, limit=min(limit, len(kopf))), timeout=_SUCHE_RERANK_BUDGET_S
+        )
+    except TimeoutError:
+        log.warning("Reranker exceeded %.0fs in dashboard search; returning fused order", _SUCHE_RERANK_BUDGET_S)
+        return memories
+    except Exception:
+        log.exception("Reranker failed in dashboard search; returning unranked")
+        return memories
+    return (kopf + rest)[:limit]
+
+
 async def api_memories(request: Request) -> JSONResponse:
     """Search/list memories."""
     q = request.query_params.get("q", "").strip()
@@ -554,7 +744,7 @@ async def api_memories(request: Request) -> JSONResponse:
         # fall back to FTS-only rather than blocking the UI for 50s+.
         embedding: list[float] | None = None
         try:
-            embedding = await embed_text_with_timeout(q, timeout_s=15.0)
+            embedding = await embed_text_with_timeout(q, timeout_s=_SUCHE_EMBED_BUDGET_S)
         except EmbedTimeout:
             log.warning("embed_text timed out for dashboard search — using FTS fallback")
         except Exception:
@@ -584,11 +774,7 @@ async def api_memories(request: Request) -> JSONResponse:
         if min_quality is not None:
             memories = [m for m in memories if (m.get("quality_score") or 0) >= min_quality]
         if memories and settings.reranker_enabled and embedding is not None:
-            try:
-                from nobrainr.services.reranker import rerank
-                memories = await rerank(q, memories, limit=limit)
-            except Exception:
-                log.exception("Reranker failed in dashboard search; returning unranked")
+            memories = await _rerank_im_budget(q, memories, limit)
 
         # Attach trace fields so feedback can close the loop. Caller posts
         # back search_trace_id + search_rank when marking a result useful or
@@ -703,8 +889,8 @@ async def api_timeline(request: Request) -> JSONResponse:
     """
     category = request.query_params.get("category") or None
     source_machine = request.query_params.get("source_machine") or None
-    limit = min(int(request.query_params.get("limit", "100")), 500)
-    offset = max(int(request.query_params.get("offset", "0")), 0)
+    limit = _int_param(request, "limit", 100, hi=500)
+    offset = _int_param(request, "offset", 0, lo=0)
     include_queue = request.query_params.get("include_queue") in {"1", "true", "yes"}
 
     memories = await queries.get_timeline_memories(
@@ -750,11 +936,32 @@ async def api_node_detail(request: Request) -> JSONResponse:
     })
 
 
+# /api/stats runs ~15 count queries (1.8-2.3s measured on 2026-11-09) and is
+# polled by the container healthcheck, status lines and every open dashboard
+# (151 calls/hour). The numbers do not change meaningfully within half a
+# minute, so one computation serves all callers in that window.
+_STATS_TTL_S = 30.0
+_stats_cache: dict = {"ts": 0.0, "data": None}
+_stats_lock = asyncio.Lock()
+
+
 async def api_stats(request: Request) -> JSONResponse:
-    """Dashboard statistics including feedback and event counts."""
-    stats = await queries.get_stats()
-    feedback_stats = await queries.get_feedback_stats()
-    stats.update(feedback_stats)
+    """Dashboard statistics including feedback and event counts.
+
+    Cached for ``_STATS_TTL_S`` seconds; ``?refresh=true`` bypasses the cache.
+    """
+    frisch = request.query_params.get("refresh", "").lower() == "true"
+    if not frisch and _stats_cache["data"] is not None and time.monotonic() - _stats_cache["ts"] < _STATS_TTL_S:
+        return JSONResponse(_stats_cache["data"])
+    async with _stats_lock:
+        # A second caller that waited for the lock finds the fresh value.
+        if not frisch and _stats_cache["data"] is not None and time.monotonic() - _stats_cache["ts"] < _STATS_TTL_S:
+            return JSONResponse(_stats_cache["data"])
+        stats = await queries.get_stats()
+        feedback_stats = await queries.get_feedback_stats()
+        stats.update(feedback_stats)
+        _stats_cache["data"] = stats
+        _stats_cache["ts"] = time.monotonic()
     return JSONResponse(stats)
 
 
@@ -908,41 +1115,70 @@ async def api_scheduler_task_runs(request: Request) -> JSONResponse:
 async def api_recall(request: Request) -> JSONResponse:
     """Fast text-only memory search (PostgreSQL full-text, no embedding call).
 
-    Uses OR semantics so any matching word returns results, ranked by relevance.
+    Until 2026-11-09 this used the English text-search config on the bare
+    content, which no index covers — every call was a sequential scan over all
+    memories (10-15s on 147k rows). It now runs ``queries.fts_memories``: the
+    predicate ``idx_memories_content_fts`` covers, all words must match, and
+    frequent words are ranked on a capped candidate set (see there).
+    Superseded, expired and cold memories are no longer returned.
     """
     q = request.query_params.get("q", "").strip()
     if not q:
         return JSONResponse([])
 
-    limit = min(int(request.query_params.get("limit", "5")), 100)
+    try:
+        limit = max(1, min(int(request.query_params.get("limit", "5")), 100))
+    except ValueError:
+        return JSONResponse({"error": "Invalid limit"}, status_code=400)
 
-    from nobrainr.db.pool import get_pool
+    results = await queries.fts_memories(q, limit=limit)
+    # Track access on recalled memories
+    if results:
+        from nobrainr.db.pool import get_pool
 
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT id, content, summary, source_type, source_machine, tags, category,
-                   confidence, metadata, created_at, updated_at, importance, stability,
-                   quality_score,
-                   ts_rank(to_tsvector('english', content), websearch_to_tsquery('english', $1)) AS rank
-            FROM memories
-            WHERE to_tsvector('english', content) @@ websearch_to_tsquery('english', $1)
-            ORDER BY rank DESC, importance DESC
-            LIMIT $2
-            """,
-            q,
-            limit,
-        )
-        results = [queries._row_to_dict(row) for row in rows]
-        # Track access on recalled memories
-        if results:
-            result_ids = [UUID(r["id"]) for r in results]
+        pool = await get_pool()
+        async with pool.acquire() as conn:
             await conn.execute(
                 "UPDATE memories SET last_accessed_at = now(), access_count = access_count + 1 WHERE id = ANY($1)",
-                result_ids,
+                [UUID(r["id"]) for r in results],
             )
-        return JSONResponse(results)
+    return JSONResponse(results)
+
+
+async def api_search_preview(request: Request) -> JSONResponse:
+    """Full-text results for the dashboard to show while the full search runs.
+
+    /api/memories?q= embeds the query, fuses five branches and reranks: 1-3s
+    on a quiet GPU, up to the 11s budget on a busy one. This answers the same
+    question from the text index alone, with the same filters, so the list is
+    on screen at once and the full answer replaces it when it arrives.
+
+    A preview is not a search: no access tracking, no trace id, no
+    auto-negative outcomes — nothing here may become training signal.
+    """
+    q = request.query_params.get("q", "").strip()
+    if not q:
+        return JSONResponse([])
+    category = request.query_params.get("category") or None
+    source_machine = request.query_params.get("source_machine") or None
+    tags_param = request.query_params.get("tags", "").strip()
+    tags = [t.strip() for t in tags_param.split(",") if t.strip()] if tags_param else None
+    try:
+        limit = max(1, min(int(request.query_params.get("limit", "50")), 200))
+    except ValueError:
+        return JSONResponse({"error": "Invalid limit"}, status_code=400)
+
+    memories = await queries.fts_memories(
+        q, limit=limit, tags=tags, category=category, source_machine=source_machine,
+    )
+    min_quality_param = request.query_params.get("min_quality", "").strip()
+    if min_quality_param:
+        try:
+            min_quality = max(0.0, min(1.0, float(min_quality_param)))
+            memories = [m for m in memories if (m.get("quality_score") or 0) >= min_quality]
+        except ValueError:
+            pass
+    return JSONResponse(memories)
 
 
 async def api_smart_recall(request: Request) -> JSONResponse:
@@ -954,7 +1190,7 @@ async def api_smart_recall(request: Request) -> JSONResponse:
     q = request.query_params.get("q", "").strip()
     if not q:
         return JSONResponse([])
-    limit = min(int(request.query_params.get("limit", "5")), 20)
+    limit = _int_param(request, "limit", 5, hi=20)
     try:
         embedding = await embed_text(q)
     except Exception:
@@ -983,10 +1219,10 @@ async def api_brief(request: Request) -> JSONResponse:
     q = request.query_params.get("q", "").strip()
     if not q:
         return JSONResponse({"cards": [], "memories": []})
-    n_cards = min(int(request.query_params.get("cards", "2")), 5)
-    n_mem = min(int(request.query_params.get("memories", "5")), 12)
-    trust_floor = float(request.query_params.get("trust_floor", "0.6"))
-    min_accuracy = float(request.query_params.get("min_accuracy", "0.5"))
+    n_cards = _int_param(request, "cards", 2, hi=5)
+    n_mem = _int_param(request, "memories", 5, hi=12)
+    trust_floor = _float_param(request, "trust_floor", 0.6)
+    min_accuracy = _float_param(request, "min_accuracy", 0.5)
 
     from nobrainr.db.pool import get_pool
     pool = await get_pool()
@@ -1251,7 +1487,7 @@ async def api_library_search(request: Request) -> JSONResponse:
     if not q:
         return JSONResponse({"hits": []})
     ref = request.query_params.get("ref", "").strip()
-    limit = min(int(request.query_params.get("limit", "8")), 20)
+    limit = _int_param(request, "limit", 8, hi=20)
 
     try:
         embedding = await embed_text(q)
@@ -1578,9 +1814,35 @@ async def api_categories(request: Request) -> JSONResponse:
     return JSONResponse(categories)
 
 
+# The full tag list is ~1.4 MB (every per-message routing tag counts as a tag)
+# and took 1-4s; a filter dropdown needs the common ones and a way to find the
+# rest. Default: the 2000 most used. ``q`` searches all tags by substring,
+# ``limit=0`` returns everything (old behaviour).
+_TAGS_STANDARD = 2000
+_TAGS_TTL_S = 60.0
+_tags_cache: dict = {}
+
+
 async def api_tags(request: Request) -> JSONResponse:
-    """Unique tags for filter dropdowns."""
-    tags = await queries.get_all_tags()
+    """Tags with usage counts for filter dropdowns, most used first.
+
+    Query params: ``limit`` (default 2000, 0 = all), ``q`` (substring search).
+    """
+    q = request.query_params.get("q", "").strip() or None
+    try:
+        limit = int(request.query_params.get("limit", str(_TAGS_STANDARD)))
+    except ValueError:
+        return JSONResponse({"error": "Invalid limit"}, status_code=400)
+    limit = None if limit <= 0 else min(limit, 50000)
+
+    schluessel = (q, limit)
+    treffer = _tags_cache.get(schluessel)
+    if treffer is not None and time.monotonic() - treffer[0] < _TAGS_TTL_S:
+        return JSONResponse(treffer[1])
+    tags = await queries.get_all_tags(limit=limit, q=q)
+    if len(_tags_cache) > 64:
+        _tags_cache.clear()
+    _tags_cache[schluessel] = (time.monotonic(), tags)
     return JSONResponse(tags)
 
 
@@ -2208,8 +2470,7 @@ async def api_galaxy(request: Request) -> JSONResponse:
 
     cache_ttl = 1800  # 30 minutes
     force = request.query_params.get("refresh", "").lower() == "true"
-    limit = int(request.query_params.get("limit", "10000"))
-    limit = min(limit, 50000)
+    limit = _int_param(request, "limit", 10000, hi=50000)
 
     if not force and os.path.exists(_GALAXY_CACHE_PATH):
         age = _time.time() - os.path.getmtime(_GALAXY_CACHE_PATH)
@@ -2235,6 +2496,54 @@ async def api_galaxy(request: Request) -> JSONResponse:
         # Empty DB — compute returned without writing a cache file.
         return JSONResponse(result)
     return _galaxy_cached_response(request)
+
+
+def _galaxy_reduce(matrix, count: int, dim: int):
+    """PCA → 50d → UMAP → 3d, normalized to [-1, 1]. Blocking; call via a thread."""
+    import numpy as np
+
+    # Dimensionality reduction: PCA → 50d → UMAP → 3d
+    log.info("Galaxy: reducing %d points from %dd to 3d...", count, dim)
+
+    # Step 1: PCA to 50d (fast, removes noise dimensions)
+    from sklearn.decomposition import PCA as SkPCA
+
+    pca_dim = min(50, dim, count - 1)
+    pca = SkPCA(n_components=pca_dim)
+    pca50 = pca.fit_transform(matrix)
+    log.info("Galaxy: PCA %dd → %dd (%.1f%% variance)", dim, pca_dim,
+             pca.explained_variance_ratio_.sum() * 100)
+
+    # Step 2: UMAP to 3d (preserves local + global structure)
+    try:
+        from umap import UMAP
+        reducer = UMAP(
+            n_components=3,
+            n_neighbors=15,
+            min_dist=0.1,
+            metric="euclidean",  # faster than cosine on PCA-reduced data
+            random_state=42,
+            n_epochs=200,  # default 500, trade some quality for speed
+            n_jobs=-1,  # use all CPU cores
+            low_memory=True,
+        )
+        coords = reducer.fit_transform(pca50)
+        log.info("Galaxy: UMAP → 3d complete")
+    except ImportError:
+        log.warning("Galaxy: umap-learn not installed, falling back to PCA-only 3d")
+        pca3 = SkPCA(n_components=3)
+        coords = pca3.fit_transform(pca50)
+    except Exception as exc:
+        log.warning("Galaxy: UMAP failed (%s), falling back to PCA-only 3d", exc)
+        pca3 = SkPCA(n_components=3)
+        coords = pca3.fit_transform(pca50)
+
+    # Normalize to [-1, 1] range
+    max_abs = np.abs(coords).max()
+    if max_abs > 0:
+        coords = (coords / max_abs).astype(np.float32)
+
+    return coords
 
 
 async def _compute_galaxy(limit: int) -> dict:
@@ -2280,46 +2589,11 @@ async def _compute_galaxy(limit: int) -> dict:
         summaries.append(row["summary"] or "")
         importances.append(float(row["importance"]) if row["importance"] else 0.5)
 
-    # Dimensionality reduction: PCA → 50d → UMAP → 3d
-    log.info("Galaxy: reducing %d points from %dd to 3d...", count, dim)
-
-    # Step 1: PCA to 50d (fast, removes noise dimensions)
-    from sklearn.decomposition import PCA as SkPCA
-
-    pca_dim = min(50, dim, count - 1)
-    pca = SkPCA(n_components=pca_dim)
-    pca50 = pca.fit_transform(matrix)
-    log.info("Galaxy: PCA %dd → %dd (%.1f%% variance)", dim, pca_dim,
-             pca.explained_variance_ratio_.sum() * 100)
-
-    # Step 2: UMAP to 3d (preserves local + global structure)
-    try:
-        from umap import UMAP
-        reducer = UMAP(
-            n_components=3,
-            n_neighbors=15,
-            min_dist=0.1,
-            metric="euclidean",  # faster than cosine on PCA-reduced data
-            random_state=42,
-            n_epochs=200,  # default 500, trade some quality for speed
-            n_jobs=-1,  # use all CPU cores
-            low_memory=True,
-        )
-        coords = reducer.fit_transform(pca50)
-        log.info("Galaxy: UMAP → 3d complete")
-    except ImportError:
-        log.warning("Galaxy: umap-learn not installed, falling back to PCA-only 3d")
-        pca3 = SkPCA(n_components=3)
-        coords = pca3.fit_transform(pca50)
-    except Exception as exc:
-        log.warning("Galaxy: UMAP failed (%s), falling back to PCA-only 3d", exc)
-        pca3 = SkPCA(n_components=3)
-        coords = pca3.fit_transform(pca50)
-
-    # Normalize to [-1, 1] range
-    max_abs = np.abs(coords).max()
-    if max_abs > 0:
-        coords = (coords / max_abs).astype(np.float32)
+    # The reduction (PCA + UMAP) is pure CPU for minutes on 10k points. Run in
+    # the event loop it froze every other request — health checks, MCP calls,
+    # msg_send — for its whole duration (2 min 15 s on 2026-11-12, ten minutes
+    # after a restart, under load). A worker thread keeps the loop answering.
+    coords = await asyncio.to_thread(_galaxy_reduce, matrix, count, dim)
 
     # Flatten for JSON transfer. Coordinates are normalized to [-1, 1];
     # 4 decimals is sub-pixel at any zoom and roughly halves the JSON size
@@ -2338,7 +2612,7 @@ async def _compute_galaxy(limit: int) -> dict:
 
     # Cache — plain JSON plus a pre-compressed gz twin so cached requests
     # are a raw byte read (no parse, no re-serialize, no per-request gzip).
-    try:
+    def _write_cache() -> None:
         import gzip as _gzip
 
         payload = json.dumps(result, separators=(",", ":")).encode()
@@ -2346,6 +2620,9 @@ async def _compute_galaxy(limit: int) -> dict:
             f.write(payload)
         with open(_GALAXY_CACHE_GZ_PATH, "wb") as f:
             f.write(_gzip.compress(payload, 6))
+
+    try:
+        await asyncio.to_thread(_write_cache)
     except Exception:
         pass
 
@@ -3179,6 +3456,7 @@ api_routes = [
     Route("/api/scheduler/resume", api_scheduler_resume, methods=["POST"]),
     Route("/api/scheduler/task/{task_name}", api_scheduler_task_runs, methods=["GET"]),
     Route("/api/recall", api_recall),
+    Route("/api/search/preview", api_search_preview),
     Route("/api/smart-recall", api_smart_recall),
     Route("/api/brief", api_brief),
     Route("/api/library", api_library),
@@ -3199,3 +3477,101 @@ api_routes = [
     Route("/api/commonplace/search", api_commonplace_search),
     Route("/api/commonplace/{community_id}/memories", api_commonplace_memories),
 ]
+
+
+# --- API basics: health, index, uniform errors --------------------------------
+
+
+async def api_health(request: Request) -> JSONResponse:
+    """Liveness: is the process up and does the database answer?
+
+    One ``SELECT 1`` with a 2s limit — no counts, no locks. Made for polling
+    (dashboard connection check, container healthcheck, monitors); the
+    detailed signals are at /api/health/detailed. 503 when the database
+    does not answer.
+    """
+    from nobrainr.db.pool import get_pool
+
+    db = False
+    try:
+        pool = await asyncio.wait_for(get_pool(), timeout=2)
+        async with pool.acquire(timeout=2) as conn:
+            db = await conn.fetchval("SELECT 1", timeout=2) == 1
+    except Exception:
+        log.warning("health: database did not answer", exc_info=True)
+    return JSONResponse({"status": "ok" if db else "degraded", "db": db}, status_code=200 if db else 503)
+
+
+async def api_index(request: Request) -> JSONResponse:
+    """Every route of this API: path, methods, one-line description."""
+    eintraege = []
+    for route in api_routes:
+        if route.path in (_UNBEKANNT_PFAD, "/api/"):
+            continue
+        doc = (getattr(route.endpoint, "__doc__", None) or "").strip()
+        eintraege.append({
+            "path": route.path,
+            "methods": sorted((route.methods or set()) - {"HEAD"}),
+            "summary": doc.split("\n", 1)[0].strip(),
+        })
+    eintraege.sort(key=lambda e: (e["path"], e["methods"]))
+    return JSONResponse({"count": len(eintraege), "routes": eintraege})
+
+
+async def api_not_found(request: Request) -> JSONResponse:
+    """Unknown /api path: a JSON 404 like every other error here (it used to fall through to the MCP app's plain-text 404).
+
+    This route catches everything nothing else took, so a known path asked
+    with the wrong method lands here too; that stays a 405 with the methods
+    that do exist.
+    """
+    from starlette.routing import Match
+
+    erlaubt: set[str] = set()
+    for route in api_routes:
+        if route.path != _UNBEKANNT_PFAD and route.matches(request.scope)[0] == Match.PARTIAL:
+            erlaubt |= (route.methods or set()) - {"HEAD"}
+    if erlaubt:
+        methoden = sorted(erlaubt)
+        return JSONResponse({"error": f"Method {request.method} not allowed", "allowed": methoden},
+                            status_code=405, headers={"Allow": ", ".join(methoden)})
+    return JSONResponse({"error": f"No such route: {request.url.path}", "index": "/api"}, status_code=404)
+
+
+def _mit_json_fehlern(route: Route) -> Route:
+    """Same route, but its failures are JSON.
+
+    A bad parameter (BadParam) is a 400 with the reason. Anything unexpected
+    is logged with its traceback and answered as 500 {"error": ...}; it used
+    to be Starlette's plain-text "Internal Server Error", on which the
+    dashboard's ``response.json()`` threw a second, unrelated error.
+    Streaming answers are untouched: only what is raised before the response
+    object exists passes through here.
+    """
+    endpoint = route.endpoint
+
+    async def sicher(request: Request):
+        try:
+            return await endpoint(request)
+        except BadParam as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Unhandled error in %s %s", request.method, request.url.path)
+            return JSONResponse({"error": "Internal server error"}, status_code=500)
+
+    sicher.__name__ = getattr(endpoint, "__name__", "endpoint")
+    sicher.__doc__ = endpoint.__doc__
+    return Route(route.path, sicher, methods=sorted(route.methods) if route.methods else None, name=route.name)
+
+
+_UNBEKANNT_PFAD = "/api/{rest:path}"
+api_routes += [
+    Route("/api/health", api_health),
+    Route("/api", api_index),
+    Route("/api/", api_index),  # the dashboard's nginx only proxies paths under /api/
+]
+api_routes = [_mit_json_fehlern(r) for r in api_routes]
+# Last, so it only sees what nothing above matched.
+api_routes.append(Route(_UNBEKANNT_PFAD, api_not_found, methods=["GET", "POST", "PUT", "PATCH", "DELETE"]))

@@ -378,6 +378,59 @@ def _build_filter_clause(
     return clause, params, idx
 
 
+_FTS_AUSDRUCK = ("to_tsvector('simple', nb_unaccent(content || ' ' || COALESCE(search_keys, '') "
+                 "|| ' ' || COALESCE(fts_context, '')))")
+
+
+async def fts_memories(
+    text_query: str,
+    *,
+    limit: int = 50,
+    tags: list[str] | None = None,
+    category: str | None = None,
+    source_machine: str | None = None,
+) -> list[dict]:
+    """Full-text matches only: no embedding, no reranker, no graph branches.
+
+    For callers that must answer at once (the dashboard's search preview, the
+    command palette, hooks). Same predicate as ``idx_memories_content_fts``.
+
+    ``ts_rank`` has to rebuild the tsvector of every row it ranks — the index
+    stores it, the table does not. Ranking every match of a frequent word took
+    seconds (measured 2026-11-10: "bimavo", 34,193 matches, 5.1s; "der" 5.7s;
+    "docker" 1.0s). So the matches are first cut to the most important, most
+    recent ``candidates`` rows — that sort needs no tsvector — and only those
+    are ranked: 0.5s / 0.46s / 0.38s for the same words. A query with fewer
+    matches than ``candidates`` is ranked exactly as before.
+    """
+    candidates = max(limit * 4, 300)
+    extra, fparams, _ = _build_filter_clause(4, tags, category, None, source_machine)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT id, content, summary, source_type, source_machine, tags, category,
+                   confidence, metadata, created_at, updated_at, importance, stability,
+                   access_count, last_accessed_at, quality_score, embedding_model, tier, trust_score,
+                   verified_at, superseded_by, claim_kind,
+                   ts_rank({_FTS_AUSDRUCK}, plainto_tsquery('simple', nb_unaccent($1))) AS rank
+            FROM (
+                SELECT *
+                FROM memories
+                WHERE {_FTS_AUSDRUCK} @@ plainto_tsquery('simple', nb_unaccent($1))
+                  AND tier < 3 AND superseded_by IS NULL AND (valid_to IS NULL OR valid_to > now())
+                  {extra}
+                ORDER BY importance DESC, created_at DESC
+                LIMIT $3
+            ) AS kandidaten
+            ORDER BY rank DESC, importance DESC
+            LIMIT $2
+            """,
+            text_query, limit, candidates, *fparams,
+        )
+    return [_row_to_dict(row) for row in rows]
+
+
 async def _hybrid_search_rrf(
     pool,
     embedding,
@@ -3859,11 +3912,28 @@ async def get_categories() -> list[str]:
         return [r["category"] for r in rows]
 
 
-async def get_all_tags() -> list[dict]:
+async def get_all_tags(limit: int | None = None, q: str | None = None) -> list[dict]:
+    """Tags with their usage count, most used first.
+
+    ``limit`` caps the list (None = all), ``q`` keeps tags containing that text
+    (case-insensitive; ``%`` and ``_`` are matched literally).
+    """
+    muster = None
+    if q:
+        muster = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT unnest(tags) as tag, count(*) as cnt FROM memories GROUP BY tag ORDER BY cnt DESC"
+            """
+            SELECT tag, count(*) AS cnt
+            FROM (SELECT unnest(tags) AS tag FROM memories) t
+            WHERE $1::text IS NULL OR tag ILIKE $1
+            GROUP BY tag
+            ORDER BY cnt DESC, tag
+            LIMIT $2
+            """,
+            muster,
+            limit,
         )
         return [dict(r) for r in rows]
 
