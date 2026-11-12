@@ -1,10 +1,14 @@
 <template>
   <v-app class="folio-app">
     <AppBar />
+    <!-- Says so when the backend does not answer; see stores/connection.ts. -->
+    <ConnectionBanner />
     <v-main>
       <router-view v-slot="{ Component }">
         <transition name="folio-fade" mode="out-in">
-          <component :is="Component" />
+          <!-- The key changes when the backend is back after an outage (or
+               the user asks to load again): the view remounts and fetches. -->
+          <component :is="Component" :key="connection.generation" />
         </transition>
       </router-view>
     </v-main>
@@ -27,9 +31,12 @@
 <script setup lang="ts">
 import { defineAsyncComponent } from 'vue'
 import AppBar from '@/components/AppBar.vue'
+import ConnectionBanner from '@/components/ConnectionBanner.vue'
 import { useChatStore } from '@/stores/chat'
+import { useConnectionStore } from '@/stores/connection'
 
 const chatStore = useChatStore()
+const connection = useConnectionStore()
 const ChatPanel = defineAsyncComponent(() => import('@/components/ChatPanel.vue'))
 const FirstVisitOnboarding = defineAsyncComponent(() => import('@/components/FirstVisitOnboarding.vue'))
 const CommandPalette = defineAsyncComponent(() => import('@/components/CommandPalette.vue'))
