@@ -106,6 +106,89 @@ def _datei_bytes(pfad: str) -> bytes:
         return f.read()
 
 
+_GRAPH_KOMPAKT_FORMAT = "compact-1"
+
+
+def graph_kompakt(data: dict) -> dict:
+    """The graph as parallel arrays instead of one object per node and edge.
+
+    Measured 2026-11-10 on 3,498 nodes / 63,167 edges: the object form is
+    12.4 MB (2.9 MB gzipped), 8.6 MB of it the three UUIDs every edge carries.
+    Here an edge is two node indexes, an index into ``edge_labels`` and a
+    confidence. The dashboard never reads the edge id, so it is dropped; edges
+    whose endpoint is not among the nodes are dropped too (the client skipped
+    them anyway). Coordinates keep one decimal — the layout spans thousands.
+    """
+    nodes = [n["data"] for n in data.get("nodes", [])]
+    index = {n["id"]: i for i, n in enumerate(nodes)}
+    labels: dict[str, int] = {}
+    source: list[int] = []
+    target: list[int] = []
+    label: list[int] = []
+    confidence: list[float | None] = []
+    for edge in data.get("edges", []):
+        d = edge["data"]
+        s, t = index.get(d.get("source")), index.get(d.get("target"))
+        if s is None or t is None:
+            continue
+        source.append(s)
+        target.append(t)
+        label.append(labels.setdefault(d.get("label") or "", len(labels)))
+        c = d.get("confidence")
+        confidence.append(round(c, 2) if isinstance(c, (int, float)) else None)
+
+    def spalte(feld: str, standard=None) -> list:
+        return [n.get(feld, standard) for n in nodes]
+
+    def koordinate(feld: str) -> list[float]:
+        return [round(float(n.get(feld) or 0.0), 1) for n in nodes]
+
+    return {
+        "format": _GRAPH_KOMPAKT_FORMAT,
+        "nodes": {
+            "id": spalte("id"),
+            "label": spalte("label"),
+            "type": spalte("type"),
+            "description": spalte("description"),
+            "mention_count": spalte("mention_count", 0),
+            "x": koordinate("x"),
+            "y": koordinate("y"),
+            "community": spalte("community", -1),
+        },
+        "edges": {"source": source, "target": target, "label": label, "confidence": confidence},
+        "edge_labels": list(labels),
+    }
+
+
+def _graph_kompakt_bytes(pfad: str) -> bytes:
+    """Compact form of the cached graph, kept in a file beside the cache.
+
+    Rebuilt when the cache is newer than it; written to a temp file first so
+    a reader never sees half a file.
+    """
+    import os
+
+    kompakt = pfad + ".compact"
+    try:
+        if os.path.getmtime(kompakt) >= os.path.getmtime(pfad):
+            roh = _datei_bytes(kompakt)
+            if roh[:1] == b"{" and roh.rstrip()[-1:] == b"}":
+                return roh
+    except OSError:
+        pass
+    with open(pfad, "rb") as f:
+        data = json.load(f)
+    roh = json.dumps(graph_kompakt(data), separators=(",", ":"), ensure_ascii=False).encode()
+    try:
+        tmp = f"{kompakt}.{os.getpid()}.tmp"
+        with open(tmp, "wb") as f:
+            f.write(roh)
+        os.replace(tmp, kompakt)
+    except OSError:
+        log.warning("Could not write %s; serving the compact graph uncached", kompakt, exc_info=True)
+    return roh
+
+
 def _graph_im_hintergrund_erneuern() -> None:
     """Recompute the graph layout without making a request wait for it.
 
@@ -139,10 +222,13 @@ async def api_graph(request: Request) -> JSONResponse:
     # same idea as /api/galaxy). The file is sent as bytes: parsing 12 MB of
     # JSON just to serialise it again cost ~0.5s of event-loop time per call.
     force_refresh = request.query_params.get("refresh", "").lower() == "true"
+    # ?format=compact: parallel arrays, about a seventh of the size (see
+    # graph_kompakt). The object form stays the default for other callers.
+    kompakt = request.query_params.get("format", "").lower() == "compact"
     if not force_refresh and os.path.exists(_GRAPH_CACHE_PATH):
         cache_age = _time.time() - os.path.getmtime(_GRAPH_CACHE_PATH)
         try:
-            roh = await asyncio.to_thread(_datei_bytes, _GRAPH_CACHE_PATH)
+            roh = await asyncio.to_thread(_graph_kompakt_bytes if kompakt else _datei_bytes, _GRAPH_CACHE_PATH)
             if roh[:1] == b"{" and roh.rstrip()[-1:] == b"}":
                 if cache_age >= 86400:
                     _graph_im_hintergrund_erneuern()
@@ -274,7 +360,7 @@ async def api_graph(request: Request) -> JSONResponse:
     except Exception:
         log.warning("Failed to save graph cache", exc_info=True)
 
-    return JSONResponse(data)
+    return JSONResponse(graph_kompakt(data) if kompakt else data)
 
 
 _COMMUNITY_CACHE_PATH = "/app/graph_cache/communities.json"
