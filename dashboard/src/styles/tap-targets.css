@@ -43,4 +43,18 @@
   .v-input .v-field .v-field__input {
     min-height: 44px;
   }
+  /* Graph, constellarium: zoom float, category filter, plate actions, the
+     seek field and the Topics/Entities switch. */
+  .gzf-btn,
+  .cats-btn,
+  .plate-act {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .seek-input {
+    min-height: 44px;
+  }
+  .v-btn-group.v-btn-group .v-btn {
+    min-height: 44px;
+  }
 }
