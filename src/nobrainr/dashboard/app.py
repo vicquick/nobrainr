@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.routing import Mount
 
 from nobrainr.config import settings
@@ -55,6 +56,37 @@ def _patch_mcp_session_init_race():
 
 
 _patch_mcp_session_init_race()
+
+
+class ApiGzip:
+    """gzip the JSON answers of the dashboard API, and nothing else.
+
+    Until 2026-11-09 only /api/galaxy compressed itself; /api/graph went out
+    as 12.7 MB and /api/tags as 1.4 MB of plain JSON, over the VPN and to
+    phones. JSON compresses to roughly a fifth.
+
+    Deliberately narrow: only paths under /api/, and not the streaming ones
+    (SSE events, chat tokens, audio) — buffering those in a compressor would
+    hold tokens back. The MCP transports (/mcp, /sse, /messages) are not
+    touched at all. Answers that already carry a Content-Encoding (galaxy's
+    pre-compressed cache) pass through unchanged — GZipMiddleware checks that.
+    """
+
+    OHNE = ("/api/events", "/api/chat", "/api/tts", "/api/transcribe")
+
+    def __init__(self, app, minimum_size: int = 1024, compresslevel: int = 5) -> None:
+        self.app = app
+        self.gzip = GZipMiddleware(app, minimum_size=minimum_size, compresslevel=compresslevel)
+
+    @classmethod
+    def gilt_fuer(cls, pfad: str) -> bool:
+        return pfad.startswith("/api/") and not pfad.startswith(cls.OHNE)
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] == "http" and self.gilt_fuer(scope.get("path", "")):
+            await self.gzip(scope, receive, send)
+        else:
+            await self.app(scope, receive, send)
 
 
 async def _warm_graph_cache():
@@ -330,6 +362,7 @@ def create_app():
             allow_methods=["GET", "POST", "DELETE"],
             allow_headers=["*"],
         ),
+        Middleware(ApiGzip),
     ]
 
     app = Starlette(routes=routes, lifespan=lifespan, middleware=middleware)
