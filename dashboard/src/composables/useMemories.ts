@@ -24,18 +24,35 @@ export function useMemories() {
   const tags = ref<{ tag: string; cnt: number }[]>([])
   const lastParams = ref<Record<string, string | number>>({})
 
-  async function fetchMemories(params?: Record<string, string | number>) {
+  // Two things used to go wrong here (measured 2026-11-10):
+  // - the view's onMounted sets the filters from the URL (which fires the
+  //   filter watcher) and then searches itself: two identical requests.
+  //   Callers with the same parameters now share the request in flight.
+  // - a slow answer for an older query could arrive after a newer one and
+  //   overwrite its results. Only the most recent request may write.
+  let laufend: { key: string; promise: Promise<void> } | null = null
+  let folge = 0
+
+  function fetchMemories(params?: Record<string, string | number>): Promise<void> {
+    const p = params || {}
+    const key = JSON.stringify(p)
+    if (laufend && laufend.key === key) return laufend.promise
     loading.value = true
-    lastParams.value = params || {}
-    try {
-      const { data } = await api.get<Memory[]>('/api/memories', {
-        params: { ...params, limit: PAGE_SIZE, offset: 0 },
+    lastParams.value = p
+    const nr = ++folge
+    const promise: Promise<void> = api
+      .get<Memory[]>('/api/memories', { params: { ...p, limit: PAGE_SIZE, offset: 0 } })
+      .then(({ data }) => {
+        if (nr !== folge) return
+        memories.value = data
+        hasMore.value = data.length === PAGE_SIZE
       })
-      memories.value = data
-      hasMore.value = data.length === PAGE_SIZE
-    } finally {
-      loading.value = false
-    }
+      .finally(() => {
+        if (nr === folge) loading.value = false
+        if (laufend && laufend.promise === promise) laufend = null
+      })
+    laufend = { key, promise }
+    return promise
   }
 
   async function loadMore() {
@@ -91,9 +108,17 @@ export function useMemories() {
     categories.value = data
   }
 
+  // The facet row shows the most used tags (and "more" expands it). The full
+  // list is ~1.4 MB of mostly single-use routing tags and rendering it as
+  // chips is thousands of DOM nodes — ask for the head of the list only.
+  // (Older backends ignore `limit` and still answer with everything.)
+  const TAG_LIST_LIMIT = 300
+
   async function fetchTags() {
-    const { data } = await api.get<{ tag: string; cnt: number }[]>('/api/tags')
-    tags.value = data
+    const { data } = await api.get<{ tag: string; cnt: number }[]>('/api/tags', {
+      params: { limit: TAG_LIST_LIMIT },
+    })
+    tags.value = data.slice(0, TAG_LIST_LIMIT)
   }
 
   function fetchMachines() {
