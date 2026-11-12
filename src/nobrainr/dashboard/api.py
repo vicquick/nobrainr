@@ -146,6 +146,89 @@ def _datei_bytes(pfad: str) -> bytes:
         return f.read()
 
 
+_GRAPH_KOMPAKT_FORMAT = "compact-1"
+
+
+def graph_kompakt(data: dict) -> dict:
+    """The graph as parallel arrays instead of one object per node and edge.
+
+    Measured 2026-11-10 on 3,498 nodes / 63,167 edges: the object form is
+    12.4 MB (2.9 MB gzipped), 8.6 MB of it the three UUIDs every edge carries.
+    Here an edge is two node indexes, an index into ``edge_labels`` and a
+    confidence. The dashboard never reads the edge id, so it is dropped; edges
+    whose endpoint is not among the nodes are dropped too (the client skipped
+    them anyway). Coordinates keep one decimal — the layout spans thousands.
+    """
+    nodes = [n["data"] for n in data.get("nodes", [])]
+    index = {n["id"]: i for i, n in enumerate(nodes)}
+    labels: dict[str, int] = {}
+    source: list[int] = []
+    target: list[int] = []
+    label: list[int] = []
+    confidence: list[float | None] = []
+    for edge in data.get("edges", []):
+        d = edge["data"]
+        s, t = index.get(d.get("source")), index.get(d.get("target"))
+        if s is None or t is None:
+            continue
+        source.append(s)
+        target.append(t)
+        label.append(labels.setdefault(d.get("label") or "", len(labels)))
+        c = d.get("confidence")
+        confidence.append(round(c, 2) if isinstance(c, (int, float)) else None)
+
+    def spalte(feld: str, standard=None) -> list:
+        return [n.get(feld, standard) for n in nodes]
+
+    def koordinate(feld: str) -> list[float]:
+        return [round(float(n.get(feld) or 0.0), 1) for n in nodes]
+
+    return {
+        "format": _GRAPH_KOMPAKT_FORMAT,
+        "nodes": {
+            "id": spalte("id"),
+            "label": spalte("label"),
+            "type": spalte("type"),
+            "description": spalte("description"),
+            "mention_count": spalte("mention_count", 0),
+            "x": koordinate("x"),
+            "y": koordinate("y"),
+            "community": spalte("community", -1),
+        },
+        "edges": {"source": source, "target": target, "label": label, "confidence": confidence},
+        "edge_labels": list(labels),
+    }
+
+
+def _graph_kompakt_bytes(pfad: str) -> bytes:
+    """Compact form of the cached graph, kept in a file beside the cache.
+
+    Rebuilt when the cache is newer than it; written to a temp file first so
+    a reader never sees half a file.
+    """
+    import os
+
+    kompakt = pfad + ".compact"
+    try:
+        if os.path.getmtime(kompakt) >= os.path.getmtime(pfad):
+            roh = _datei_bytes(kompakt)
+            if roh[:1] == b"{" and roh.rstrip()[-1:] == b"}":
+                return roh
+    except OSError:
+        pass
+    with open(pfad, "rb") as f:
+        data = json.load(f)
+    roh = json.dumps(graph_kompakt(data), separators=(",", ":"), ensure_ascii=False).encode()
+    try:
+        tmp = f"{kompakt}.{os.getpid()}.tmp"
+        with open(tmp, "wb") as f:
+            f.write(roh)
+        os.replace(tmp, kompakt)
+    except OSError:
+        log.warning("Could not write %s; serving the compact graph uncached", kompakt, exc_info=True)
+    return roh
+
+
 def _graph_im_hintergrund_erneuern() -> None:
     """Recompute the graph layout without making a request wait for it.
 
@@ -179,10 +262,13 @@ async def api_graph(request: Request) -> JSONResponse:
     # same idea as /api/galaxy). The file is sent as bytes: parsing 12 MB of
     # JSON just to serialise it again cost ~0.5s of event-loop time per call.
     force_refresh = request.query_params.get("refresh", "").lower() == "true"
+    # ?format=compact: parallel arrays, about a seventh of the size (see
+    # graph_kompakt). The object form stays the default for other callers.
+    kompakt = request.query_params.get("format", "").lower() == "compact"
     if not force_refresh and os.path.exists(_GRAPH_CACHE_PATH):
         cache_age = _time.time() - os.path.getmtime(_GRAPH_CACHE_PATH)
         try:
-            roh = await asyncio.to_thread(_datei_bytes, _GRAPH_CACHE_PATH)
+            roh = await asyncio.to_thread(_graph_kompakt_bytes if kompakt else _datei_bytes, _GRAPH_CACHE_PATH)
             if roh[:1] == b"{" and roh.rstrip()[-1:] == b"}":
                 if cache_age >= 86400:
                     _graph_im_hintergrund_erneuern()
@@ -314,7 +400,7 @@ async def api_graph(request: Request) -> JSONResponse:
     except Exception:
         log.warning("Failed to save graph cache", exc_info=True)
 
-    return JSONResponse(data)
+    return JSONResponse(graph_kompakt(data) if kompakt else data)
 
 
 _COMMUNITY_CACHE_PATH = "/app/graph_cache/communities.json"
@@ -1029,50 +1115,70 @@ async def api_scheduler_task_runs(request: Request) -> JSONResponse:
 async def api_recall(request: Request) -> JSONResponse:
     """Fast text-only memory search (PostgreSQL full-text, no embedding call).
 
-    The predicate is written exactly like ``idx_memories_content_fts`` (and
-    like the FTS branch of ``queries.search_memories``): 'simple' config over
-    the unaccented content plus search keys and FTS context. Until 2026-11-09
-    this used the English text-search config on the bare content, which no index covers — every
-    call was a parallel sequential scan over all memories (10-15s on 147k rows).
-    All words must match (``plainto_tsquery``), as in the main search.
+    Until 2026-11-09 this used the English text-search config on the bare
+    content, which no index covers — every call was a sequential scan over all
+    memories (10-15s on 147k rows). It now runs ``queries.fts_memories``: the
+    predicate ``idx_memories_content_fts`` covers, all words must match, and
+    frequent words are ranked on a capped candidate set (see there).
+    Superseded, expired and cold memories are no longer returned.
     """
     q = request.query_params.get("q", "").strip()
     if not q:
         return JSONResponse([])
 
-    limit = min(int(request.query_params.get("limit", "5")), 100)
+    try:
+        limit = max(1, min(int(request.query_params.get("limit", "5")), 100))
+    except ValueError:
+        return JSONResponse({"error": "Invalid limit"}, status_code=400)
 
-    from nobrainr.db.pool import get_pool
+    results = await queries.fts_memories(q, limit=limit)
+    # Track access on recalled memories
+    if results:
+        from nobrainr.db.pool import get_pool
 
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT id, content, summary, source_type, source_machine, tags, category,
-                   confidence, metadata, created_at, updated_at, importance, stability,
-                   quality_score,
-                   ts_rank(
-                       to_tsvector('simple', nb_unaccent(content || ' ' || COALESCE(search_keys, '') || ' ' || COALESCE(fts_context, ''))),
-                       plainto_tsquery('simple', nb_unaccent($1))
-                   ) AS rank
-            FROM memories
-            WHERE to_tsvector('simple', nb_unaccent(content || ' ' || COALESCE(search_keys, '') || ' ' || COALESCE(fts_context, '')))
-                  @@ plainto_tsquery('simple', nb_unaccent($1))
-            ORDER BY rank DESC, importance DESC
-            LIMIT $2
-            """,
-            q,
-            limit,
-        )
-        results = [queries._row_to_dict(row) for row in rows]
-        # Track access on recalled memories
-        if results:
-            result_ids = [UUID(r["id"]) for r in results]
+        pool = await get_pool()
+        async with pool.acquire() as conn:
             await conn.execute(
                 "UPDATE memories SET last_accessed_at = now(), access_count = access_count + 1 WHERE id = ANY($1)",
-                result_ids,
+                [UUID(r["id"]) for r in results],
             )
-        return JSONResponse(results)
+    return JSONResponse(results)
+
+
+async def api_search_preview(request: Request) -> JSONResponse:
+    """Full-text results for the dashboard to show while the full search runs.
+
+    /api/memories?q= embeds the query, fuses five branches and reranks: 1-3s
+    on a quiet GPU, up to the 11s budget on a busy one. This answers the same
+    question from the text index alone, with the same filters, so the list is
+    on screen at once and the full answer replaces it when it arrives.
+
+    A preview is not a search: no access tracking, no trace id, no
+    auto-negative outcomes — nothing here may become training signal.
+    """
+    q = request.query_params.get("q", "").strip()
+    if not q:
+        return JSONResponse([])
+    category = request.query_params.get("category") or None
+    source_machine = request.query_params.get("source_machine") or None
+    tags_param = request.query_params.get("tags", "").strip()
+    tags = [t.strip() for t in tags_param.split(",") if t.strip()] if tags_param else None
+    try:
+        limit = max(1, min(int(request.query_params.get("limit", "50")), 200))
+    except ValueError:
+        return JSONResponse({"error": "Invalid limit"}, status_code=400)
+
+    memories = await queries.fts_memories(
+        q, limit=limit, tags=tags, category=category, source_machine=source_machine,
+    )
+    min_quality_param = request.query_params.get("min_quality", "").strip()
+    if min_quality_param:
+        try:
+            min_quality = max(0.0, min(1.0, float(min_quality_param)))
+            memories = [m for m in memories if (m.get("quality_score") or 0) >= min_quality]
+        except ValueError:
+            pass
+    return JSONResponse(memories)
 
 
 async def api_smart_recall(request: Request) -> JSONResponse:
@@ -3334,6 +3440,7 @@ api_routes = [
     Route("/api/scheduler/resume", api_scheduler_resume, methods=["POST"]),
     Route("/api/scheduler/task/{task_name}", api_scheduler_task_runs, methods=["GET"]),
     Route("/api/recall", api_recall),
+    Route("/api/search/preview", api_search_preview),
     Route("/api/smart-recall", api_smart_recall),
     Route("/api/brief", api_brief),
     Route("/api/library", api_library),
