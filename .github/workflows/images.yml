@@ -1,0 +1,46 @@
+name: Images
+
+# Patch layers over upstream images that go stale between releases:
+#   ghcr.io/vicquick/nobrainr-postgres  (pgvector + Debian security updates)
+#   ghcr.io/vicquick/crawl4ai-patched   (crawl4ai + apt/pip security updates)
+# Weekly so new fixes arrive without a code change.
+on:
+  push:
+    branches: [main]
+    paths: ["docker/postgres/**", "docker/crawl4ai/**", ".github/workflows/images.yml"]
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - context: docker/postgres
+            image: ghcr.io/vicquick/nobrainr-postgres
+            tag: pg18-bookworm
+          - context: docker/crawl4ai
+            image: ghcr.io/vicquick/crawl4ai-patched
+            tag: "0.9.5"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          pull: true
+          push: true
+          tags: |
+            ${{ matrix.image }}:${{ matrix.tag }}
+            ${{ matrix.image }}:${{ matrix.tag }}-${{ github.run_number }}
