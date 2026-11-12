@@ -33,4 +33,14 @@
   .v-list--nav .v-list-item--link {
     min-height: 44px;
   }
+  /* Found on the deployed page (2026-11-12): the page buttons of the timeline
+     and Vuetify's text field. Both set their own size with the same weight as
+     a single class, so these two need one more step of specificity. */
+  .page-nav button.page-btn {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .v-input .v-field .v-field__input {
+    min-height: 44px;
+  }
 }
