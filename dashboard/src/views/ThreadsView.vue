@@ -281,7 +281,9 @@ onMounted(() => {
 }
 .thread-line {
   display: grid;
-  grid-template-columns: 60px 1fr 20px;
+  /* minmax(0, …): a plain 1fr track grows to fit a long nowrap title and
+     pushed the arrow off the right edge. */
+  grid-template-columns: 60px minmax(0, 1fr) 20px;
   gap: 12px;
   padding: 16px 8px;
   border-bottom: 1px dotted var(--cp-gold-faint);
@@ -364,11 +366,19 @@ onMounted(() => {
   .folio-button { width: 100%; padding: 8px 16px; }
 
   .thread-line {
-    grid-template-columns: 36px 1fr 16px;
+    grid-template-columns: 36px minmax(0, 1fr) 16px;
     gap: 8px;
     padding: 12px 4px;
   }
-  .thread-title { font-size: 14px; }
+  /* Narrow screens cut a title after ~35 characters; give it two lines. */
+  .thread-title {
+    font-size: 14px;
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
   .thread-meta { font-size: 11px; flex-wrap: wrap; }
 }
 </style>

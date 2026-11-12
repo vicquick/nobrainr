@@ -666,20 +666,37 @@ onMounted(() => {
   .progress-block { margin: 0 0 24px; }
   .alert-line { margin: 0; }
 
-  /* Office table: scroll horizontally if columns too tight,
-     and shrink first-column max-width so long task names truncate */
-  .office-table {
-    display: block;
-    overflow-x: auto;
-    white-space: nowrap;
+  /* Office table: four columns do not fit. It used to scroll sideways, which
+     hid "last observed" and "times" behind an edge nobody knew to drag.
+     Each discipline is now two lines: name and count, then cadence and
+     last observed. The column heads go; the values name themselves
+     ("every 6 hours", "3h ago", "12 ×"). */
+  .office-table, .office-table tbody { display: block; }
+  .office-table thead { display: none; }
+  .office-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "name    runs"
+      "cadence last";
+    gap: 3px 12px;
+    padding: 11px 4px;
+    border-bottom: 1px dotted var(--cp-gold-faint);
+  }
+  .office-row td { padding: 0; border-bottom: 0; }
+  .office-row td:first-child {
+    grid-area: name;
+    display: flex; align-items: baseline; gap: 8px; min-width: 0;
   }
   .office-row td:first-child .task-name {
-    display: inline-block;
-    max-width: 140px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    vertical-align: middle;
+    min-width: 0; margin-right: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  .office-row .task-type { flex: none; }
+  .office-row .task-cadence { grid-area: cadence; font-size: 12px; }
+  .office-row .task-last { grid-area: last; font-size: 12px; text-align: right; }
+  .office-row .task-runs { grid-area: runs; }
+  .office-row .task-runs::after { content: ' ×'; color: var(--cp-ink-mute); }
 
   /* Events log: stack each row vertically — kicker line, then meta */
   .event-line {
