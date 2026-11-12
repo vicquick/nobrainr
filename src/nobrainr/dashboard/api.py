@@ -2498,6 +2498,54 @@ async def api_galaxy(request: Request) -> JSONResponse:
     return _galaxy_cached_response(request)
 
 
+def _galaxy_reduce(matrix, count: int, dim: int):
+    """PCA → 50d → UMAP → 3d, normalized to [-1, 1]. Blocking; call via a thread."""
+    import numpy as np
+
+    # Dimensionality reduction: PCA → 50d → UMAP → 3d
+    log.info("Galaxy: reducing %d points from %dd to 3d...", count, dim)
+
+    # Step 1: PCA to 50d (fast, removes noise dimensions)
+    from sklearn.decomposition import PCA as SkPCA
+
+    pca_dim = min(50, dim, count - 1)
+    pca = SkPCA(n_components=pca_dim)
+    pca50 = pca.fit_transform(matrix)
+    log.info("Galaxy: PCA %dd → %dd (%.1f%% variance)", dim, pca_dim,
+             pca.explained_variance_ratio_.sum() * 100)
+
+    # Step 2: UMAP to 3d (preserves local + global structure)
+    try:
+        from umap import UMAP
+        reducer = UMAP(
+            n_components=3,
+            n_neighbors=15,
+            min_dist=0.1,
+            metric="euclidean",  # faster than cosine on PCA-reduced data
+            random_state=42,
+            n_epochs=200,  # default 500, trade some quality for speed
+            n_jobs=-1,  # use all CPU cores
+            low_memory=True,
+        )
+        coords = reducer.fit_transform(pca50)
+        log.info("Galaxy: UMAP → 3d complete")
+    except ImportError:
+        log.warning("Galaxy: umap-learn not installed, falling back to PCA-only 3d")
+        pca3 = SkPCA(n_components=3)
+        coords = pca3.fit_transform(pca50)
+    except Exception as exc:
+        log.warning("Galaxy: UMAP failed (%s), falling back to PCA-only 3d", exc)
+        pca3 = SkPCA(n_components=3)
+        coords = pca3.fit_transform(pca50)
+
+    # Normalize to [-1, 1] range
+    max_abs = np.abs(coords).max()
+    if max_abs > 0:
+        coords = (coords / max_abs).astype(np.float32)
+
+    return coords
+
+
 async def _compute_galaxy(limit: int) -> dict:
     """Run the embeddings → PCA → UMAP pipeline and write the cache file."""
     import json
@@ -2541,46 +2589,11 @@ async def _compute_galaxy(limit: int) -> dict:
         summaries.append(row["summary"] or "")
         importances.append(float(row["importance"]) if row["importance"] else 0.5)
 
-    # Dimensionality reduction: PCA → 50d → UMAP → 3d
-    log.info("Galaxy: reducing %d points from %dd to 3d...", count, dim)
-
-    # Step 1: PCA to 50d (fast, removes noise dimensions)
-    from sklearn.decomposition import PCA as SkPCA
-
-    pca_dim = min(50, dim, count - 1)
-    pca = SkPCA(n_components=pca_dim)
-    pca50 = pca.fit_transform(matrix)
-    log.info("Galaxy: PCA %dd → %dd (%.1f%% variance)", dim, pca_dim,
-             pca.explained_variance_ratio_.sum() * 100)
-
-    # Step 2: UMAP to 3d (preserves local + global structure)
-    try:
-        from umap import UMAP
-        reducer = UMAP(
-            n_components=3,
-            n_neighbors=15,
-            min_dist=0.1,
-            metric="euclidean",  # faster than cosine on PCA-reduced data
-            random_state=42,
-            n_epochs=200,  # default 500, trade some quality for speed
-            n_jobs=-1,  # use all CPU cores
-            low_memory=True,
-        )
-        coords = reducer.fit_transform(pca50)
-        log.info("Galaxy: UMAP → 3d complete")
-    except ImportError:
-        log.warning("Galaxy: umap-learn not installed, falling back to PCA-only 3d")
-        pca3 = SkPCA(n_components=3)
-        coords = pca3.fit_transform(pca50)
-    except Exception as exc:
-        log.warning("Galaxy: UMAP failed (%s), falling back to PCA-only 3d", exc)
-        pca3 = SkPCA(n_components=3)
-        coords = pca3.fit_transform(pca50)
-
-    # Normalize to [-1, 1] range
-    max_abs = np.abs(coords).max()
-    if max_abs > 0:
-        coords = (coords / max_abs).astype(np.float32)
+    # The reduction (PCA + UMAP) is pure CPU for minutes on 10k points. Run in
+    # the event loop it froze every other request — health checks, MCP calls,
+    # msg_send — for its whole duration (2 min 15 s on 2026-11-12, ten minutes
+    # after a restart, under load). A worker thread keeps the loop answering.
+    coords = await asyncio.to_thread(_galaxy_reduce, matrix, count, dim)
 
     # Flatten for JSON transfer. Coordinates are normalized to [-1, 1];
     # 4 decimals is sub-pixel at any zoom and roughly halves the JSON size
@@ -2599,7 +2612,7 @@ async def _compute_galaxy(limit: int) -> dict:
 
     # Cache — plain JSON plus a pre-compressed gz twin so cached requests
     # are a raw byte read (no parse, no re-serialize, no per-request gzip).
-    try:
+    def _write_cache() -> None:
         import gzip as _gzip
 
         payload = json.dumps(result, separators=(",", ":")).encode()
@@ -2607,6 +2620,9 @@ async def _compute_galaxy(limit: int) -> dict:
             f.write(payload)
         with open(_GALAXY_CACHE_GZ_PATH, "wb") as f:
             f.write(_gzip.compress(payload, 6))
+
+    try:
+        await asyncio.to_thread(_write_cache)
     except Exception:
         pass
 
