@@ -48,8 +48,10 @@ USER nobrainr
 # Expose MCP SSE port
 EXPOSE 8420
 
-# Health check — /api/stats returns JSON (fast, non-streaming)
+# Health check — /api/health: one SELECT 1, 503 when the database does not
+# answer. (Until 2026-11-10 this polled /api/stats: ~15 count queries, 2s,
+# every 30s — and a slow database made the container look unhealthy.)
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=20s \
-    CMD curl -sf http://localhost:8420/api/stats > /dev/null
+    CMD curl -sf http://localhost:8420/api/health > /dev/null
 
 CMD ["nobrainr-mcp"]
