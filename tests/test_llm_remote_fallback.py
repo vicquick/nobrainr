@@ -551,3 +551,47 @@ def test_remote_ignored_when_incompletely_configured(monkeypatch, remote_on):
     _stub(monkeypatch, local=local, remote=remote)
     with pytest.raises(RuntimeError, match="llama-server down"):
         asyncio.run(llm_mod.ollama_chat("s", "u", {}))
+
+
+# --- fact_extraction quiet window ("HH:MM-HH:MM") ---------------------------
+
+@pytest.mark.parametrize(
+    "spec,hour,minute,expect_left_min",
+    [
+        ("23:00-01:30", 23, 0, 150),    # start, inclusive
+        ("23:00-01:30", 0, 15, 75),     # after midnight
+        ("23:00-01:30", 1, 29, 1),      # last minute inside
+        ("23:00-01:30", 1, 30, 0),      # end, exclusive
+        ("23:00-01:30", 22, 59, 0),     # just before
+        ("23:00-01:30", 12, 0, 0),      # daytime
+        ("02:00-06:00", 3, 0, 180),     # no wrap
+        ("", 23, 30, 0),                # off (default)
+        ("23-01", 23, 30, 0),           # malformed -> ignored, never blocks
+        ("25:00-01:00", 0, 30, 0),      # out of range -> ignored
+        ("05:00-05:00", 5, 0, 0),       # empty window
+    ],
+)
+def test_fact_extraction_blackout_window(monkeypatch, spec, hour, minute, expect_left_min):
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+
+    from nobrainr.extraction import llm as llm_mod
+
+    monkeypatch.setattr(settings, "fact_extraction_blackout", spec)
+    monkeypatch.setattr(settings, "night_window_tz", "Europe/Berlin")
+    when = dt.datetime(2026, 11, 13, hour, minute, tzinfo=ZoneInfo("Europe/Berlin"))
+    assert llm_mod.fact_extraction_blackout_seconds(when) == pytest.approx(expect_left_min * 60)
+
+
+def test_fact_extraction_blackout_uses_configured_timezone(monkeypatch):
+    """The container clock is UTC; 22:30 UTC is 23:30 in Berlin (winter) — inside."""
+    import datetime as dt
+
+    from nobrainr.extraction import llm as llm_mod
+
+    monkeypatch.setattr(settings, "fact_extraction_blackout", "23:00-01:30")
+    monkeypatch.setattr(settings, "night_window_tz", "Europe/Berlin")
+    utc = dt.datetime(2026, 11, 13, 22, 30, tzinfo=dt.timezone.utc)
+    assert llm_mod.fact_extraction_blackout_seconds(utc) == pytest.approx(120 * 60)
+    monkeypatch.setattr(settings, "night_window_tz", "Europe/Bärlin")
+    assert llm_mod.fact_extraction_blackout_seconds(utc) == 0.0

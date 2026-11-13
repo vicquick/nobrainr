@@ -432,6 +432,12 @@ class Settings(BaseSettings):
     # equal the daytime values, so leaving night_window unset is a no-op.
     night_window: str = ""
     night_window_tz: str = "Europe/Berlin"
+    # Hard quiet window for fact_extraction: "HH:MM-HH:MM" in night_window_tz,
+    # may wrap midnight ("23:00-01:30"). Inside it the extraction loop starts
+    # no run at all. Different from yielding to a busy GPU slot: a yield only
+    # happens once a request is already under way and ends in a timeout, which
+    # still competes with whoever the slot was reserved for. Empty = off.
+    fact_extraction_blackout: str = ""
     fact_extraction_batch_size_night: int = 200
     fact_extraction_interval_hours_night: float = 0.05
     # Memory decay

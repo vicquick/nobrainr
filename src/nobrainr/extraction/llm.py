@@ -641,6 +641,60 @@ def _in_local_batch_window(now: _dt.datetime | None = None) -> bool:
     return _in_hour_window(settings.llm_local_batch_hours, now)
 
 
+def _clock_window_seconds_left(
+    spec: str, tz_name: str, now: _dt.datetime | None = None
+) -> float:
+    """Seconds until the end of an "HH:MM-HH:MM" window, 0.0 when outside it.
+
+    The window is read in ``tz_name`` and may wrap midnight ("23:00-01:30").
+    Start is inclusive, end exclusive. A malformed spec or an unknown timezone
+    disables the window (returns 0.0) with a warning — a typo must cost a
+    quiet hour, never stop the job for good. A tz-aware ``now`` is converted
+    to ``tz_name``; a naive one is taken as already being local time there.
+    """
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    spec = (spec or "").strip()
+    if not spec:
+        return 0.0
+    try:
+        tz = ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        logger.warning("timezone %r unknown — ignoring clock window %r", tz_name, spec)
+        return 0.0
+    try:
+        start_s, end_s = spec.split("-", 1)
+        sh, sm = (int(x) for x in start_s.strip().split(":", 1))
+        eh, em = (int(x) for x in end_s.strip().split(":", 1))
+        if not (0 <= sh <= 23 and 0 <= eh <= 23 and 0 <= sm <= 59 and 0 <= em <= 59):
+            raise ValueError(spec)
+    except ValueError:
+        logger.warning("clock window %r is not 'HH:MM-HH:MM' — ignoring it", spec)
+        return 0.0
+    start, end = sh * 60 + sm, eh * 60 + em
+    if start == end:
+        return 0.0
+    if now is None:
+        now = _dt.datetime.now(tz)
+    elif now.tzinfo is not None:
+        now = now.astimezone(tz)
+    cur = now.hour * 60 + now.minute + now.second / 60
+    if start < end:
+        inside = start <= cur < end
+        left = end - cur
+    else:  # wraps midnight
+        inside = cur >= start or cur < end
+        left = (end - cur) if cur < end else (24 * 60 - cur + end)
+    return left * 60 if inside else 0.0
+
+
+def fact_extraction_blackout_seconds(now: _dt.datetime | None = None) -> float:
+    """Seconds left in ``settings.fact_extraction_blackout``, 0.0 when outside."""
+    return _clock_window_seconds_left(
+        settings.fact_extraction_blackout, settings.night_window_tz, now
+    )
+
+
 def _in_night_window(now: _dt.datetime | None = None) -> bool:
     """True inside ``settings.night_window`` ("HH-HH", ``settings.night_window_tz``).
 
