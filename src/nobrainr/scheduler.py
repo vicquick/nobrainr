@@ -973,13 +973,30 @@ class Scheduler:
         sleep when the queue is empty.
         """
         from nobrainr import scheduler_jobs
-        from nobrainr.extraction.llm import _in_night_window
+        from nobrainr.extraction.llm import (
+            _in_night_window,
+            fact_extraction_blackout_seconds,
+        )
         await asyncio.sleep(LLM_JOB_DELAYS.get("fact_extraction", 60))
         job_timeout = LLM_JOB_TIMEOUT_OVERRIDES.get("fact_extraction", LLM_JOB_TIMEOUT)
+        blackout_logged = False
         while self._running:
             if self._llm_jobs_paused:
                 await asyncio.sleep(5)
                 continue
+            # Hard quiet window: start nothing. A run that began before the
+            # window may still finish inside it (bounded by its timeout).
+            quiet = fact_extraction_blackout_seconds()
+            if quiet > 0:
+                if not blackout_logged:
+                    logger.info(
+                        "fact_extraction: quiet window %s, no runs for %.0f min",
+                        settings.fact_extraction_blackout, quiet / 60,
+                    )
+                    blackout_logged = True
+                await asyncio.sleep(min(quiet, 300))
+                continue
+            blackout_logged = False
             # Assume work remains unless the run proves the backlog is empty
             # (timeouts/errors keep looping).
             pending = 1
