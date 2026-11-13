@@ -3395,6 +3395,63 @@ async def api_presence(request: Request) -> JSONResponse:
     return JSONResponse({"active": roster, "count": len(roster)})
 
 
+async def api_memory_store(request: Request) -> JSONResponse:
+    """POST /api/memory-store — queue one memory write, for scripts without an MCP client.
+
+    Same durable write queue as the MCP tool ``memory_store`` (returns at once,
+    the worker embeds and dedups). Host watchdogs have been posting here since
+    October 2026 (image scan report, config drift check) and got 404 every
+    night — their findings never arrived.
+    """
+    from nobrainr.db import write_queue
+    from nobrainr.mcp.server import normalize_category
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "json body required"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "json object required"}, status_code=400)
+    content = body.get("content")
+    if not isinstance(content, str) or not content.strip():
+        return JSONResponse({"error": "content required"}, status_code=400)
+    if len(content) > settings.max_content_length:
+        return JSONResponse(
+            {"error": f"content too large ({len(content)} chars, max {settings.max_content_length})"},
+            status_code=413,
+        )
+    tags = body.get("tags")
+    if tags is not None and not (isinstance(tags, list) and all(isinstance(t, str) for t in tags)):
+        return JSONResponse({"error": "tags must be a list of strings"}, status_code=400)
+    try:
+        confidence = float(body.get("confidence", 1.0))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "confidence must be a number"}, status_code=400)
+    metadata = body.get("metadata")
+    if metadata is not None and not isinstance(metadata, dict):
+        return JSONResponse({"error": "metadata must be an object"}, status_code=400)
+
+    def _txt(key: str, limit: int) -> str | None:
+        v = body.get(key)
+        return v[:limit] if isinstance(v, str) and v.strip() else None
+
+    enq = await write_queue.enqueue_memory_write(
+        content=content,
+        summary=_txt("summary", 500),
+        tags=tags,
+        category=normalize_category(_txt("category", 60)),
+        source_type=_txt("source_type", 40) or "agent",
+        source_machine=_txt("source_machine", 80),
+        source_ref=_txt("source_ref", 300),
+        confidence=max(0.0, min(1.0, confidence)),
+        metadata=metadata,
+    )
+    return JSONResponse(
+        {"status": "queued", "queue_id": enq["queue_id"], "enqueued_at": enq["enqueued_at"]},
+        status_code=202,
+    )
+
+
 async def api_presence_beat(request: Request) -> JSONResponse:
     from nobrainr.db.queries import upsert_agent_presence
 
@@ -3451,6 +3508,7 @@ api_routes = [
     Route("/api/scheduler", api_scheduler),
     Route("/api/redistill-progress", api_redistill_progress),
     Route("/api/presence", api_presence),
+    Route("/api/memory-store", api_memory_store, methods=["POST"]),
     Route("/api/presence/beat", api_presence_beat, methods=["POST"]),
     Route("/api/scheduler/pause", api_scheduler_pause, methods=["POST"]),
     Route("/api/scheduler/resume", api_scheduler_resume, methods=["POST"]),
