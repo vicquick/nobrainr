@@ -179,6 +179,15 @@ class Settings(BaseSettings):
     # 0 disables.
     agent_comm_cold_days: int = 14
 
+    # Fast lane for error_store and decision_store: the row is written (and
+    # searchable) inside the tool call instead of waiting in
+    # memory_write_queue. Measured 08.-15.11.2026: queued writes waited a
+    # median 4.5 h (up to 7.4 h) behind the GPU park while the work itself
+    # took 21 s — so the warning "this fix already failed" reached nobody in
+    # time. If embedding + insert do not finish within this many seconds the
+    # write falls back to the queue; nothing is lost. 0 disables the lane.
+    fast_lane_timeout_s: float = 10.0
+
     # Crawl4AI
     crawl4ai_url: str = "http://crawl4ai:11235"
     crawl4ai_api_token: str = ""

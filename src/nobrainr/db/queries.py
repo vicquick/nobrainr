@@ -1179,6 +1179,32 @@ async def get_threads_with_fresh_observations(min_count: int = 5) -> list[dict]:
     return [{"thread_id": r["thread_id"], "fresh": int(r["fresh"])} for r in rows]
 
 
+async def find_recent_memory_by_content(content: str, *, days: int = 7) -> str | None:
+    """Id of a memory with byte-identical content stored in the last ``days``.
+
+    Same test as the pre-check in ``write_queue.enqueue_memory_write`` — the
+    fast lane skips the queue and so needs it here, or a retried tool call
+    stores the same error pattern twice.
+    """
+    import hashlib
+
+    content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id
+            FROM memories
+            WHERE created_at > now() - make_interval(days => $2::int)
+              AND encode(sha256(convert_to(content, 'UTF8')), 'hex') = $1
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            content_hash, days,
+        )
+    return str(row["id"]) if row else None
+
+
 async def get_memory(memory_id: str) -> dict | None:
     pool = await get_pool()
     async with pool.acquire() as conn:

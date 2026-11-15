@@ -385,6 +385,106 @@ async def session_brief(task: str, limit: int = 5) -> dict:
 
 
 # ──────────────────────────────────────────────
+# Fast lane: writes other agents must find at once
+# ──────────────────────────────────────────────
+async def _store_on_fast_lane(
+    *,
+    content: str,
+    summary: str,
+    tags: list[str],
+    category: str,
+    source_machine: str | None,
+    metadata: dict | None,
+    confidence: float = 1.0,
+    skip_dedup_on_fallback: bool = False,
+) -> dict:
+    """Store an error pattern or a decision inside the tool call.
+
+    memory_store queues because the dedup classifier and the extraction need
+    the chat model, and the queue worker parks while that model serves live
+    use — fine for notes, wrong for the two kinds of write whose whole point
+    is that the next agent finds them: a queued error pattern cannot warn
+    anyone for hours (see ``fast_lane_timeout_s``).
+
+    Here: one embedding call and one INSERT, the way msg_send has stored
+    since 2026-08-15. No LLM on the path — extraction is deferred to the
+    backfill, contradictions to the periodic sweep. A byte-identical row of
+    the last 7 days is returned instead of stored again. If the embedding
+    service is slow or down the write goes to the queue as before.
+
+    Returns ``{"status": "stored", "memory_id", "fast_lane": True}``,
+    ``{"status": "skipped", "memory_id", "deduped": True}`` or the queued
+    shape ``{"status": "queued", "queue_id", "enqueued_at", "fast_lane": False}``.
+    """
+    import asyncio
+
+    from nobrainr.db import write_queue
+
+    if len(content) > settings.max_content_length:
+        return {
+            "error": f"Content too large ({len(content)} chars, max {settings.max_content_length})"
+        }
+
+    budget = float(settings.fast_lane_timeout_s or 0)
+    # Long content belongs to the queue: it chunks there, and one embedding
+    # of the whole text would be cut off at the model's context.
+    if len(content) > settings.chunk_threshold:
+        budget = 0
+    if budget > 0:
+        try:
+            existing = await queries.find_recent_memory_by_content(content)
+            if existing:
+                return {"status": "skipped", "memory_id": existing, "deduped": True,
+                        "fast_lane": True}
+            result = await asyncio.wait_for(
+                store_memory_with_extraction(
+                    content=content,
+                    summary=summary,
+                    tags=tags,
+                    category=category,
+                    source_type="agent",
+                    source_machine=source_machine,
+                    confidence=confidence,
+                    metadata=metadata,
+                    skip_dedup=True,
+                    defer_extraction=True,
+                ),
+                timeout=budget,
+            )
+            memory_id = result.get("id") or result.get("new_id")
+            if memory_id:
+                return {"status": "stored", "memory_id": str(memory_id), "fast_lane": True}
+            logging.getLogger("nobrainr").warning(
+                "fast lane: store returned no id (%s) — falling back to the queue",
+                result.get("status"),
+            )
+        except Exception as exc:  # incl. TimeoutError: never lose the write
+            logging.getLogger("nobrainr").warning(
+                "fast lane failed (%s: %s) — falling back to the queue",
+                type(exc).__name__, exc,
+            )
+
+    enq = await write_queue.enqueue_memory_write(
+        content=content,
+        summary=summary,
+        tags=tags,
+        category=category,
+        source_type="agent",
+        source_machine=source_machine,
+        source_ref=None,
+        confidence=confidence,
+        metadata=metadata,
+        skip_dedup=skip_dedup_on_fallback,
+    )
+    return {
+        "status": "queued",
+        "queue_id": enq["queue_id"],
+        "enqueued_at": enq["enqueued_at"],
+        "fast_lane": False,
+    }
+
+
+# ──────────────────────────────────────────────
 # Tool: memory_store (queued write — returns in <50ms)
 # ──────────────────────────────────────────────
 @mcp.tool()
@@ -1969,7 +2069,9 @@ async def decision_store(
         source_machine: Defaults to hostname.
         confidence: 0-1 reliability. Default 1.0.
 
-    Returns {status, queue_id, enqueued_at} — same shape as memory_store.
+    Returns {status: "stored", memory_id, scope} — the decision is
+    searchable when the call returns. If the embedding service is down the
+    write is queued instead: {status: "queued", queue_id, enqueued_at}.
     """
     from nobrainr.models.decisions import DecisionMetadata
 
@@ -2003,34 +2105,34 @@ async def decision_store(
     scope_root = scope.split("/", 1)[0]
     all_tags = sorted(set((tags or []) + ["decision", scope_root]))
 
-    from nobrainr.db import write_queue
-    # skip_dedup=True for decisions: they're forward-looking singleton writes
-    # meant to be distinct records. Running the LLM dedup/merge classifier
-    # just slows the queue without value — and if a new decision happens to
-    # look like an old one, SUPERSEDING is the right action (see `supersedes`
-    # parameter), not automatic merge.
-    enq = await write_queue.enqueue_memory_write(
+    # No dedup for decisions, on either lane: they're forward-looking
+    # singleton writes meant to be distinct records — and if a new decision
+    # happens to look like an old one, SUPERSEDING is the right action (see
+    # `supersedes` parameter), not automatic merge.
+    stored = await _store_on_fast_lane(
         content=content,
         summary=f"Decision: {decision}",
         tags=all_tags,
         category="decision",
-        source_type="agent",
         source_machine=source_machine,
-        source_ref=None,
-        confidence=confidence,
         metadata=meta.to_dict(),
-        skip_dedup=True,
+        confidence=confidence,
+        skip_dedup_on_fallback=True,
     )
-    return {
-        "status": "queued",
-        "queue_id": enq["queue_id"],
-        "enqueued_at": enq["enqueued_at"],
-        "scope": scope,
-        "message": (
-            "Decision queued. Poll memory_store_status(queue_id) for the "
-            "memory_id. Retrieve later with decision_search(scope=...)."
-        ),
-    }
+    if "error" in stored:
+        return stored
+    stored["scope"] = scope
+    if stored["status"] == "queued":
+        stored["message"] = (
+            "Decision queued (fast lane unavailable). Poll "
+            "memory_store_status(queue_id) for the memory_id. Retrieve later "
+            "with decision_search(scope=...)."
+        )
+    else:
+        stored["message"] = (
+            "Decision stored — decision_search(scope=...) finds it now."
+        )
+    return stored
 
 
 @mcp.tool()
@@ -2717,6 +2819,10 @@ async def error_store(
         tags: Tags for categorization.
         source_machine: Which host this error was found on.
         related_memory_ids: UUIDs of related memories (e.g. the debug session).
+
+    Returns {status: "stored", memory_id} — error_search finds the pattern
+    when the call returns. If the embedding service is down the write is
+    queued instead: {status: "queued", queue_id, enqueued_at}.
     """
     content = (
         f"## Error Pattern\n\n"
@@ -2735,16 +2841,15 @@ async def error_store(
     if related_memory_ids:
         meta["related_memory_ids"] = related_memory_ids
 
-    result = await memory_store(
+    # Fast lane: an error pattern that sits in the write queue warns nobody.
+    return await _store_on_fast_lane(
         content=content,
         summary=summary or f"Error: {error_signature[:100]}",
-        tags=list(set((tags or []) + ["error-pattern"])),
+        tags=sorted(set((tags or []) + ["error-pattern"])),
         category="debugging",
-        source_type="agent",
         source_machine=source_machine,
         metadata=meta,
     )
-    return result
 
 
 @mcp.tool()
@@ -4982,7 +5087,8 @@ async def meeting_close(
     )
     if "error" in stored:
         return stored
-    decision_ref = stored.get("queue_id")
+    # Fast lane gives the memory id; the queue id only when it fell back.
+    decision_ref = stored.get("memory_id") or stored.get("queue_id")
     await queries.close_meeting(meeting_id, decision_ref)
     await msg_send(
         to=list(meeting["participants"]),
