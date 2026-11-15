@@ -88,6 +88,22 @@ def test_asking_for_a_category_is_never_overruled():
     assert queries.default_exclude_categories("debugging", None) is None
 
 
+def test_a_message_search_is_recognised_and_reaches_cold_messages():
+    assert queries.asks_for_messages("agent-comm", None)
+    assert queries.asks_for_messages(None, ["thread:01a1de43"])
+    assert queries.asks_for_messages(None, ["docker", "From:bimavo-ceo"])
+    assert not queries.asks_for_messages("debugging", ["docker"])
+    assert not queries.asks_for_messages(None, None)
+
+    from nobrainr.mcp import server
+
+    quelle = inspect.getsource(server.memory_search)
+    erkennung = quelle.index("if queries.asks_for_messages(category, tags):")
+    assert "include_cold = True" in quelle[erkennung:erkennung + 80]
+    assert erkennung < quelle.index("queries.search_memories("), \
+        "the cold tier must be opened before the search runs"
+
+
 def test_empty_setting_switches_the_exclusion_off(monkeypatch):
     monkeypatch.setattr(queries._cfg, "search_exclude_categories", [])
     assert queries.default_exclude_categories(None, None) is None

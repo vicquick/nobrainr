@@ -797,7 +797,8 @@ async def memory_search(
             msg_send) are left out by default — they are mail, not knowledge.
             Set True to search them too. They are also searched whenever you
             pass category="agent-comm" or a message tag (agent-msg, to:<agent>,
-            from:<agent>, thread:<id>). Read your mail with msg_inbox.
+            from:<agent>, thread:<id>) — then including messages older than
+            14 days, which are otherwise cold. Read your mail with msg_inbox.
     """
     import asyncio
     from datetime import datetime
@@ -807,6 +808,10 @@ async def memory_search(
         None if include_agent_comm
         else queries.default_exclude_categories(category, tags)
     )
+    # Messages go cold after agent_comm_cold_days. Asking for them by
+    # category or tag (thread:, from:, to:) must still find the old ones.
+    if queries.asks_for_messages(category, tags):
+        include_cold = True
 
     limit = max(1, min(limit, 100))
     threshold = max(0.0, min(threshold, 1.0))

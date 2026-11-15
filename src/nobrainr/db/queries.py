@@ -187,6 +187,20 @@ async def find_similar_memories(
 _POST_TAG_PREFIXES = ("to:", "from:", "thread:", "reply-to:", "read:")
 
 
+def asks_for_messages(category: str | None, tags: list[str] | None) -> bool:
+    """True when a search names agent messages: the category itself or one
+    of the tags msg_send writes. Such a search must also reach messages that
+    went cold (tier 3) — an old thread is looked up by its tag, not by luck.
+    """
+    if category == "agent-comm":
+        return True
+    for tag in tags or []:
+        t = str(tag).strip().lower()
+        if t == "agent-msg" or t.startswith(_POST_TAG_PREFIXES):
+            return True
+    return False
+
+
 def default_exclude_categories(
     category: str | None, tags: list[str] | None,
 ) -> list[str] | None:
@@ -198,12 +212,8 @@ def default_exclude_categories(
     keep working unchanged.
     """
     excluded = [c for c in (_cfg.search_exclude_categories or []) if c]
-    if not excluded or category:
+    if not excluded or category or asks_for_messages(category, tags):
         return None
-    for tag in tags or []:
-        t = str(tag).strip().lower()
-        if t == "agent-msg" or t.startswith(_POST_TAG_PREFIXES):
-            return None
     return excluded
 
 
