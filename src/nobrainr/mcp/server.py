@@ -4561,6 +4561,38 @@ async def agents_active(window_s: int = 300) -> list[dict]:
     return roster
 
 
+def _recipient_list(to: str | list[str] | None) -> list[str]:
+    """Recipient names from whatever a caller passed as ``to``.
+
+    msg_send used to take a string as ONE name. ``to="cto, ceo"`` therefore
+    produced the single tag ``to:cto,-ceo``, which no inbox and no msg_wait
+    matches: the message was stored and reached nobody (measured 2026-11-15:
+    239 such messages in 30 days, 120 in the last 7). A string is now split
+    at commas, semicolons and line breaks; a JSON list passed as a string is
+    read as a list; quotes and brackets around a name are dropped. Order is
+    kept, duplicates removed. Names are not split at spaces.
+    """
+    import json as _json
+
+    items: list = [to] if isinstance(to, str) else list(to or [])
+    names: list[str] = []
+    for item in items:
+        text = str(item).strip()
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                parsed = _json.loads(text)
+                if isinstance(parsed, list):
+                    names.extend(_recipient_list(parsed))
+                    continue
+            except ValueError:
+                pass  # not JSON — fall through to the plain split
+        for part in _re.split(r"[,;\n]", text):
+            name = part.strip().strip("\"'`[]()<>@ ").strip()
+            if name:
+                names.append(name)
+    return list(dict.fromkeys(names))
+
+
 @mcp.tool()
 async def msg_send(
     to: str | list[str],
@@ -4580,6 +4612,7 @@ async def msg_send(
 
     Args:
         to: Target agent name, a list of names, or 'all' for a broadcast.
+            Several names in one string ("cto, ceo") are read as a list.
         subject: One-line subject.
         body: Message body (markdown fine).
         from_agent: Sender agent name.
@@ -4593,7 +4626,8 @@ async def msg_send(
     from nobrainr.db.pool import get_pool
     from nobrainr.services.memory import store_memory_with_extraction
 
-    recipients = [to] if isinstance(to, str) else list(dict.fromkeys(to))
+    recipients = _recipient_list(to)
+    from_agent = (from_agent or "").strip().strip("\"'` ")
     if not recipients:
         return {"error": "to must name at least one agent"}
     thread_id = thread_id or reply_to
@@ -4807,7 +4841,7 @@ async def ask_many(
         deadline_s: Seconds until answers are revealed regardless (60-86400, default 1800).
         machine: Your machine.
     """
-    people = list(dict.fromkeys(p.strip() for p in participants if p and p.strip()))
+    people = _recipient_list(participants)
     if not _MEETING_MIN_PARTICIPANTS <= len(people) <= _MEETING_MAX_PARTICIPANTS:
         return {"error": (
             f"participants must be {_MEETING_MIN_PARTICIPANTS}-"
