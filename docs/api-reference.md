@@ -22,6 +22,7 @@ nobrainr exposes a JSON API alongside the MCP server on the same port.
 | `category` | string | Filter by category |
 | `source_machine` | string | Filter by machine |
 | `tags` | string | Comma-separated tag filter |
+| `exclude_category` | string | Comma-separated categories to leave out (e.g. `agent-comm`); ignored when `category` is set |
 | `limit` | int | Max results (default 50) |
 | `offset` | int | Pagination offset |
 

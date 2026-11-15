@@ -739,6 +739,14 @@ async def api_memories(request: Request) -> JSONResponse:
         except ValueError:
             pass
 
+    # The dashboard lists and searches everything, messages included, so
+    # nothing is left out here unless the caller asks: exclude_category=a,b.
+    # (The SessionStart hook's "recent memories" list is the intended caller.)
+    exclude_param = request.query_params.get("exclude_category", "").strip()
+    exclude_categories = (
+        [c.strip() for c in exclude_param.split(",") if c.strip()] or None
+    ) if exclude_param and not category else None
+
     if q:
         # Use timeout variant: if Ollama is backed up (background embeds queued),
         # fall back to FTS-only rather than blocking the UI for 50s+.
@@ -759,6 +767,7 @@ async def api_memories(request: Request) -> JSONResponse:
                 category=category,
                 source_machine=source_machine,
                 text_query=q,
+                exclude_categories=exclude_categories,
             )
         else:
             # FTS-only fallback: zero vector disables vector branch, FTS still runs
@@ -770,6 +779,7 @@ async def api_memories(request: Request) -> JSONResponse:
                 category=category,
                 source_machine=source_machine,
                 text_query=q,
+                exclude_categories=exclude_categories,
             )
         if min_quality is not None:
             memories = [m for m in memories if (m.get("quality_score") or 0) >= min_quality]
@@ -801,6 +811,7 @@ async def api_memories(request: Request) -> JSONResponse:
             min_quality=min_quality,
             limit=limit,
             offset=offset,
+            exclude_categories=exclude_categories,
         )
 
     return JSONResponse(memories)
@@ -1191,14 +1202,20 @@ async def api_smart_recall(request: Request) -> JSONResponse:
     if not q:
         return JSONResponse([])
     limit = _int_param(request, "limit", 5, hi=20)
+    # Injected into every prompt: knowledge only, no agent messages.
+    exclude_categories = queries.default_exclude_categories(None, None)
     try:
         embedding = await embed_text(q)
     except Exception:
-        # Fallback to FTS if embedding fails
-        return await api_recall(request)
+        # Fallback to FTS if embedding fails. Not /api/recall itself: that
+        # serves the dashboard's command palette, which searches everything.
+        return JSONResponse(await queries.fts_memories(
+            q, limit=limit, exclude_categories=exclude_categories,
+        ))
     results = await queries.search_memories(
         embedding=embedding, limit=limit, threshold=0.25,
         text_query=q,  # hybrid mode: vector + FTS
+        exclude_categories=exclude_categories,
     )
     return JSONResponse(results)
 
@@ -1258,6 +1275,8 @@ async def api_brief(request: Request) -> JSONResponse:
         embedding = await embed_text(q)
         hits = await queries.search_memories(
             embedding=embedding, limit=n_mem * 3, threshold=0.25, text_query=q,
+            # Injected into every prompt: knowledge only, no agent messages.
+            exclude_categories=queries.default_exclude_categories(None, None),
         )
         hit_pool = [
             h for h in hits

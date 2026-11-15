@@ -183,6 +183,30 @@ async def find_similar_memories(
         ]
 
 
+# Tags msg_send writes. A search that names one of them wants messages.
+_POST_TAG_PREFIXES = ("to:", "from:", "thread:", "reply-to:", "read:")
+
+
+def default_exclude_categories(
+    category: str | None, tags: list[str] | None,
+) -> list[str] | None:
+    """Categories default recall leaves out (``search_exclude_categories``).
+
+    None when the caller asked for a category or for message tags — an
+    explicit request always wins, so ``category="agent-comm"`` and the
+    tag-based catch-up (``tags=["agent-msg", "to:<agent>"]``, thread lookups)
+    keep working unchanged.
+    """
+    excluded = [c for c in (_cfg.search_exclude_categories or []) if c]
+    if not excluded or category:
+        return None
+    for tag in tags or []:
+        t = str(tag).strip().lower()
+        if t == "agent-msg" or t.startswith(_POST_TAG_PREFIXES):
+            return None
+    return excluded
+
+
 async def search_memories(
     embedding: list[float],
     *,
@@ -196,6 +220,7 @@ async def search_memories(
     include_cold: bool = False,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
+    exclude_categories: list[str] | None = None,
 ) -> list[dict]:
     pool = await get_pool()
     vec = np.array(embedding, dtype=np.float32)
@@ -209,6 +234,7 @@ async def search_memories(
             source_type=source_type, source_machine=source_machine,
             include_cold=include_cold,
             date_from=date_from, date_to=date_to,
+            exclude_categories=exclude_categories,
         )
 
     # Two-phase vector search: halfvec HNSW index scan for candidates → full-precision re-ranking
@@ -239,6 +265,10 @@ async def search_memories(
     if category:
         conditions.append(f"category = ${idx}")
         params.append(category)
+        idx += 1
+    if exclude_categories:
+        conditions.append(f"(category IS NULL OR category <> ALL(${idx}::text[]))")
+        params.append(list(exclude_categories))
         idx += 1
     if source_type:
         # list-aware (library layer 2026-07-27): scoping a 823-chunk
@@ -332,6 +362,7 @@ def _build_filter_clause(
     source_machine: str | None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
+    exclude_categories: list[str] | None = None,
 ) -> tuple[str, list, int]:
     """Build shared WHERE filter fragment for hybrid search sub-queries.
 
@@ -374,6 +405,11 @@ def _build_filter_clause(
         conditions.append(f"created_at <= ${idx}")
         params.append(date_to)
         idx += 1
+    if exclude_categories:
+        # NULL category passes: "not a message" must not need a category.
+        conditions.append(f"(category IS NULL OR category <> ALL(${idx}::text[]))")
+        params.append(list(exclude_categories))
+        idx += 1
     clause = (" AND " + " AND ".join(conditions)) if conditions else ""
     return clause, params, idx
 
@@ -389,6 +425,7 @@ async def fts_memories(
     tags: list[str] | None = None,
     category: str | None = None,
     source_machine: str | None = None,
+    exclude_categories: list[str] | None = None,
 ) -> list[dict]:
     """Full-text matches only: no embedding, no reranker, no graph branches.
 
@@ -404,7 +441,10 @@ async def fts_memories(
     matches than ``candidates`` is ranked exactly as before.
     """
     candidates = max(limit * 4, 300)
-    extra, fparams, _ = _build_filter_clause(4, tags, category, None, source_machine)
+    extra, fparams, _ = _build_filter_clause(
+        4, tags, category, None, source_machine,
+        exclude_categories=exclude_categories,
+    )
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
@@ -446,6 +486,7 @@ async def _hybrid_search_rrf(
     include_cold: bool = False,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
+    exclude_categories: list[str] | None = None,
 ) -> list[dict]:
     """Hybrid search using Reciprocal Rank Fusion of vector + full-text results."""
     # Overfetch: see scalar search_memories above for rationale.
@@ -467,6 +508,7 @@ async def _hybrid_search_rrf(
         vec_extra, vec_fparams, _ = _build_filter_clause(
             5, tags, category, source_type, source_machine,
             date_from=date_from, date_to=date_to,
+            exclude_categories=exclude_categories,
         )
         vec_rows = await conn.fetch(
             f"""
@@ -500,6 +542,7 @@ async def _hybrid_search_rrf(
         fts_extra, fts_fparams, _ = _build_filter_clause(
             3, tags, category, source_type, source_machine,
             date_from=date_from, date_to=date_to,
+            exclude_categories=exclude_categories,
         )
         fts_rows = await conn.fetch(
             f"""
@@ -540,6 +583,7 @@ async def _hybrid_search_rrf(
             id_extra, id_fparams, _ = _build_filter_clause(
                 n + 2, tags, category, source_type, source_machine,
                 date_from=date_from, date_to=date_to,
+                exclude_categories=exclude_categories,
             )
             id_sql = f"""
                 SELECT id, content, summary, source_type, source_machine, tags, category,
@@ -576,6 +620,7 @@ async def _hybrid_search_rrf(
             g_extra, g_fparams, _ = _build_filter_clause(
                 4, tags, category, source_type, source_machine,
                 date_from=date_from, date_to=date_to,
+                exclude_categories=exclude_categories,
             )
 
             # Phase A: pg_trgm seed match
@@ -710,6 +755,13 @@ async def _hybrid_search_rrf(
         # within the community).
         community_rows: list = []
         if _cfg.community_branch_enabled and text_query:
+            # This branch never took the caller's filters; the category
+            # exclusion is the one that must hold in every branch, or
+            # messages come back in through the community members.
+            c_extra, c_params = "", []
+            if exclude_categories:
+                c_extra = "AND (m.category IS NULL OR m.category <> ALL($4::text[]))"
+                c_params = [list(exclude_categories)]
             try:
                 community_rows = await conn.fetch(
                     f"""
@@ -737,6 +789,7 @@ async def _hybrid_search_rrf(
                          WHERE m.tier < 3
                            AND m.superseded_by IS NULL
                            AND (m.valid_to IS NULL OR m.valid_to > now())
+                           {c_extra}
                          ORDER BY m.id, mc.sim DESC
                     )
                     SELECT * FROM member_memories
@@ -744,6 +797,7 @@ async def _hybrid_search_rrf(
                      LIMIT $3
                     """,
                     embedding, _cfg.community_branch_top_k_communities, overfetch,
+                    *c_params,
                 )
             except Exception as exc:
                 logger.debug("community-summary branch skipped: %s", exc)
@@ -1525,11 +1579,17 @@ async def query_memories(
     min_quality: float | None = None,
     limit: int = 50,
     offset: int = 0,
+    exclude_categories: list[str] | None = None,
 ) -> list[dict]:
     pool = await get_pool()
     conditions = ["1=1"]
     params: list = []
     idx = 1
+
+    if exclude_categories:
+        conditions.append(f"(category IS NULL OR category <> ALL(${idx}::text[]))")
+        params.append(list(exclude_categories))
+        idx += 1
 
     if tags:
         conditions.append(f"tags && ${idx}::text[]")
@@ -5030,12 +5090,32 @@ async def auto_tier_memories() -> dict:
             """,
         )
 
+        # Agent messages age out of the hot set. Runs last so the promotion
+        # rules above (quality >= 0.8, recent access) cannot leave an old
+        # message hot at the end of a run. Tier 0 is left alone: a pinned
+        # message was pinned on purpose. Cold rows stay in msg_inbox, by id
+        # and in any search with include_cold — only default recall drops
+        # them.
+        r_post = "UPDATE 0"
+        post_days = int(getattr(_cfg, "agent_comm_cold_days", 0) or 0)
+        if post_days > 0:
+            r_post = await conn.execute(
+                """
+                UPDATE memories SET tier = 3
+                WHERE category = 'agent-comm'
+                  AND tier IN (1, 2)
+                  AND created_at < now() - make_interval(days => $1::int)
+                """,
+                post_days,
+            )
+
         counts = {
             "promoted_to_0": _affected(r0),
             "promoted_to_1": _affected(r1),
             "demoted_to_3": _affected(r3),
             "recovered_from_cold": _affected(r_recover),
             "archived_aligned": _affected(r_align),
+            "agent_comm_cold": _affected(r_post),
         }
         return counts
 

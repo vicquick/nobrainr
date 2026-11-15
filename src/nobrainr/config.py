@@ -167,6 +167,17 @@ class Settings(BaseSettings):
     # Search defaults
     default_search_limit: int = 10
     default_similarity_threshold: float = 0.3
+    # Categories left out of default recall: memory_search, /api/brief and
+    # /api/smart-recall (the prompt hook). Measured 2026-11-15: agent
+    # messages were 65-90 % of new memories per day and crowded knowledge out
+    # of the top results. msg_inbox, msg_wait, memory_get and any search that
+    # names the category or a message tag (agent-msg, to:, from:, thread:)
+    # still see them. Empty list disables.
+    search_exclude_categories: list[str] = ["agent-comm"]
+    # Agent messages older than this many days go to tier 3 (cold) in
+    # auto_tier — out of default search, still in msg_inbox and by id.
+    # 0 disables.
+    agent_comm_cold_days: int = 14
 
     # Crawl4AI
     crawl4ai_url: str = "http://crawl4ai:11235"
