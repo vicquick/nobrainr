@@ -753,6 +753,7 @@ async def memory_search(
     auto_route: bool = True,
     include_related: bool = False,
     trust_floor: float | None = None,
+    include_agent_comm: bool = False,
 ) -> list[dict]:
     """Semantic search across all memories, ranked by relevance (similarity + recency + importance).
 
@@ -792,10 +793,25 @@ async def memory_search(
             it. Use for high-stakes work that must not act on unverified or
             low-trust (potentially poisoned) memory — returns fewer results
             by design. Unscored memories pass (NULL != low).
+        include_agent_comm: Agent messages (category "agent-comm", written by
+            msg_send) are left out by default — they are mail, not knowledge.
+            Set True to search them too. They are also searched whenever you
+            pass category="agent-comm" or a message tag (agent-msg, to:<agent>,
+            from:<agent>, thread:<id>) — then including messages older than
+            14 days, which are otherwise cold. Read your mail with msg_inbox.
     """
     import asyncio
     from datetime import datetime
     from time import monotonic
+
+    _exclude_categories = (
+        None if include_agent_comm
+        else queries.default_exclude_categories(category, tags)
+    )
+    # Messages go cold after agent_comm_cold_days. Asking for them by
+    # category or tag (thread:, from:, to:) must still find the old ones.
+    if queries.asks_for_messages(category, tags):
+        include_cold = True
 
     limit = max(1, min(limit, 100))
     threshold = max(0.0, min(threshold, 1.0))
@@ -912,6 +928,7 @@ async def memory_search(
             include_cold=include_cold,
             date_from=parsed_from,
             date_to=parsed_to,
+            exclude_categories=_exclude_categories,
         )
         for q, emb in zip(all_queries, embeddings)
     ]
