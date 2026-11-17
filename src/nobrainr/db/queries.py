@@ -1879,6 +1879,11 @@ async def decay_stability() -> int:
     v6.13 (2026-04-22): same treatment as recompute_importance — pick
     target ids in a lock-free SELECT, then apply in 2000-row batches so
     concurrent access-count bumps don't deadlock us.
+
+    2026-11-17: rows already at the 0.1 floor are no longer selected. They
+    made up 93 % of every run (which took 454 s for this step alone after
+    recompute_importance was fixed) and each no-op UPDATE still bumped
+    updated_at and wrote WAL.
     """
     pool = await get_pool()
 
@@ -1893,6 +1898,12 @@ async def decay_stability() -> int:
               -- valuable even if touched once — its worth is availability,
               -- not frequency. Disuse-decay applies to WORKING knowledge only.
               AND (claim_kind IS NULL OR claim_kind NOT IN ('reference', 'historical', 'creative'))
+              -- Skip rows already at the floor (2026-11-17). GREATEST(0.1, ...)
+              -- cannot lower them further, but the UPDATE still rewrote every
+              -- one of them on every run: 101,434 of 109,393 candidates, with
+              -- the updated_at and version triggers firing each time.
+              -- 0.1::real is the exact value the UPDATE stores.
+              AND (stability IS NULL OR stability > 0.1::real)
             """
         )
 
