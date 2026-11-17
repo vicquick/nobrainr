@@ -152,7 +152,7 @@ async def test_stale_entities_uses_UNION():
 @pytest.mark.asyncio
 async def test_penalty_term_at_15_percent():
     sql = await _capture_recompute_sql()
-    assert "- (0.15 * LEAST(1.0, COALESCE((" in sql, \
+    assert "- (0.15 * LEAST(1.0, COALESCE(msc.stale_entity_count::real / 5.0, 0.0)))" in sql, \
         "Penalty must subtract (0.15 * stale_score) from the positive sum"
 
 
@@ -184,8 +184,7 @@ async def test_phase_b_g1_positive_terms_still_present():
     """Phase J must NOT remove the Phase B G1 positive terms — regression guard."""
     sql = await _capture_recompute_sql()
     # Entity connectivity 30%
-    assert "(0.3 * LEAST(1.0, COALESCE((\n                    SELECT count(*)::real / 10.0" in sql or \
-           "0.3 * LEAST(1.0, COALESCE((" in sql, \
+    assert "(0.3 * LEAST(1.0, COALESCE(mec.entity_count::real / 10.0, 0.0)))" in sql, \
         "Phase J must preserve the 30% entity connectivity term from Phase B G1"
     # Quality 30%
     assert "(0.3 * COALESCE(m.quality_score, 0.5))" in sql

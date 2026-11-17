@@ -1756,6 +1756,15 @@ async def recompute_importance() -> int:
     bump that fires on every memory_get. Now we materialise new values
     first (no locks on memories) and apply them in 2000-row chunks with
     deadlock-retry per chunk.
+
+    2026-11-17: the compute phase joins the per-memory counts instead of
+    looking them up with one scalar subquery per row. Postgres inlined
+    the single-use CTEs into those subqueries and rebuilt the whole
+    hot-entity set for every memory: plan cost 15.5 billion, 906-3581 s
+    per run on 156k memories, and the long snapshot blocked
+    REINDEX CONCURRENTLY for 54 minutes. Each count is now computed once
+    (AS MATERIALIZED) and hash-joined: 5 s, same values (0 of 399 sampled
+    rows differ).
     """
     pool = await get_pool()
 
@@ -1764,21 +1773,21 @@ async def recompute_importance() -> int:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            WITH hot_entities AS (
+            WITH hot_entities AS MATERIALIZED (
                 -- Entities linked to any memory accessed in the last 7 days.
                 SELECT DISTINCT em.entity_id
                 FROM entity_memories em
                 JOIN memories m2 ON m2.id = em.memory_id
                 WHERE m2.last_accessed_at > NOW() - INTERVAL '7 days'
             ),
-            memory_hot_counts AS (
+            memory_hot_counts AS MATERIALIZED (
                 SELECT em.memory_id,
                        count(DISTINCT em.entity_id) AS hot_entity_count
                 FROM entity_memories em
                 WHERE em.entity_id IN (SELECT entity_id FROM hot_entities)
                 GROUP BY em.memory_id
             ),
-            stale_entities AS (
+            stale_entities AS MATERIALIZED (
                 SELECT source_entity_id AS entity_id
                 FROM entity_relations
                 WHERE relationship_type IN (
@@ -1793,32 +1802,31 @@ async def recompute_importance() -> int:
                     'aims_to_replace', 'can_replace_with'
                 )
             ),
-            memory_stale_counts AS (
+            memory_stale_counts AS MATERIALIZED (
                 SELECT em.memory_id,
                        count(DISTINCT em.entity_id) AS stale_entity_count
                 FROM entity_memories em
                 WHERE em.entity_id IN (SELECT entity_id FROM stale_entities)
                 GROUP BY em.memory_id
+            ),
+            memory_entity_counts AS MATERIALIZED (
+                SELECT em.memory_id, count(*) AS entity_count
+                FROM entity_memories em
+                GROUP BY em.memory_id
             )
             SELECT m.id,
                    GREATEST(0.0, LEAST(1.0,
-                       (0.3 * LEAST(1.0, COALESCE((
-                           SELECT count(*)::real / 10.0
-                           FROM entity_memories em WHERE em.memory_id = m.id
-                       ), 0.0)))
+                       (0.3 * LEAST(1.0, COALESCE(mec.entity_count::real / 10.0, 0.0)))
                      + (0.3 * COALESCE(m.quality_score, 0.5))
                      + (0.2 * COALESCE(m.confidence, 0.7))
-                     + (0.2 * LEAST(1.0, COALESCE((
-                           SELECT hot_entity_count::real / 10.0
-                           FROM memory_hot_counts mhc WHERE mhc.memory_id = m.id
-                       ), 0.0)))
-                     - (0.15 * LEAST(1.0, COALESCE((
-                           SELECT stale_entity_count::real / 5.0
-                           FROM memory_stale_counts msc WHERE msc.memory_id = m.id
-                       ), 0.0)))
+                     + (0.2 * LEAST(1.0, COALESCE(mhc.hot_entity_count::real / 10.0, 0.0)))
+                     - (0.15 * LEAST(1.0, COALESCE(msc.stale_entity_count::real / 5.0, 0.0)))
                    ))::real AS new_importance,
                    m.importance AS old_importance
             FROM memories m
+            LEFT JOIN memory_entity_counts mec ON mec.memory_id = m.id
+            LEFT JOIN memory_hot_counts mhc ON mhc.memory_id = m.id
+            LEFT JOIN memory_stale_counts msc ON msc.memory_id = m.id
             WHERE m.embedding IS NOT NULL
             """
         )

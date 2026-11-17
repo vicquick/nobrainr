@@ -108,14 +108,14 @@ async def test_recompute_importance_weights_sum_to_one():
     sql = await _capture_execute_sql()
 
     # New weights
-    assert "(0.3 * LEAST(1.0, COALESCE((" in sql, \
+    assert "(0.3 * LEAST(1.0, COALESCE(mec.entity_count::real / 10.0, 0.0)))" in sql, \
         "entity connectivity should be at 30% (down from 40%)"
     assert "(0.3 * COALESCE(m.quality_score, 0.5))" in sql, \
         "quality weight should remain at 30%"
     assert "(0.2 * COALESCE(m.confidence, 0.7))" in sql, \
         "confidence should drop to 20% (down from 30%)"
     # Graph proximity term — the new one
-    assert "0.2 * LEAST(1.0, COALESCE((" in sql, \
+    assert "(0.2 * LEAST(1.0, COALESCE(mhc.hot_entity_count::real / 10.0, 0.0)))" in sql, \
         "graph proximity should be added at 20%"
     assert "hot_entity_count::real / 10.0" in sql, \
         "graph proximity normalizes hot count by 10"
@@ -131,7 +131,7 @@ async def test_recompute_importance_old_weights_not_present():
     """
     sql = await _capture_execute_sql()
     # 0.4 * LEAST is the old entity connectivity weight
-    assert "(0.4 * LEAST(1.0, COALESCE((" not in sql, \
+    assert "(0.4 * LEAST(1.0, COALESCE(" not in sql, \
         "v6.5 and earlier used 0.4 for entity connectivity — that's the old weight"
     # 0.3 * COALESCE(confidence is the old confidence weight
     assert "(0.3 * COALESCE(confidence, 0.7))" not in sql, \
