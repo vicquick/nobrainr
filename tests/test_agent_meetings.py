@@ -181,7 +181,7 @@ async def test_msg_send_list_recipients_tags_and_thread():
         patch("nobrainr.db.pool.get_pool", AsyncMock(return_value=pool)),
     ):
         out = await server.msg_send(
-            to=["cto", "recht", "cto"], subject="s", body="b",
+            to=["cto", "recht", "cto"], subject="Lesung", body="Bitte lesen.",
             from_agent="ceo", reply_to="m-0",
         )
     tags = store.await_args.kwargs["tags"]
@@ -199,7 +199,7 @@ async def test_msg_send_single_recipient_unchanged_shape():
         patch("nobrainr.services.memory.store_memory_with_extraction", store),
         patch("nobrainr.db.pool.get_pool", AsyncMock(return_value=pool)),
     ):
-        await server.msg_send(to="cto", subject="s", body="b", from_agent="ceo")
+        await server.msg_send(to="cto", subject="Lesung", body="Bitte lesen.", from_agent="ceo")
     tags = store.await_args.kwargs["tags"]
     assert tags == ["agent-msg", "from:ceo", "to:cto"]
 
