@@ -47,6 +47,7 @@ import logging
 import os
 import random
 import re
+import stat
 import time
 from urllib.parse import urlsplit
 
@@ -421,6 +422,8 @@ def gpu_lease_held() -> bool:
 # See settings.llm_pause_path. Read at most every _LLM_PAUSE_CACHE_S so a
 # busy scheduler doesn't stat the file per call.
 _LLM_PAUSE_CACHE_S = 5.0
+# Required owner of the pause file (root on the host; tests patch it).
+_LLM_PAUSE_OWNER_UID = 0
 _llm_pause_cache: tuple[float, float | None] = (-1e9, None)
 _llm_pause_bad_warned: str = ""
 _llm_pause_parked: int = 0
@@ -428,25 +431,43 @@ _llm_pause_parked_total: int = 0
 _llm_pause_live_skipped: int = 0
 
 
+def _llm_pause_warn(path: str, why: str) -> None:
+    """Warn once per distinct reason, so a bad file doesn't spam every 5 s."""
+    global _llm_pause_bad_warned
+    if why != _llm_pause_bad_warned:
+        _llm_pause_bad_warned = why
+        logger.warning("LLM pause file %s %s — ignored (no pause)", path, why)
+
+
 def _read_llm_pause_until() -> float | None:
     """Parse the pause file into an epoch end time (clamped), or None."""
-    global _llm_pause_bad_warned
     path = settings.llm_pause_path
     if not path:
         return None
+    # Only a root-owned regular file that nobody else can write counts
+    # (redteam 24.11.: a writable dir would let any mounter pause nobrainr).
+    # O_NOFOLLOW + fstat checks the very file we read, no lstat/open race.
     try:
-        with open(path, encoding="utf-8") as fh:
-            raw = fh.read(200).strip()
-    except OSError:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
         return None
+    except OSError as exc:
+        _llm_pause_warn(path, f"unreadable or symlink ({exc.__class__.__name__})")
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != _LLM_PAUSE_OWNER_UID or st.st_mode & 0o022:
+            _llm_pause_warn(path, f"not a root-owned regular file without group/other write (mode {oct(st.st_mode & 0o7777)}, uid {st.st_uid})")
+            return None
+        raw = os.read(fd, 200).decode("utf-8", "replace").strip()
+    finally:
+        os.close(fd)
     if not raw:
         return None
     try:
         end = _dt.datetime.fromisoformat(raw)
     except ValueError:
-        if raw != _llm_pause_bad_warned:
-            _llm_pause_bad_warned = raw
-            logger.warning("LLM pause file %s holds no ISO time (%r) — ignored", path, raw[:40])
+        _llm_pause_warn(path, f"holds no ISO time ({raw[:40]!r})")
         return None
     if end.tzinfo is None:
         from zoneinfo import ZoneInfo, ZoneInfoNotFoundError

@@ -5,6 +5,7 @@ the same local llama-server."""
 
 import asyncio
 import datetime as dt
+import os
 
 import pytest
 
@@ -21,12 +22,15 @@ def pause(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "llm_pause_resume_jitter_s", 0.0)
     monkeypatch.setattr(llm, "_LLM_PAUSE_CACHE_S", 0.0)
     monkeypatch.setattr(llm, "_llm_pause_cache", (-1e9, None))
+    # CI runs as a non-root user: the owner check expects whoever writes here.
+    monkeypatch.setattr(llm, "_LLM_PAUSE_OWNER_UID", os.getuid())
 
     def setze(delta_s: float | None = None, raw: str | None = None):
         if raw is None:
             end = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=delta_s)
             raw = end.isoformat()
         path.write_text(raw + "\n", encoding="utf-8")
+        os.chmod(path, 0o644)
 
     setze.path = path
     return setze
@@ -52,6 +56,37 @@ def test_empty_or_garbage_is_no_pause(pause):
     pause(raw="")
     assert llm.llm_paused() is False
     pause(raw="morgen frueh")
+    assert llm.llm_paused() is False
+
+
+def test_symlink_is_no_pause(pause, tmp_path, monkeypatch):
+    # redteam 24.11.: a link planted by anyone must not count (O_NOFOLLOW)
+    echt = tmp_path / "echt.until"
+    echt.write_text((dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=10)).isoformat())
+    os.chmod(echt, 0o644)
+    link = tmp_path / "link.until"
+    link.symlink_to(echt)
+    monkeypatch.setattr(settings, "llm_pause_path", str(link))
+    assert llm.llm_paused() is False
+
+
+@pytest.mark.parametrize("mode", [0o664, 0o646, 0o666])
+def test_group_or_other_writable_is_no_pause(pause, mode):
+    pause(600)
+    os.chmod(pause.path, mode)
+    assert llm.llm_paused() is False
+
+
+def test_wrong_owner_is_no_pause(pause, monkeypatch):
+    pause(600)
+    monkeypatch.setattr(llm, "_LLM_PAUSE_OWNER_UID", os.getuid() + 1)
+    assert llm.llm_paused() is False
+
+
+def test_directory_is_no_pause(pause, tmp_path, monkeypatch):
+    d = tmp_path / "ordner"
+    d.mkdir(mode=0o755)
+    monkeypatch.setattr(settings, "llm_pause_path", str(d))
     assert llm.llm_paused() is False
 
 
