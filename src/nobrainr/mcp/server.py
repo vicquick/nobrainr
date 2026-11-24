@@ -4698,6 +4698,35 @@ def _recipient_list(to: str | list[str] | None) -> list[str]:
     return list(dict.fromkeys(names))
 
 
+# Words a session types when it fires msg_send by accident (seen 18.11.–24.11.2026, five times).
+_MSG_PLATZHALTER = frozenset({
+    "placeholder", "platzhalter", "x", "xx", "xxx", "test", "testing", "todo", "tbd", "tba",
+    "...", "…", "-", "--", "—", ".", "?", "ok", "foo", "bar", "lorem ipsum", "dummy", "n/a",
+})
+
+
+def _msg_text_fehler(subject: str | None, body: str | None) -> str | None:
+    """Why a message must not be sent, or None if it is a real message (G6 step 1).
+
+    Refused: empty subject or body, either one being a known placeholder word,
+    and a body shorter than 3 characters. A short subject is fine if it is
+    not a placeholder ("ja", "OK?").
+    """
+    s = (subject or "").strip()
+    b = (body or "").strip()
+    if not s:
+        return "subject is empty"
+    if not b:
+        return "body is empty"
+    if s.lower() in _MSG_PLATZHALTER:
+        return f"subject is a placeholder ({s!r})"
+    if b.lower() in _MSG_PLATZHALTER:
+        return f"body is a placeholder ({b!r})"
+    if len(b) < 3:
+        return "body is shorter than 3 characters"
+    return None
+
+
 @mcp.tool()
 async def msg_send(
     to: str | list[str],
@@ -4735,6 +4764,11 @@ async def msg_send(
     from_agent = (from_agent or "").strip().strip("\"'` ")
     if not recipients:
         return {"error": "to must name at least one agent"}
+    if not from_agent:
+        return {"error": "from_agent is empty — sign the message with your role name"}
+    fehler = _msg_text_fehler(subject, body)
+    if fehler:
+        return {"error": f"message refused, nothing stored or sent: {fehler}"}
     thread_id = thread_id or reply_to
     to_label = ", ".join(recipients)
     tags = ["agent-msg", f"from:{from_agent}"] + [f"to:{r}" for r in recipients]

@@ -56,7 +56,7 @@ async def test_comma_string_gets_one_tag_per_recipient_and_notifies_each():
         patch("nobrainr.db.pool.get_pool", AsyncMock(return_value=pool)),
     ):
         out = await server.msg_send(
-            to="bimavo-viewer, bimavo-ceo", subject="Gegenlesen", body="…",
+            to="bimavo-viewer, bimavo-ceo", subject="Gegenlesen", body="Bitte den Diff lesen.",
             from_agent='"bimavo-sweep"',
         )
 
