@@ -159,6 +159,21 @@ class Settings(BaseSettings):
     # the GPU; nobrainr only probes it with a non-blocking LOCK_SH and never
     # takes it. Bind-mounted from a host directory. Empty disables the check.
     gpu_lease_path: str = "/gpu/gpu0.lock"
+    # LLM pause switch (2026-11-24). A host operator writes an ISO end time
+    # into this file (same bind-mounted /gpu directory as the lease) to keep
+    # EVERY nobrainr chat-model call off llama-swap until then — scheduler,
+    # extraction and remote leg included, because llm_remote_url may point
+    # at the same local llama-server. Non-live calls park and resume after
+    # the end time (nothing is dropped); live calls skip their LLM step and
+    # fall back to the cheap path. Embedding/rerank are not affected.
+    # Missing/empty/expired file = no pause. A naive time is read in
+    # night_window_tz. An end time further out than llm_pause_max_h is
+    # clamped so a typo can't silence nobrainr for days.
+    llm_pause_path: str = "/gpu/nobrainr-llm-pause.until"
+    llm_pause_max_h: float = 12.0
+    # Spread the parked backlog after the pause instead of releasing every
+    # call in the same second.
+    llm_pause_resume_jitter_s: float = 120.0
 
     # MCP Server
     host: str = "0.0.0.0"
