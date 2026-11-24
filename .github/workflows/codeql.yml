@@ -10,7 +10,9 @@ on:
 
 jobs:
   analyze:
-    runs-on: ubuntu-latest
+    # vic 24.11.2026 (ceo 01a20c77): keine GitHub-gehosteten Jobs mehr — eigener Runner; Fork-PRs nie auf eigenen Runner
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, nobrainr]
     permissions:
       security-events: write
     steps:
