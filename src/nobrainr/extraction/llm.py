@@ -47,6 +47,7 @@ import logging
 import os
 import random
 import re
+import stat
 import time
 from urllib.parse import urlsplit
 
@@ -325,6 +326,7 @@ async def side_chat(
     and must never queue behind nobrainr, and a non-resident model is never
     loaded for this.
     """
+    _llm_pause_gate_live()
     if not _remote_enabled():
         return await ollama_chat(
             system, user, schema, model=model, temperature=temperature,
@@ -414,6 +416,127 @@ def gpu_lease_held() -> bool:
         return False
     finally:
         os.close(fd)
+
+
+# ── LLM pause switch (2026-11-24) ────────────────────────────────────────
+# See settings.llm_pause_path. Read at most every _LLM_PAUSE_CACHE_S so a
+# busy scheduler doesn't stat the file per call.
+_LLM_PAUSE_CACHE_S = 5.0
+# Required owner of the pause file (root on the host; tests patch it).
+_LLM_PAUSE_OWNER_UID = 0
+_llm_pause_cache: tuple[float, float | None] = (-1e9, None)
+_llm_pause_bad_warned: str = ""
+_llm_pause_parked: int = 0
+_llm_pause_parked_total: int = 0
+_llm_pause_live_skipped: int = 0
+
+
+def _llm_pause_warn(path: str, why: str) -> None:
+    """Warn once per distinct reason, so a bad file doesn't spam every 5 s."""
+    global _llm_pause_bad_warned
+    if why != _llm_pause_bad_warned:
+        _llm_pause_bad_warned = why
+        logger.warning("LLM pause file %s %s — ignored (no pause)", path, why)
+
+
+def _read_llm_pause_until() -> float | None:
+    """Parse the pause file into an epoch end time (clamped), or None."""
+    path = settings.llm_pause_path
+    if not path:
+        return None
+    # Only a root-owned regular file that nobody else can write counts
+    # (redteam 24.11.: a writable dir would let any mounter pause nobrainr).
+    # O_NOFOLLOW + fstat checks the very file we read, no lstat/open race.
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        _llm_pause_warn(path, f"unreadable or symlink ({exc.__class__.__name__})")
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != _LLM_PAUSE_OWNER_UID or st.st_mode & 0o022:
+            _llm_pause_warn(path, f"not a root-owned regular file without group/other write (mode {oct(st.st_mode & 0o7777)}, uid {st.st_uid})")
+            return None
+        raw = os.read(fd, 200).decode("utf-8", "replace").strip()
+    finally:
+        os.close(fd)
+    if not raw:
+        return None
+    try:
+        end = _dt.datetime.fromisoformat(raw)
+    except ValueError:
+        _llm_pause_warn(path, f"holds no ISO time ({raw[:40]!r})")
+        return None
+    if end.tzinfo is None:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        try:
+            end = end.replace(tzinfo=ZoneInfo(settings.night_window_tz))
+        except (ZoneInfoNotFoundError, ValueError):
+            end = end.replace(tzinfo=_dt.timezone.utc)
+    until = end.timestamp()
+    ceiling = time.time() + settings.llm_pause_max_h * 3600
+    if until > ceiling:
+        logger.warning(
+            "LLM pause file %s ends %s — beyond llm_pause_max_h=%.1f, clamped",
+            path, end.isoformat(), settings.llm_pause_max_h,
+        )
+        until = ceiling
+    return until
+
+
+def llm_pause_until() -> float | None:
+    """Epoch seconds until which nobrainr makes no chat-model call, or None."""
+    global _llm_pause_cache
+    now_m = time.monotonic()
+    checked, until = _llm_pause_cache
+    if now_m - checked >= _LLM_PAUSE_CACHE_S:
+        until = _read_llm_pause_until()
+        _llm_pause_cache = (now_m, until)
+    return until if until is not None and until > time.time() else None
+
+
+def llm_paused() -> bool:
+    return llm_pause_until() is not None
+
+
+def llm_pause_snapshot() -> dict:
+    """Counters for the dashboard / the operator's before-after proof."""
+    until = llm_pause_until()
+    return {
+        "until": _dt.datetime.fromtimestamp(until, _dt.timezone.utc).isoformat() if until else None,
+        "parked_now": _llm_pause_parked,
+        "parked_total": _llm_pause_parked_total,
+        "live_skipped_total": _llm_pause_live_skipped,
+    }
+
+
+def _llm_pause_gate_live() -> None:
+    """Live callers never wait: skip the LLM step while paused."""
+    global _llm_pause_live_skipped
+    if llm_paused():
+        _llm_pause_live_skipped += 1
+        raise LiveLLMSkipped("nobrainr LLM pause active; skipping live LLM step")
+
+
+async def _wait_for_llm_pause() -> None:
+    """Park a non-live call while the pause is set, then resume with jitter.
+
+    Unbounded like _wait_for_gpu_lease: the pause end time is itself bounded
+    (llm_pause_max_h), and the job-level timeout in scheduler.py stays the
+    backstop. Re-checks after the jitter in case a new pause was written."""
+    global _llm_pause_parked, _llm_pause_parked_total
+    while llm_paused():
+        _llm_pause_parked += 1
+        _llm_pause_parked_total += 1
+        logger.info("LLM call parked: nobrainr LLM pause (parked now %d)", _llm_pause_parked)
+        try:
+            while llm_paused():
+                await asyncio.sleep(settings.gpu_yield_poll_s)
+        finally:
+            _llm_pause_parked -= 1
+        await asyncio.sleep(random.uniform(0, max(settings.llm_pause_resume_jitter_s, 0.0)))
 
 
 async def _gpu_idle_for_batch() -> bool:
@@ -1072,6 +1195,12 @@ async def ollama_chat(
     ``CancelledError`` is never swallowed — a cancelled call must stay
     cancelled rather than silently re-issue against the remote.
     """
+    # Pause switch first: it covers the local AND the remote leg (the remote
+    # URL can be the same local llama-server).
+    if caller_kind == "live":
+        _llm_pause_gate_live()
+    else:
+        await _wait_for_llm_pause()
     if not _remote_enabled():
         return await _ollama_chat_local(
             system, user, schema,
@@ -1453,7 +1582,9 @@ async def ollama_generate(
     ``ReadTimeout`` / ``WriteTimeout`` propagate to the caller; HyDE and
     query-decomposition callers are opt-in enhancements that gracefully
     degrade to un-enhanced search, so a raised timeout is fine.
+    Both callers are live paths, so the pause switch skips instead of parking.
     """
+    _llm_pause_gate_live()
     client = _get_llm_client()
     messages = []
     if system:
