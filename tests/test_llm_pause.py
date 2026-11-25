@@ -4,6 +4,7 @@ skip their LLM step. Covers the remote leg too, because llm_remote_url may be
 the same local llama-server."""
 
 import asyncio
+import logging
 import datetime as dt
 import os
 
@@ -22,6 +23,7 @@ def pause(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "llm_pause_resume_jitter_s", 0.0)
     monkeypatch.setattr(llm, "_LLM_PAUSE_CACHE_S", 0.0)
     monkeypatch.setattr(llm, "_llm_pause_cache", (-1e9, None))
+    monkeypatch.setattr(llm, "_llm_pause_start_counts", None)
     # CI runs as a non-root user: the owner check expects whoever writes here.
     monkeypatch.setattr(llm, "_LLM_PAUSE_OWNER_UID", os.getuid())
 
@@ -180,3 +182,36 @@ def test_no_pause_no_delay(pause, monkeypatch):
     monkeypatch.setattr(settings, "llm_remote_mode", "off")
     res = asyncio.run(asyncio.wait_for(llm.ollama_chat("s", "u", {}, caller_kind="scheduler"), 1.0))
     assert res == {"leg": "local"}
+
+
+def test_pause_end_logs_counters_of_this_process(pause, monkeypatch, caplog):
+    """ceo 25.11.: the night measurement reads parked/skipped from the log, because `docker exec python -c` starts a
+    new process whose counters are always 0. Red before: no "LLM pause ended" line at all."""
+    calls = []
+    _fakes(monkeypatch, calls)
+    monkeypatch.setattr(settings, "llm_remote_mode", "off")
+    pause(600)
+
+    async def lauf():
+        task = asyncio.create_task(llm.ollama_chat("s", "u", {}, caller_kind="scheduler"))
+        with pytest.raises(llm.LiveLLMSkipped):
+            await llm.ollama_chat("s", "u", {}, caller_kind="live")
+        await asyncio.sleep(0.1)
+        pause.path.write_text("", encoding="utf-8")
+        await asyncio.wait_for(task, 2.0)
+
+    with caplog.at_level(logging.INFO, logger=llm.logger.name):
+        asyncio.run(lauf())
+        llm.llm_paused()  # a later call must not log the end a second time
+    start = [r.getMessage() for r in caplog.records if r.getMessage().startswith("LLM pause started")]
+    ende = [r.getMessage() for r in caplog.records if r.getMessage().startswith("LLM pause ended")]
+    assert len(start) == 1 and len(ende) == 1
+    assert "(this pause: parked=1 live_skipped=1)" in ende[0]
+    snap = llm.llm_pause_snapshot()
+    assert f"parked_total={snap['parked_total']} live_skipped={snap['live_skipped_total']}" in ende[0]
+
+
+def test_no_pause_logs_nothing(pause, caplog):
+    with caplog.at_level(logging.INFO, logger=llm.logger.name):
+        assert llm.llm_paused() is False
+    assert not [r for r in caplog.records if r.getMessage().startswith("LLM pause")]

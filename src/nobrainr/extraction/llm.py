@@ -429,6 +429,10 @@ _llm_pause_bad_warned: str = ""
 _llm_pause_parked: int = 0
 _llm_pause_parked_total: int = 0
 _llm_pause_live_skipped: int = 0
+# Counters at the start of the current pause, None while no pause is active. The end of a pause is logged once with
+# the totals of THIS process (ceo 25.11.: `docker exec python -c llm_pause_snapshot()` starts a new process and
+# always reads 0, so the night measurement needs the numbers in the log).
+_llm_pause_start_counts: tuple[int, int] | None = None
 
 
 def _llm_pause_warn(path: str, why: str) -> None:
@@ -494,7 +498,24 @@ def llm_pause_until() -> float | None:
     if now_m - checked >= _LLM_PAUSE_CACHE_S:
         until = _read_llm_pause_until()
         _llm_pause_cache = (now_m, until)
-    return until if until is not None and until > time.time() else None
+    aktiv = until if until is not None and until > time.time() else None
+    _llm_pause_track(aktiv is not None)
+    return aktiv
+
+
+def _llm_pause_track(active: bool) -> None:
+    """Log the start and, once, the end of a pause with the counters of this process."""
+    global _llm_pause_start_counts
+    if active and _llm_pause_start_counts is None:
+        _llm_pause_start_counts = (_llm_pause_parked_total, _llm_pause_live_skipped)
+        logger.info("LLM pause started: parked_total=%d live_skipped=%d",
+                    _llm_pause_parked_total, _llm_pause_live_skipped)
+    elif not active and _llm_pause_start_counts is not None:
+        parked0, skipped0 = _llm_pause_start_counts
+        _llm_pause_start_counts = None
+        logger.info("LLM pause ended: parked_total=%d live_skipped=%d (this pause: parked=%d live_skipped=%d)",
+                    _llm_pause_parked_total, _llm_pause_live_skipped,
+                    _llm_pause_parked_total - parked0, _llm_pause_live_skipped - skipped0)
 
 
 def llm_paused() -> bool:
