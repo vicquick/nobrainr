@@ -62,6 +62,37 @@ SUMMARY_SCHEMA = {
 }
 
 
+def _hub_gemeinschaften(
+    hub_ids: set[str],
+    edge_tuples: list[tuple[str, str, float]],
+    assignments: dict[str, int],
+) -> dict[str, int]:
+    """Community of each hub = the one most of its NON-hub neighbours belong to.
+
+    ONE pass over the edges. The old loop ran over all edges once per hub
+    (635 hubs x 383k edges = 243M Python iterations, ~30 s) in the event loop
+    right after Leiden: nobrainr answered nothing from 10:47:46 to 10:48:16 on
+    27.11.2026 although Leiden itself already ran in a child process (#189).
+    Only non-hub neighbours vote (as the caller's comment always said); the old
+    loop also let hubs assigned earlier in set order vote, so its result
+    depended on iteration order. Ties: first community seen in edge order wins,
+    like Counter.most_common on the old per-hub counter.
+    """
+    from collections import Counter, defaultdict
+
+    votes: defaultdict[str, Counter] = defaultdict(Counter)
+    for src, tgt, _ in edge_tuples:
+        if src in hub_ids:
+            c = assignments.get(tgt) if tgt not in hub_ids else None
+            if c is not None:
+                votes[src][c] += 1
+        elif tgt in hub_ids:
+            c = assignments.get(src)
+            if c is not None:
+                votes[tgt][c] += 1
+    return {hub: zaehler.most_common(1)[0][0] for hub, zaehler in votes.items() if zaehler}
+
+
 async def detect_communities(
     *,
     min_community_size: int = 3,
@@ -228,15 +259,7 @@ async def detect_communities(
     # Re-assign hub entities to the community of their most-connected non-hub neighbour.
     # Hubs were excluded from Leiden to prevent mega-cluster formation, but they
     # still need a community_id so they're searchable and not left as singletons.
-    for hub in hub_ids:
-        neighbour_votes: _Counter = _Counter()
-        for src, tgt, _ in edge_tuples:
-            if src == hub and tgt in community_assignments:
-                neighbour_votes[community_assignments[tgt]] += 1
-            elif tgt == hub and src in community_assignments:
-                neighbour_votes[community_assignments[src]] += 1
-        if neighbour_votes:
-            community_assignments[hub] = neighbour_votes.most_common(1)[0][0]
+    community_assignments.update(_hub_gemeinschaften(hub_ids, edge_tuples, community_assignments))
 
     # Store community assignments in entities table using a SINGLE delta-only
     # bulk update. The previous pattern — "UPDATE entities SET community_id =
