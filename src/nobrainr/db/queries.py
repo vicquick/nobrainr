@@ -1248,6 +1248,7 @@ async def update_memory(
     category: str | None = None,
     confidence: float | None = None,
     metadata: dict | None = None,
+    add_tags: list[str] | None = None,
     _changed_by: str | None = None,
     _change_type: str | None = None,
     _change_reason: str | None = None,
@@ -1261,6 +1262,19 @@ async def update_memory(
 
     if tags is not None:
         tags = canonicalize_tags(tags)
+
+    # add_tags appends in SQL against the row as it is when the UPDATE runs.
+    # Callers that read tags, add one and POST the whole list lose each
+    # other's writes: on a message to 12 agents the read:<agent> tags of
+    # cto, recht and vpsfixer vanished seconds after being set (27.11.2026),
+    # and agent-wake nudged them again. Ignored when tags= replaces the list.
+    if add_tags and tags is None:
+        sets.append(
+            f"tags = COALESCE(tags, '{{}}') || ARRAY(SELECT DISTINCT t FROM unnest(${idx}::text[]) t "
+            f"WHERE t <> ALL(COALESCE(tags, '{{}}')))"
+        )
+        params.append(canonicalize_tags(add_tags))
+        idx += 1
 
     for field, value in [
         ("content", content),

@@ -851,6 +851,10 @@ async def api_memory_update(request: Request) -> JSONResponse:
         tags = tags_raw if tags_raw else None
     else:
         tags = [t.strip() for t in tags_raw.split(",") if t.strip()] if tags_raw else None
+    # add_tags: [..] appends atomically (no read-modify-write race between
+    # recipients tagging read:<name> on the same message).
+    add_raw = body.get("add_tags")
+    add_tags = [t.strip() for t in add_raw if isinstance(t, str) and t.strip()] if isinstance(add_raw, list) else None
 
     embedding = None
     if content:
@@ -863,6 +867,7 @@ async def api_memory_update(request: Request) -> JSONResponse:
         embedding=embedding,
         tags=tags,
         category=category or None,
+        add_tags=add_tags or None,
     )
     if not updated:
         return JSONResponse({"error": "Memory not found"}, status_code=404)
