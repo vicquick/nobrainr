@@ -16,75 +16,40 @@ Each community gets an LLM-generated summary for hierarchical retrieval.
 import asyncio
 import functools
 import logging
+import multiprocessing
 import time
-
-import networkx as nx
+from concurrent.futures import ProcessPoolExecutor
 
 from nobrainr.db.pool import get_pool
 from nobrainr.extraction.llm import ollama_chat
+from nobrainr.services.graph_algo import run_leiden as _run_leiden
+from nobrainr.services.graph_algo import run_louvain as _run_louvain
 
 logger = logging.getLogger("nobrainr")
 
 
-def _run_leiden(
-    nodes: list[str],
-    edges: list[tuple[str, str, float]],
-    *,
-    resolution: float,
-    initial_membership: list[int] | None = None,
-) -> list[set[str]]:
-    """Run Leiden via ``leidenalg`` + ``igraph``. Returns communities as sets of node IDs."""
-    import igraph as ig
-    import leidenalg
+async def _im_eigenen_prozess(fn, *args, **kwargs):
+    """Run a CPU-bound clustering kernel in a fresh spawned process.
 
-    # Build igraph graph with stable node-id → vertex-index map
-    idx_of = {nid: i for i, nid in enumerate(nodes)}
-    g = ig.Graph(n=len(nodes), directed=False)
-    ig_edges = []
-    weights = []
-    for src, tgt, w in edges:
-        i = idx_of.get(src)
-        j = idx_of.get(tgt)
-        if i is None or j is None or i == j:
-            continue
-        ig_edges.append((i, j))
-        weights.append(float(w))
-    g.add_edges(ig_edges)
-    g.es["weight"] = weights
+    A thread is not enough: leidenalg holds the GIL (see graph_algo.py), so the
+    event loop — HTTP/MCP API, write worker, reaper — stood still for the full
+    run. One worker, spawn (no fork of a process with a running loop and open
+    DB connections), shut down after each call: the job runs weekly, so a
+    resident pool would only hold memory.
+    """
+    loop = asyncio.get_running_loop()
+    pool = ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn"))
+    try:
+        return await loop.run_in_executor(pool, functools.partial(fn, *args, **kwargs))
+    except asyncio.CancelledError:
+        # Job timeout: a `with` block would shutdown(wait=True) here and block
+        # the loop until the child finishes — the very freeze this avoids.
+        for proc in list(getattr(pool, "_processes", {}).values()):
+            proc.kill()
+        raise
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
-    partition = leidenalg.find_partition(
-        g,
-        leidenalg.RBConfigurationVertexPartition,
-        initial_membership=initial_membership,
-        weights="weight",
-        resolution_parameter=resolution,
-        seed=42,
-        n_iterations=-1,  # iterate until convergence (Leiden's key property)
-    )
-    return [{nodes[i] for i in members} for members in partition]
-
-
-def _run_louvain(
-    nodes: list[str],
-    edges: list[tuple[str, str, float]],
-    *,
-    resolution: float,
-) -> list[set[str]]:
-    """Fallback: networkx Louvain when leidenalg isn't installed."""
-    g = nx.Graph()
-    for nid in nodes:
-        g.add_node(nid)
-    for src, tgt, w in edges:
-        if g.has_edge(src, tgt):
-            g[src][tgt]["weight"] += float(w)
-        else:
-            g.add_edge(src, tgt, weight=float(w))
-    return [
-        set(c)
-        for c in nx.community.louvain_communities(
-            g, weight="weight", resolution=resolution, seed=42,
-        )
-    ]
 
 SUMMARY_SCHEMA = {
     "type": "object",
@@ -187,12 +152,13 @@ async def detect_communities(
     # calls with no internal await — run directly, they'd block the whole
     # asyncio event loop (HTTP/MCP API, memory_write_worker, the stale-
     # processing reaper) for their full duration. run_in_executor (2026-10-07)
+    # with a THREAD did not help (leidenalg holds the GIL, 27.11.2026) —
+    # _im_eigenen_prozess runs them in a spawned process instead.
     # hands them to a thread so the loop stays responsive; doesn't shrink the
     # algorithm's own wall-clock cost, but stops it from freezing everything
     # else on the process while it runs, and lets the job's own timeout
     # actually land close to when it's hit instead of only once the blocking
     # call happens to yield back.
-    loop = asyncio.get_running_loop()
     algo = "leiden"
     # Timing instrumentation (2026-10-14): no prior run has ever logged where
     # the 180min budget actually goes (fetch/filter vs algorithm convergence)
@@ -205,25 +171,23 @@ async def detect_communities(
         len(filtered_nodes), len(filtered_edges),
     )
     try:
-        communities = await loop.run_in_executor(
-            None, functools.partial(
-                _run_leiden, filtered_nodes, filtered_edges,
-                resolution=resolution, initial_membership=seed_membership,
-            )
+        communities = await _im_eigenen_prozess(
+            _run_leiden, filtered_nodes, filtered_edges,
+            resolution=resolution, initial_membership=seed_membership,
         )
     except ImportError:
         logger.warning(
             "leidenalg/igraph not installed — falling back to Louvain. "
             "Install `leidenalg` + `python-igraph` for guaranteed connected clusters."
         )
-        communities = await loop.run_in_executor(
-            None, functools.partial(_run_louvain, filtered_nodes, filtered_edges, resolution=resolution)
+        communities = await _im_eigenen_prozess(
+            _run_louvain, filtered_nodes, filtered_edges, resolution=resolution,
         )
         algo = "louvain_fallback"
     except Exception:
         logger.exception("Leiden failed unexpectedly, falling back to Louvain")
-        communities = await loop.run_in_executor(
-            None, functools.partial(_run_louvain, filtered_nodes, filtered_edges, resolution=resolution)
+        communities = await _im_eigenen_prozess(
+            _run_louvain, filtered_nodes, filtered_edges, resolution=resolution,
         )
         algo = "louvain_fallback"
     logger.info(
