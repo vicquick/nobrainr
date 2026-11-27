@@ -1248,6 +1248,7 @@ async def update_memory(
     category: str | None = None,
     confidence: float | None = None,
     metadata: dict | None = None,
+    add_tags: list[str] | None = None,
     _changed_by: str | None = None,
     _change_type: str | None = None,
     _change_reason: str | None = None,
@@ -1261,6 +1262,19 @@ async def update_memory(
 
     if tags is not None:
         tags = canonicalize_tags(tags)
+
+    # add_tags appends in SQL against the row as it is when the UPDATE runs.
+    # Callers that read tags, add one and POST the whole list lose each
+    # other's writes: on a message to 12 agents the read:<agent> tags of
+    # cto, recht and vpsfixer vanished seconds after being set (27.11.2026),
+    # and agent-wake nudged them again. Ignored when tags= replaces the list.
+    if add_tags and tags is None:
+        sets.append(
+            f"tags = COALESCE(tags, '{{}}') || ARRAY(SELECT DISTINCT t FROM unnest(${idx}::text[]) t "
+            f"WHERE t <> ALL(COALESCE(tags, '{{}}')))"
+        )
+        params.append(canonicalize_tags(add_tags))
+        idx += 1
 
     for field, value in [
         ("content", content),
@@ -1616,6 +1630,7 @@ async def query_memories(
     limit: int = 50,
     offset: int = 0,
     exclude_categories: list[str] | None = None,
+    exclude_tags: list[str] | None = None,
 ) -> list[dict]:
     pool = await get_pool()
     conditions = ["1=1"]
@@ -1630,6 +1645,15 @@ async def query_memories(
     if tags:
         conditions.append(f"tags && ${idx}::text[]")
         params.append(_tag_filter_values(tags))
+        idx += 1
+
+    # Inbox readers (agent-wake, the prompt hook) ask for to:<name> minus
+    # read:<name>. Without this the newest N rows were mostly read ones:
+    # bimavo-ceo gets >200 messages in 48 h, so an unread one at row 191 was
+    # never shown and never nudged (vpsfixer 27.11.2026).
+    if exclude_tags:
+        conditions.append(f"NOT (COALESCE(tags, '{{}}') && ${idx}::text[])")
+        params.append(_tag_filter_values(exclude_tags))
         idx += 1
 
     if category:
