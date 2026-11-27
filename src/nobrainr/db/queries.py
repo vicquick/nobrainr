@@ -1616,6 +1616,7 @@ async def query_memories(
     limit: int = 50,
     offset: int = 0,
     exclude_categories: list[str] | None = None,
+    exclude_tags: list[str] | None = None,
 ) -> list[dict]:
     pool = await get_pool()
     conditions = ["1=1"]
@@ -1630,6 +1631,15 @@ async def query_memories(
     if tags:
         conditions.append(f"tags && ${idx}::text[]")
         params.append(_tag_filter_values(tags))
+        idx += 1
+
+    # Inbox readers (agent-wake, the prompt hook) ask for to:<name> minus
+    # read:<name>. Without this the newest N rows were mostly read ones:
+    # bimavo-ceo gets >200 messages in 48 h, so an unread one at row 191 was
+    # never shown and never nudged (vpsfixer 27.11.2026).
+    if exclude_tags:
+        conditions.append(f"NOT (COALESCE(tags, '{{}}') && ${idx}::text[])")
+        params.append(_tag_filter_values(exclude_tags))
         idx += 1
 
     if category:

@@ -746,6 +746,10 @@ async def api_memories(request: Request) -> JSONResponse:
     exclude_categories = (
         [c.strip() for c in exclude_param.split(",") if c.strip()] or None
     ) if exclude_param and not category else None
+    # exclude_tags=a,b drops rows carrying any of them (list only, not search):
+    # the inbox readers ask for tags=to:X&exclude_tags=read:X,undelivered:X.
+    exclude_tags_param = request.query_params.get("exclude_tags", "").strip()
+    exclude_tags = [t.strip() for t in exclude_tags_param.split(",") if t.strip()] or None
 
     if q:
         # Use timeout variant: if Ollama is backed up (background embeds queued),
@@ -812,6 +816,7 @@ async def api_memories(request: Request) -> JSONResponse:
             limit=limit,
             offset=offset,
             exclude_categories=exclude_categories,
+            exclude_tags=exclude_tags,
         )
 
     return JSONResponse(memories)
